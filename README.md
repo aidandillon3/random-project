@@ -12,3 +12,10 @@ A browser snake game in a single file, `index.html`. Open it in any browser to p
 
 Webcam full-body tracking for VR (hip, knee and foot trackers for SteamVR or VRChat).
 See [`body-tracker/README.md`](body-tracker/README.md) for setup and calibration.
+
+## Local Agent
+
+A Claude-style AI helper that runs on your own PC with local models: it can edit files, run
+commands, see the screen and use the mouse and keyboard, with an approval step for risky actions.
+It also starts llama.cpp with fast settings for a 16 GB card.
+See [`local-agent/README.md`](local-agent/README.md).
