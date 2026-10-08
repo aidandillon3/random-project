@@ -193,7 +193,7 @@ Wi-Fi (or plugged in by USB). Keep both apps up to date so their versions match.
 <li>If the preview shows the app's own "waiting" or logo picture, the phone isn't connected yet.</li>
 <li>In the Iriun PC app, pick 640x480 or 1280x720. Bigger pictures only add delay.</li>
 <li>Phone cameras are virtual cameras that can't use the fast webcam settings. The app notices and
-switches to the camera's own mode by itself; the status bar then says "fell back".</li>
+switches to the camera's own mode by itself; the message at the bottom of the window then says "fell back".</li>
 <li>Still black? Reinstall the Iriun PC app (that reinstalls its camera driver) and restart the PC.</li>
 </ul>
 <h3>Two cameras: pairing fails or is "rough"</h3>

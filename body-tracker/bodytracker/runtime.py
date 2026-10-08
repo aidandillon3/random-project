@@ -81,6 +81,7 @@ class Tracker:
             self.source_error = str(e)
             self.status = f"Could not start: {e}"
             return
+        self.status = f"Started. {self.source.describe()}"
         self._source_stop.clear()
         t = threading.Thread(target=self._source_loop, args=(self.source,), name="source", daemon=True)
         t.start()
