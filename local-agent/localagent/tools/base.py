@@ -13,12 +13,14 @@ SAFE = "safe"        # reading, looking, planning
 EDIT = "edit"        # changes files
 RUN = "run"          # runs programs or code
 CONTROL = "control"  # moves your mouse, types, opens apps, focuses windows
+PUBLISH = "publish"  # sends something to the internet under your name (git push, pull requests)
 
 RISK_LABELS = {
     SAFE: "look around",
     EDIT: "change files",
     RUN: "run commands",
     CONTROL: "use your mouse and keyboard",
+    PUBLISH: "post to GitHub",
 }
 
 

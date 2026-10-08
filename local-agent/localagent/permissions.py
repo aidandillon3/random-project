@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from .tools import CONTROL, EDIT, RUN, SAFE
+from .tools import CONTROL, EDIT, PUBLISH, RUN, SAFE
 
 # Commands that always need your OK unless you switch that off in Settings, even in full auto.
 DANGEROUS = [
@@ -50,6 +50,7 @@ class Decision:
 class Policy:
     mode: str = "ask"
     always_ask_dangerous: bool = True
+    always_ask_publish: bool = True      # pushes and pull requests ask even in full auto
     session_allowed: set = field(default_factory=set)   # risks allowed for this chat
 
     def needs_approval(self, risk: str, dangerous: bool) -> bool | None:
@@ -63,7 +64,7 @@ class Policy:
         if risk in self.session_allowed:
             return False
         if self.mode == "auto":
-            return False
+            return risk == PUBLISH and self.always_ask_publish
         if self.mode == "auto_edit" and risk == EDIT:
             return False
         return True
@@ -74,4 +75,5 @@ def risk_text(risk: str) -> str:
         EDIT: "change files in the work folder",
         RUN: "run a command or change files outside the work folder",
         CONTROL: "use your mouse, keyboard or open programs",
+        PUBLISH: "push code or post to GitHub under your account",
     }.get(risk, risk)

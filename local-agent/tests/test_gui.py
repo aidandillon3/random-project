@@ -92,7 +92,7 @@ class GuiTest(unittest.TestCase):
         from localagent.config import Settings
 
         d = Path(tempfile.mkdtemp())
-        model = d / "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+        model = d / "Qwen3.8-27B-Q4_K_M.gguf"
         moe_model(model)
         (d / "mmproj-F16.gguf").write_bytes(b"x" * 100)
         exe = d / "llama-server"
@@ -107,6 +107,28 @@ class GuiTest(unittest.TestCase):
         self.assertIn("MoE", page.info_label.text())
         page.speed.setCurrentIndex(page.speed.findData("mtp"))
         self.assertIn("draft-mtp", page.cmd.toPlainText())
+
+        # "Find vision file online": downloads next to the model, turns vision on and MTP off
+        from localagent import gguf, vision
+        from tests.test_vision import FakeHF
+
+        hf = FakeHF()
+        orig_find, orig_q = vision.find, self.gui.QMessageBox.question
+        vision.find = lambda info, model, progress=None: orig_find(info, model, base=hf.url)
+        self.gui.QMessageBox.question = staticmethod(lambda *a, **k: self.gui.QMessageBox.Yes)
+        try:
+            page.vision.setChecked(False)
+            page._find_vision()
+            self.assertTrue(self.wait_until(lambda: "Vision ready" in page.vision_status.text(), 15),
+                            page.vision_status.text())
+        finally:
+            vision.find, self.gui.QMessageBox.question = orig_find, orig_q
+        self.assertTrue(page.vision.isChecked())
+        self.assertEqual(page.speed.currentData(), "off")
+        # the test model is 2048 wide, so the 2048 projector is the one that fits
+        self.assertEqual(Path(s.mmproj_path).parent, d)
+        self.assertEqual(gguf.read_meta_bytes(Path(s.mmproj_path).read_bytes())["clip.vision.projection_dim"], 2048)
+        self.assertIn(s.mmproj_path, page.cmd.toPlainText())
         out = os.environ.get("GUI_SHOT")
         if out:
             w.nav.setCurrentRow(1)

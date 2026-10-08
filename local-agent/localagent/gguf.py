@@ -58,22 +58,34 @@ class _Reader:
 _KEEP_ARRAYS = re.compile(r"\.(head_count_kv|head_count|feed_forward_length)$")
 
 
+def _read_meta(f, label: str) -> tuple[_Reader, dict, int]:
+    r = _Reader(f)
+    if f.read(4) != b"GGUF":
+        raise GGUFError(f"{label} is not a GGUF file")
+    version = r.take("<I")
+    if version < 2:
+        raise GGUFError("GGUF version 1 is too old")
+    n_tensors, n_kv = r.take("<Q"), r.take("<Q")
+    meta = {}
+    for _ in range(n_kv):
+        key = r.string()
+        t = r.take("<I")
+        meta[key] = r.value(t, bool(_KEEP_ARRAYS.search(key)))
+    return r, meta, n_tensors
+
+
+def read_meta_bytes(data: bytes) -> dict:
+    """Metadata from the first part of a GGUF file (e.g. a partial download)."""
+    import io
+
+    return _read_meta(io.BytesIO(data), "This file")[1]
+
+
 def read_header(path: Path) -> tuple[dict, list[tuple[str, int]], int]:
     """Returns (metadata, [(tensor name, byte size)], data start)."""
     size = path.stat().st_size
     with open(path, "rb") as f:
-        r = _Reader(f)
-        if f.read(4) != b"GGUF":
-            raise GGUFError(f"{path.name} is not a GGUF file")
-        version = r.take("<I")
-        if version < 2:
-            raise GGUFError("GGUF version 1 is too old")
-        n_tensors, n_kv = r.take("<Q"), r.take("<Q")
-        meta = {}
-        for _ in range(n_kv):
-            key = r.string()
-            t = r.take("<I")
-            meta[key] = r.value(t, bool(_KEEP_ARRAYS.search(key)))
+        r, meta, n_tensors = _read_meta(f, path.name)
         infos = []
         for _ in range(n_tensors):
             name = r.string()
@@ -111,6 +123,8 @@ class ModelInfo:
     layer_bytes: dict = field(default_factory=dict)     # layer -> all bytes in that layer
     has_mtp: bool = False
     quant: str = ""
+    embedding_length: int = 0
+    meta: dict = field(default_factory=dict, repr=False)
 
     @property
     def is_moe(self) -> bool:
@@ -164,6 +178,8 @@ def model_info(path: str | Path) -> ModelInfo:
     n_head = max(n_head) if isinstance(n_head, list) else int(n_head or 0)
     kv = g("attention.head_count_kv", n_head)
     emb = int(g("embedding_length", 0) or 0)
+    info.embedding_length = emb
+    info.meta = meta
     k_len = int(g("attention.key_length", 0) or (emb // n_head if n_head else 0))
     v_len = int(g("attention.value_length", 0) or k_len)
     if isinstance(kv, list):
