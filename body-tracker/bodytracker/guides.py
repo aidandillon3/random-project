@@ -184,8 +184,18 @@ status bar; a dark room makes webcams drop to 30 fps or less, so add light or tu
 <li>Check VMT Manager's Room Setup shows <b>0: OK</b>.</li>
 <li>The app must say <b>Calibrated</b>, and the Output page must say it is sending.</li>
 </ul>
-<h3>"Could not open camera"</h3>
+<h3>"Could not get a picture from camera"</h3>
 <p>Another program (Discord, OBS, a browser tab) may be using it. Close it, or pick another camera.</p>
+<h3>Phone as a camera (Iriun, DroidCam)</h3>
+<ul>
+<li>Open the app on the phone <b>and</b> on the PC before starting tracking, with both on the same
+Wi-Fi (or plugged in by USB). Keep both apps up to date so their versions match.</li>
+<li>If the preview shows the app's own "waiting" or logo picture, the phone isn't connected yet.</li>
+<li>In the Iriun PC app, pick 640x480 or 1280x720. Bigger pictures only add delay.</li>
+<li>Phone cameras are virtual cameras that can't use the fast webcam settings. The app notices and
+switches to the camera's own mode by itself; the status bar then says "fell back".</li>
+<li>Still black? Reinstall the Iriun PC app (that reinstalls its camera driver) and restart the PC.</li>
+</ul>
 <h3>Two cameras: pairing fails or is "rough"</h3>
 <ul>
 <li>Both cameras must see your whole body during the walk.</li>
