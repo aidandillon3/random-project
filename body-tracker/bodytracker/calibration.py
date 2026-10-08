@@ -18,7 +18,7 @@ import numpy as np
 
 from .mathutil import heading_yaw, normalize, rotation_between, yaw_matrix
 from .skeleton import (
-    L_ANKLE, L_EAR, L_HEEL, L_SHOULDER, R_ANKLE, R_EAR, R_HEEL, R_SHOULDER,
+    L_ANKLE, L_EAR, L_HEEL, L_HIP, L_KNEE, L_SHOULDER, R_ANKLE, R_EAR, R_HEEL, R_HIP, R_KNEE, R_SHOULDER,
     body_forward, face_forward, head_point, mid,
 )
 
@@ -33,6 +33,7 @@ class Calibration:
     rotation: list = field(default_factory=lambda: np.eye(3).tolist())  # camera -> room
     scale: float = 1.0
     hip_height_m: float = 0.95  # standing hip height, used to put the floor at y=0 without a headset
+    bone_lengths: dict = field(default_factory=dict)  # left_thigh, left_shin, ... in meters
     mirror: bool = False
     valid: bool = False
 
@@ -110,5 +111,17 @@ def solve(
     scale = (target - HEEL_ABOVE_FLOOR_M) / eyes_above_heels
     hip_height = scale * (-heel_y) + HEEL_ABOVE_FLOOR_M  # landmarks are centred on the hips
 
+    m = q * scale
+    bones = {
+        "left_thigh": float(np.linalg.norm(m[L_HIP] - m[L_KNEE])),
+        "right_thigh": float(np.linalg.norm(m[R_HIP] - m[R_KNEE])),
+        "left_shin": float(np.linalg.norm(m[L_KNEE] - m[L_ANKLE])),
+        "right_shin": float(np.linalg.norm(m[R_KNEE] - m[R_ANKLE])),
+    }
+    # both legs are the same length in real life; averaging halves the noise
+    for part in ("thigh", "shin"):
+        avg = 0.5 * (bones[f"left_{part}"] + bones[f"right_{part}"])
+        bones[f"left_{part}"] = bones[f"right_{part}"] = avg
+
     return Calibration(rotation=rot.tolist(), scale=float(scale), hip_height_m=float(hip_height),
-                       mirror=mirror, valid=True)
+                       bone_lengths=bones, mirror=mirror, valid=True)

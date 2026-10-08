@@ -7,14 +7,26 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from .calibration import Calibration
+from .stereo import StereoCalibration
 
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
 
+def _build(cls, data: dict):
+    known = {f.name for f in fields(cls)}
+    return cls(**{k: v for k, v in data.items() if k in known})
+
+
 @dataclass
 class Config:
+    # --- mode ---
+    mode: str = "mono"  # mono (one camera) | stereo (two cameras) | kinect (Kinect v2)
+
     # --- camera ---
     camera_index: int = 0
+    camera_b_index: int = 1  # second camera, two-camera mode only
+    camera_hfov_deg: float = 70.0  # horizontal field of view; only matters in two-camera mode
+    camera_b_hfov_deg: float = 70.0
     camera_width: int = 640  # the pose model works at 256px, more pixels only add latency
     camera_height: int = 480
     camera_fps: int = 60
@@ -25,6 +37,8 @@ class Config:
     min_detection_confidence: float = 0.5
     min_tracking_confidence: float = 0.5
     min_visibility: float = 0.5  # below this a leg point is treated as hidden and held
+    leg_swap_guard: bool = True  # undo sudden left/right leg mix-ups
+    lock_bone_lengths: bool = True  # keep thigh and shin at their calibrated length
 
     # --- you ---
     user_height_m: float = 1.75
@@ -64,7 +78,14 @@ class Config:
     # --- window ---
     show_preview: bool = True
 
+    # --- kinect ---
+    kinect_swap_sides: bool = False  # flip left/right if your Kinect reports them mirrored
+
+    # --- first run ---
+    setup_done: bool = False  # set once the setup guide has been completed
+
     calibration: Calibration = field(default_factory=Calibration)
+    stereo: StereoCalibration = field(default_factory=StereoCalibration)
 
     @classmethod
     def load(cls, path: Path = DEFAULT_PATH) -> "Config":
@@ -74,7 +95,9 @@ class Config:
             known = {f.name for f in fields(cls)}
             for k, v in data.items():
                 if k == "calibration" and isinstance(v, dict):
-                    cfg.calibration = Calibration(**v)
+                    cfg.calibration = _build(Calibration, v)
+                elif k == "stereo" and isinstance(v, dict):
+                    cfg.stereo = _build(StereoCalibration, v)
                 elif k in known:
                     setattr(cfg, k, v)
         return cfg

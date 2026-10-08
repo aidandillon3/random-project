@@ -1,4 +1,7 @@
-mediapipe>=0.10.14
-opencv-python>=4.8
+mediapipe>=0.10.14   # pose model (brings OpenCV with it)
 numpy>=1.24
-openvr>=1.26  # reads your headset pose from SteamVR; optional but recommended
+PySide6>=6.6         # the app window
+openvr>=1.26         # reads your headset pose from SteamVR
+pygrabber>=0.2; sys_platform == "win32"   # shows camera names instead of numbers
+comtypes>=1.2; sys_platform == "win32"    # Kinect v2 mode
+pykinect2>=0.1; sys_platform == "win32"   # Kinect v2 mode
