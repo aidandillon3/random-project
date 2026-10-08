@@ -241,7 +241,9 @@ class ServerProcess:
 
 
 # ---------------------------------------------------------------------- downloading llama.cpp
-RELEASES = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+# Not /releases/latest: llama.cpp marks its build releases (b1234) as pre-releases, and the
+# release GitHub calls "latest" (e.g. v0.6.0) has no Windows builds at all.
+RELEASES = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20"
 
 
 def pick_assets(release: dict, prefer: str = "cuda") -> tuple[dict | None, dict | None]:
@@ -263,12 +265,29 @@ def pick_assets(release: dict, prefer: str = "cuda") -> tuple[dict | None, dict 
     return vk, None
 
 
+def choose_release(releases: list[dict], prefer: str = "cuda") -> tuple[dict | None, dict | None, dict | None]:
+    """The newest release that has a Windows build: (release, build zip, CUDA runtime zip)."""
+    ordered = sorted((r for r in releases if not r.get("draft")),
+                     key=lambda r: r.get("published_at") or r.get("created_at") or "", reverse=True)
+    for want in ([prefer, "vulkan"] if prefer != "vulkan" else ["vulkan"]):
+        for rel in ordered:
+            main, runtime = pick_assets(rel, want)
+            if main and (want != "cuda" or "cuda" in main["name"]):
+                return rel, main, runtime
+    return None, None, None
+
+
 def download_llamacpp(progress=lambda msg, frac: None, prefer: str = "cuda") -> Path:
     progress("Asking GitHub for the newest llama.cpp...", 0.0)
-    rel = requests.get(RELEASES, timeout=30).json()
-    main, runtime = pick_assets(rel, prefer)
+    r = requests.get(RELEASES, timeout=30, headers={"Accept": "application/vnd.github+json"})
+    data = r.json()
+    if not isinstance(data, list):  # an error such as GitHub's hourly rate limit
+        raise RuntimeError(f"GitHub said: {data.get('message', data)}. Try again later, or download a "
+                           "llama-*-bin-win-cuda-*-x64.zip from github.com/ggml-org/llama.cpp/releases "
+                           "and pick llama-server.exe with Browse.")
+    rel, main, runtime = choose_release(data, prefer)
     if not main:
-        raise RuntimeError("Couldn't find a Windows build in the latest llama.cpp release.")
+        raise RuntimeError("Couldn't find a Windows build in the recent llama.cpp releases.")
     target = LLAMA_DIR / rel.get("tag_name", "latest")
     target.mkdir(parents=True, exist_ok=True)
     for i, asset in enumerate([a for a in (main, runtime) if a]):

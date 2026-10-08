@@ -10,7 +10,7 @@ os.environ.setdefault("LOCALAGENT_DATA", tempfile.mkdtemp())
 
 from localagent import gguf  # noqa: E402
 from localagent.config import Settings  # noqa: E402
-from localagent.launcher import build_launch, find_models, pick_assets  # noqa: E402
+from localagent.launcher import build_launch, choose_release, find_models, pick_assets  # noqa: E402
 
 GB = 1024 ** 3
 
@@ -205,6 +205,25 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(main["name"], "llama-b1-bin-win-cuda-13.4-x64.zip")
         self.assertEqual(rt["name"], "cudart-llama-bin-win-cuda-13.4-x64.zip")
         self.assertEqual(pick_assets(rel, "vulkan")[0]["name"], "llama-b1-bin-win-vulkan-x64.zip")
+
+    def test_choose_release_skips_latest_without_builds(self):
+        # What GitHub returned in October 2026: "latest" was v0.6.0 with no Windows zips,
+        # the builds were pre-releases.
+        win = lambda tag: [{"name": f"llama-{tag}-bin-win-cuda-13.4-x64.zip"},
+                           {"name": "cudart-llama-bin-win-cuda-13.4-x64.zip"},
+                           {"name": f"llama-{tag}-bin-win-vulkan-x64.zip"}]
+        releases = [
+            {"tag_name": "v0.6.0", "published_at": "2026-10-05T16:56:00Z", "assets": [{"name": "source.tar.gz"}]},
+            {"tag_name": "b11435", "prerelease": True, "published_at": "2026-10-06T10:00:00Z", "assets": win("b11435")},
+            {"tag_name": "b11436", "prerelease": True, "published_at": "2026-10-07T10:00:00Z", "assets": []},  # still uploading
+            {"tag_name": "b11433", "prerelease": True, "published_at": "2026-10-05T23:10:00Z", "assets": win("b11433")},
+            {"tag_name": "b99999", "draft": True, "published_at": "2026-10-08T10:00:00Z", "assets": win("b99999")},
+        ]
+        rel, main, rt = choose_release(releases)
+        self.assertEqual(rel["tag_name"], "b11435")
+        self.assertEqual(main["name"], "llama-b11435-bin-win-cuda-13.4-x64.zip")
+        self.assertEqual(rt["name"], "cudart-llama-bin-win-cuda-13.4-x64.zip")
+        self.assertEqual(choose_release([releases[0]]), (None, None, None))
 
 
 if __name__ == "__main__":
