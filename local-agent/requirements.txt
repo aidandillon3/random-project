@@ -1,0 +1,8 @@
+PySide6>=6.6           # the app window
+requests>=2.31         # talks to the model server
+mss>=9.0               # fast screenshots
+Pillow>=10.0           # image resizing
+pyautogui>=0.9.54      # mouse and keyboard
+pyperclip>=1.8         # clipboard
+Send2Trash>=1.8        # deletes go to the Recycle Bin
+pywinauto>=0.6.8; sys_platform == "win32"   # reads buttons and menus of other apps
