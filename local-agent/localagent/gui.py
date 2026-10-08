@@ -864,6 +864,15 @@ class ServerPage(QWidget):
         f.addRow("Model:", row)
         self.info_label = muted("")
         f.addRow(self.info_label)
+        row = QHBoxLayout()
+        self.vision_btn = QPushButton("Find vision file online")
+        self.vision_btn.setToolTip("Searches Hugging Face for the image adapter (mmproj) that matches this model "
+                                   "and downloads it next to the model")
+        self.vision_btn.clicked.connect(self._find_vision)
+        row.addWidget(self.vision_btn)
+        self.vision_status = muted("")
+        row.addWidget(self.vision_status, 1)
+        f.addRow(row)
         lay.addWidget(g)
 
         g = QGroupBox("3. Settings (the defaults are tuned for an RTX 5080 16 GB)")
@@ -1035,9 +1044,10 @@ class ServerPage(QWidget):
                 self.s.save()
             try:
                 self.info = model_info(path)
-                mm = launcher.find_mmproj(Path(path))
-                vis = f"vision file: {mm.name}" if mm else "no vision (mmproj) file next to it"
+                mm = Path(self.s.mmproj_path) if self.s.mmproj_path else launcher.find_mmproj(Path(path))
+                vis = f"vision file: {mm.name}" if mm else "no vision (mmproj) file next to it yet"
                 self.info_label.setText(f"{self.info.summary()}. {vis}.")
+                self.vision_btn.setText("Find a different vision file" if mm else "Find vision file online")
             except Exception as e:
                 self.info_label.setText(f"Couldn't read this file: {e}")
         self._changed()
@@ -1119,6 +1129,82 @@ class ServerPage(QWidget):
             self.win.refresh_connection()
         elif not self.proc.running and self.state.text().startswith("Loading"):
             self.state.setText(f"<span style='color:{BAD}'>The server stopped. See the log below.</span>")
+
+    def _find_vision(self):
+        from . import vision
+
+        if not self.s.model_path:
+            return
+        model = Path(self.s.model_path)
+        info = self.info
+        self.vision_btn.setEnabled(False)
+        state = {"msg": "", "frac": 0.0, "found": None, "path": None, "error": None, "phase": "search"}
+
+        def search():
+            try:
+                state["found"] = vision.find(info, model, progress=lambda m: state.update(msg=m))
+            except Exception as e:  # noqa: BLE001
+                state["error"] = e
+            state["phase"] = "searched"
+
+        def fetch(c):
+            try:
+                state["path"] = vision.download(c, model.parent, lambda m, f: state.update(msg=m, frac=f))
+            except Exception as e:  # noqa: BLE001
+                state["error"] = e
+            state["phase"] = "downloaded"
+
+        threading.Thread(target=search, daemon=True).start()
+
+        def tick():
+            if state["phase"] == "downloading":
+                self.vision_status.setText(f"{state['msg']} {state['frac'] * 100:.0f}%")
+            else:
+                self.vision_status.setText(state["msg"])
+            if state["phase"] in ("search", "downloading"):
+                QTimer.singleShot(200, tick)
+                return
+            if state["error"] is not None:
+                self.vision_btn.setEnabled(True)
+                self.vision_status.setText("")
+                QMessageBox.warning(self, "Vision file", f"That didn't work: {state['error']}")
+                return
+            if state["phase"] == "searched":
+                c = state["found"]
+                if c is None:
+                    self.vision_btn.setEnabled(True)
+                    self.vision_status.setText("No matching vision file found.")
+                    QMessageBox.information(self, "Vision file", "I couldn't find a vision file that fits this model "
+                                            "on Hugging Face. This model may not support images.")
+                    return
+                size = f" ({c.mb} MB)" if c.size else ""
+                ok = QMessageBox.question(
+                    self, "Vision file",
+                    f"Found {c.file}{size} in {c.repo}. It's made for {c.base_name}, which your model is built "
+                    f"on, and its header check says it {c.note}.\n\nDownload it next to your model?") == QMessageBox.Yes
+                if not ok:
+                    self.vision_btn.setEnabled(True)
+                    self.vision_status.setText("")
+                    return
+                state["phase"] = "downloading"
+                threading.Thread(target=fetch, args=(c,), daemon=True).start()
+                QTimer.singleShot(200, tick)
+                return
+            # downloaded
+            self.vision_btn.setEnabled(True)
+            self.s.mmproj_path = str(state["path"])
+            self.vision.setChecked(True)
+            note = ""
+            if self.speed.currentData() == "mtp":
+                self.speed.setCurrentIndex(self.speed.findData("off"))
+                note = " The MTP speed-up was switched off, because it doesn't work together with vision."
+            self.s.save()
+            self._model_changed()
+            self.vision_status.setText(f"Vision ready: {Path(state['path']).name}.{note}")
+            if self.proc.running:
+                self.vision_status.setText(self.vision_status.text() + " Restart the model to use it.")
+
+        tick()
 
     def _download(self):
         self.dl_btn.setEnabled(False)

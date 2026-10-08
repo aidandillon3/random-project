@@ -23,7 +23,11 @@ It also starts the model for you, with the speed settings worked out for an
 3. Press **Models folder...** and pick the folder with your `.gguf` models (LM Studio's folder is
    found by itself). Choose a model in the list. The page shows what's inside it and whether it
    fits on your card.
-4. Press **Start model**. When it says **Ready**, go to **Chat** and ask for something.
+4. Want it to see the screen? If the page says there's no vision file, press **Find vision file
+   online**. It works out which base model yours is built on (for example
+   `Swift-1.5-Qwen3.8-27B-...` is built on Qwen3.8-27B), finds that model's vision file (`mmproj`)
+   on Hugging Face, checks it fits, and downloads it next to your model. It's usually under 1 GB.
+5. Press **Start model**. When it says **Ready**, go to **Chat** and ask for something.
 
 Already using **LM Studio** or **Ollama**? Skip the Model server page: in **Settings > Connection**
 pick it from the list, and load the model there with tool calling on. (Ollama's model files
@@ -144,7 +148,7 @@ maker's recommended values** for sampling.
 | The server stops right after starting | Read the log under the Start button. "out of memory": pick a shorter context or q4_0 KV cache. "CUDA driver version is insufficient": update the NVIDIA driver |
 | It writes tool calls as plain text, or ignores tools | Use a model made for tool calling (the list above). The app already starts llama.cpp with `--jinja`, which most models need |
 | Clicks land in the wrong place | Settings > Screen > Click coordinates: try the other option. Turning on the grid also helps smaller models aim |
-| It can't see screenshots | The model needs its mmproj file next to it, and "Let it see images" on |
+| It can't see screenshots | Press **Find vision file online** on the Model server page, keep "Let it see images" on, and leave the MTP speed-up off |
 
 ## For the curious
 

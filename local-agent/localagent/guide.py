@@ -37,7 +37,8 @@ about 12x slower. Everything below is about putting the right parts of a model i
 | **gpt-oss-20b** (MXFP4) | MoE, 3.6B active | No | ~13 GB, fully on the GPU. Very fast | Fast text and coding work with strong tool calling |
 
 Get them from Hugging Face (search the name plus "GGUF"; bartowski and unsloth upload good ones).
-For screen vision, also download the matching **mmproj** file into the same folder.
+For screen vision you also need the matching **mmproj** file: the Model server page can find and
+download it for you (**Find vision file online**), also for fine-tunes of these models.
 
 How sure is this list? Qwen3.6/3.8 were checked against model pages in October 2026; the speeds
 are estimates from memory bandwidth, not measurements on your PC. New models come out monthly, so
