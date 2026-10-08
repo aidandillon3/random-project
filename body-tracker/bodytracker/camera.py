@@ -22,26 +22,82 @@ BACKENDS = {
 }
 
 
-def _open(index: int, backend: str):
+def _attempts(backend: str) -> list[tuple[str, bool]]:
+    """(backend, ask for MJPG/size/fps) pairs to try, best first.
+
+    Phone-as-webcam apps (Iriun, DroidCam) and some cheap webcams are virtual or limited
+    cameras: asking them for MJPG or a size they don't offer gives black frames or none at
+    all. So if the fast settings don't give a picture, try the camera's own default mode,
+    then the other Windows camera system.
+    """
+    windows = platform.system() == "Windows"
     if backend == "auto":
         # DirectShow lets us ask for MJPG at high frame rates on Windows and has
         # noticeably less buffering than Media Foundation on most webcams.
-        backend = "dshow" if platform.system() == "Windows" else "any"
-    return cv2.VideoCapture(index, BACKENDS.get(backend, cv2.CAP_ANY))
+        if windows:
+            return [("dshow", True), ("dshow", False), ("msmf", False)]
+        backend = "any"
+    return [(backend, True), (backend, False)]
+
+
+def _blank(frame) -> bool:
+    """Black or a single colour: what a camera gives when it opened but isn't really streaming."""
+    return frame is None or frame.size == 0 or float(frame.std()) < 2.0
+
+
+def _probe(cap, seconds: float) -> str:
+    """'good' once a real picture arrives, 'blank' if only black frames came, else 'none'."""
+    got = "none"
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            if not _blank(frame):
+                return "good"
+            got = "blank"
+        else:
+            time.sleep(0.02)
+    return got
 
 
 class Camera:
     def __init__(self, index: int = 0, width: int = 640, height: int = 480, fps: int = 60,
-                 backend: str = "auto"):
-        self.cap = _open(index, backend)
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open camera {index}. Try another camera_index in config.json.")
-        # MJPG first: uncompressed YUY2 often caps at 30fps or less over USB.
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        self.cap.set(cv2.CAP_PROP_FPS, fps)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                 backend: str = "auto", probe_seconds: float = 2.5):
+        self.note = ""
+        fallback = None   # a camera that opened but only showed black, used if nothing better works
+        self.cap = None
+        for i, (name, tuned) in enumerate(_attempts(backend)):
+            cap = cv2.VideoCapture(index, BACKENDS.get(name, cv2.CAP_ANY))
+            if not cap.isOpened():
+                cap.release()
+                continue
+            if tuned:
+                # MJPG first: uncompressed YUY2 often caps at 30fps or less over USB.
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                cap.set(cv2.CAP_PROP_FPS, fps)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            result = _probe(cap, probe_seconds)
+            if result == "good":
+                self.cap = cap
+                if i:
+                    self.note = f"fell back to the camera's own mode, {name}"
+                break
+            if result == "blank" and fallback is None:
+                fallback = cap
+            else:
+                cap.release()
+        if self.cap is None and fallback is not None:
+            self.cap, self.note = fallback, "only black frames so far: is the lens covered or the phone app closed?"
+            fallback = None
+        if fallback is not None:
+            fallback.release()
+        if self.cap is None:
+            raise RuntimeError(
+                f"Could not get a picture from camera {index}. Close other programs using it (Discord, "
+                "OBS, browser tabs) or pick another camera. For a phone camera (Iriun, DroidCam), open "
+                "the app on both the phone and the PC first.")
 
         self._cond = threading.Condition()
         self._frame = None
@@ -56,7 +112,7 @@ class Camera:
         w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = self.cap.get(cv2.CAP_PROP_FPS)
-        return f"{w}x{h} @ {fps:.0f} fps requested"
+        return f"{w}x{h} @ {fps:.0f} fps requested" + (f" ({self.note})" if self.note else "")
 
     def _loop(self) -> None:
         last = time.perf_counter()
