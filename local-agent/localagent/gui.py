@@ -580,7 +580,7 @@ class ChatPage(QWidget):
     def _ensure_agent(self):
         s = self.s
         sig = (s.base_url, s.model, s.api_key, s.workspace, s.tool_mode, s.enable_shell, s.enable_control,
-               s.enable_web, s.enable_subagents, s.coord_mode, s.shell)
+               s.enable_web, s.enable_subagents, s.enable_github, s.github_token, s.coord_mode, s.shell)
         if self.agent is None or sig != self._agent_sig:
             old = self.agent.messages if self.agent else []
             todos = self.agent.todos if self.agent else []
@@ -588,6 +588,9 @@ class ChatPage(QWidget):
             self.agent.messages = old
             self.agent.todos = todos
             self._agent_sig = sig
+        pol = self.agent.policy   # safety switches apply straight away, even mid-chat
+        pol.mode, pol.always_ask_dangerous, pol.always_ask_publish = (
+            s.approval_mode, s.always_ask_dangerous, s.always_ask_publish)
 
     def send(self):
         text = self.input.toPlainText().strip()
@@ -1234,6 +1237,35 @@ class SettingsPage(QWidget):
         f.addRow(self.dangerous)
         lay.addWidget(g)
 
+        g = QGroupBox("GitHub")
+        f = QFormLayout(g)
+        f.addRow(muted("Lets it clone your repositories, make branches and commits, push, and open pull "
+                       "requests and issues. Sign in with a token below, or run `gh auth login` once if you "
+                       "have the GitHub CLI. The token stays in this app's data folder on your PC."))
+        self.github = QCheckBox("Use git and GitHub")
+        self.github.setChecked(s.enable_github)
+        self.github.toggled.connect(self._save)
+        f.addRow(self.github)
+        row = QHBoxLayout()
+        self.gh_token = QLineEdit(s.github_token)
+        self.gh_token.setEchoMode(QLineEdit.Password)
+        self.gh_token.setPlaceholderText("Personal access token (optional if you use the GitHub CLI)")
+        self.gh_token.editingFinished.connect(self._save)
+        row.addWidget(self.gh_token, 1)
+        b = QPushButton("Check sign-in")
+        b.clicked.connect(self._check_github)
+        row.addWidget(b)
+        b = QPushButton("Make a token...")
+        b.clicked.connect(lambda: __import__("webbrowser").open(
+            "https://github.com/settings/personal-access-tokens/new"))
+        row.addWidget(b)
+        f.addRow("Token:", row)
+        self.publish = QCheckBox("Always ask before pushing code or posting to GitHub, even in full auto")
+        self.publish.setChecked(s.always_ask_publish)
+        self.publish.toggled.connect(self._save)
+        f.addRow(self.publish)
+        lay.addWidget(g)
+
         g = QGroupBox("Screen")
         f = QFormLayout(g)
         self.max_side = self._spin(s.screenshot_max_side, 640, 3840)
@@ -1324,6 +1356,8 @@ class SettingsPage(QWidget):
         s.enable_shell, s.enable_control = self.shell.isChecked(), self.control.isChecked()
         s.enable_web, s.enable_subagents = self.web.isChecked(), self.sub.isChecked()
         s.always_ask_dangerous = self.dangerous.isChecked()
+        s.enable_github, s.always_ask_publish = self.github.isChecked(), self.publish.isChecked()
+        s.github_token = self.gh_token.text().strip()
         s.screenshot_max_side, s.monitor = self.max_side.value(), self.monitor.value()
         s.coord_mode = self.coords.currentData()
         s.screenshot_after_action, s.grid_overlay = self.after.isChecked(), self.grid.isChecked()
@@ -1332,6 +1366,25 @@ class SettingsPage(QWidget):
         s.max_steps, s.max_tool_output = self.max_steps.value(), self.max_out.value()
         s.save()
         self._sync_preset()
+
+    def _check_github(self):
+        self._save()
+        from .tools import ToolContext, ToolError
+        from .tools import github as gh
+
+        gh._cache.clear()
+        ctx = ToolContext(settings=self.s, workspace=self.s.workspace_path())
+        if not gh.token(ctx):
+            QMessageBox.information(self, "GitHub", "Not signed in: paste a token, or run `gh auth login` in a "
+                                    "terminal and press Check again.")
+            return
+        try:
+            me = gh.api(ctx, "GET", "/user")
+        except ToolError as e:
+            QMessageBox.warning(self, "GitHub", str(e))
+            return
+        git = "found" if __import__("shutil").which("git") else "NOT installed (get it from git-scm.com)"
+        QMessageBox.information(self, "GitHub", f"Signed in as {me.get('login')}. Git is {git}.")
 
     def _test(self):
         self._save()

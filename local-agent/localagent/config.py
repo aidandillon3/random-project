@@ -52,6 +52,7 @@ class Settings:
     # safety
     approval_mode: str = "ask"
     always_ask_dangerous: bool = True
+    always_ask_publish: bool = True    # git push / pull requests ask even in full auto
     workspace: str = ""
 
     # tool groups
@@ -59,6 +60,8 @@ class Settings:
     enable_control: bool = True
     enable_web: bool = True
     enable_subagents: bool = True
+    enable_github: bool = True
+    github_token: str = ""             # only kept in data/settings.json on this PC; empty = use the gh CLI login
 
     # screen
     screenshot_max_side: int = 1280

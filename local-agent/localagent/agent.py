@@ -69,7 +69,8 @@ class Agent:
         self.client = client or LLMClient(settings.base_url, settings.api_key, settings.model)
         self.depth = depth
         self.stop = stop or threading.Event()
-        self.policy = policy or Policy(settings.approval_mode, settings.always_ask_dangerous)
+        self.policy = policy or Policy(settings.approval_mode, settings.always_ask_dangerous,
+                                     settings.always_ask_publish)
         self.workspace = settings.workspace_path()
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.ctx = ToolContext(settings=settings, workspace=self.workspace, stop=self.stop,

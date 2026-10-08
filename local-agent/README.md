@@ -37,6 +37,7 @@ aren't `.gguf` files you can browse to, so for Ollama models use Ollama itself.)
 | Commands | run PowerShell commands, run long ones in the background and check on them, run Python scripts |
 | Screen | screenshot (with the mouse pointer marked), zoom in to read small text, click, double/right click, drag, scroll, type, key shortcuts, list and focus windows, open programs/files/links, read the buttons and menus of the active window and click them by name, clipboard |
 | Web | search (DuckDuckGo, no account), read pages |
+| Git and GitHub | clone, status, diff, log, branch, commit, pull, push; list your repos; list, read and open pull requests (and ask for reviewers); list and open issues; comment |
 | Thinking | a to-do plan shown on the right, long-term memory, ask you a question, wait, hand a big search to a helper agent with its own fresh memory |
 
 Things it does the way Claude does:
@@ -53,6 +54,24 @@ Things it does the way Claude does:
 - **Reads `AGENT.md`**: put standing instructions in a file called `AGENT.md` in the work folder.
 - Paste images into the chat (Ctrl+V), attach files, or press **Add screenshot**.
 
+## GitHub
+
+It can work on your GitHub repositories the way Claude does here: clone one, make a branch,
+change code, commit, push, and open a pull request (optionally asking someone to review).
+
+1. Install **Git for Windows** from [git-scm.com](https://git-scm.com/download/win) if you don't
+   have it.
+2. Sign in, one of two ways:
+   - **Token:** Settings > GitHub > **Make a token...** opens GitHub. Make a fine-grained token,
+     pick the repositories it may use, and give it *Contents: read and write*, *Pull requests: read
+     and write* and *Issues: read and write*. Paste it into the Token box and press **Check sign-in**.
+   - **GitHub CLI:** if you have `gh`, run `gh auth login` once in a terminal. The app uses that login.
+3. Ask, for example: "clone aidandillon3/random-project, fix the typo in the README, and open a
+   pull request".
+
+The token is saved only in `data/settings.json` on your PC (that folder is never committed). It's
+sent only to GitHub, and the git and GitHub tools blank it out of anything they show the model.
+
 ## Safety: what it asks before doing
 
 At the top of the chat, **Permissions**:
@@ -63,6 +82,10 @@ At the top of the chat, **Permissions**:
 | **Ask before risky actions** (default) | Every file change, command, click or keypress |
 | Auto-approve file edits in the work folder | Commands, clicks, and edits outside the work folder |
 | Full auto | Only clearly dangerous commands (formatting, recursive deletes, registry deletes, shutdown...) |
+
+Pushing code and posting to GitHub (pull requests, issues, comments) count as a separate kind of
+action that **asks even in Full auto**, because it goes out under your name. You can turn that off
+in Settings > GitHub. It never force-pushes.
 
 In the approval box you can also pick **Allow all ... for this chat**, or **Deny** and type what
 it should do instead. Deleted files go to the Recycle Bin.
