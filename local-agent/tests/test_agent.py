@@ -355,5 +355,17 @@ class ParsingTest(unittest.TestCase):
         self.assertIsNone(Policy("read_only").needs_approval("run", False))
 
 
+class SettingsTest(unittest.TestCase):
+    def test_old_reply_limit_moves_up_but_a_chosen_one_stays(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "old.json").write_text(json.dumps({"max_tokens": 8192}))
+        self.assertEqual(Settings.load(d / "old.json").max_tokens, 32768)
+        (d / "mine.json").write_text(json.dumps({"max_tokens": 4096}))
+        self.assertEqual(Settings.load(d / "mine.json").max_tokens, 4096)
+        s = Settings(max_tokens=8192)
+        s.save(d / "new.json")     # chosen again after the update: kept
+        self.assertEqual(Settings.load(d / "new.json").max_tokens, 8192)
+
+
 if __name__ == "__main__":
     unittest.main()

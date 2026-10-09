@@ -117,10 +117,6 @@ def build_launch(settings, exe: Path, help_text: str, info: ModelInfo | None = N
     # vision
     mmproj = Path(s.mmproj_path) if s.mmproj_path else find_mmproj(model)
     use_vision = s.use_vision and mmproj is not None and mmproj.exists()
-    if s.speedup == "mtp" and use_vision:
-        use_vision = False
-        notes.append("MTP speed-up and vision were reported not to work together, so vision is off for "
-                     "this launch. Switch the speed-up off to see the screen.")
     if use_vision:
         args += ["--mmproj", str(mmproj)]
     elif has("--no-mmproj"):
@@ -157,7 +153,7 @@ def build_launch(settings, exe: Path, help_text: str, info: ModelInfo | None = N
         if info and not info.has_mtp:
             notes.append("This model file has no MTP layers, so the MTP speed-up was skipped.")
         elif has("draft-mtp"):
-            args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"]
+            args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]   # 2 is the measured sweet spot
         else:
             notes.append("This llama.cpp is too old for MTP. Use 'Download / update llama.cpp'.")
     elif s.speedup == "ngram":

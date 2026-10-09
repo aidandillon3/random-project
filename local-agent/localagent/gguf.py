@@ -226,6 +226,7 @@ class Plan:
     fits_fully: bool
     tokens_per_sec: float
     notes: list[str] = field(default_factory=list)
+    ctx_fit: int = 0          # the longest context that still fits fully on the GPU (0 = none)
 
 
 GPU_BW, RAM_BW = 960e9, 70e9   # RTX 5080 memory bandwidth, typical dual-channel DDR5 (bytes/s)
@@ -241,10 +242,15 @@ def plan(info: ModelInfo, ctx: int, kv_type: str = "q8_0", vram_gb: float = 16.0
     weights = info.file_bytes / GiB
     notes = []
     n_layers = max(1, info.n_layers)
+    fit = context_that_fits(info, kv_type, vram_gb - reserve_gb - compute_gb - extra_gb - weights)
     if weights <= budget:
-        p = Plan(999, 0, kv_gb, weights + kv_gb + compute_gb + extra_gb, 0.0, True, 0.0)
+        p = Plan(999, 0, kv_gb, weights + kv_gb + compute_gb + extra_gb, 0.0, True, 0.0, ctx_fit=fit)
         active = _active_gb(info, 0)
         p.tokens_per_sec = _speed(active, 0.0)
+        if fit >= ctx * 2 and fit >= 16384:
+            p.notes.append(f"There's room for about {fit // 1024}K tokens of context on the GPU with this cache "
+                           f"type (now {ctx // 1024}K). More context leaves the model more room to think "
+                           "before the chat has to be summarized.")
         return p
     if info.is_moe:
         layers = sorted(info.expert_bytes)
@@ -268,11 +274,22 @@ def plan(info: ModelInfo, ctx: int, kv_type: str = "q8_0", vram_gb: float = 16.0
     ngl = int(max(0, (budget - other) // per_layer)) if per_layer else 0
     ngl = min(ngl, n_layers)
     cpu_gb = (n_layers - ngl) * per_layer
-    p = Plan(ngl, 0, kv_gb, weights - cpu_gb + kv_gb + compute_gb + extra_gb, cpu_gb, False, 0.0, notes)
+    p = Plan(ngl, 0, kv_gb, weights - cpu_gb + kv_gb + compute_gb + extra_gb, cpu_gb, False, 0.0, notes, fit)
     p.tokens_per_sec = _speed(weights - cpu_gb, cpu_gb)
+    shorter = f"a context of {fit // 1024}K" if fit >= 8192 else "a shorter context"
     p.notes.append(f"{n_layers - ngl} of {n_layers} layers run on the CPU, which is much slower. A smaller "
-                   "quant (e.g. IQ4_XS or Q3_K_M) or a shorter context would fit it fully on the GPU.")
+                   f"quant (e.g. IQ4_XS or Q3_K_M) or {shorter} would fit it fully on the GPU.")
     return p
+
+
+def context_that_fits(info: ModelInfo, kv_type: str, free_gb: float) -> int:
+    """The longest context (a multiple of 8K, at most what the model was trained on) whose cache fits
+    in free_gb."""
+    per_token = info.kv_bytes_per_token_f16 / 2.0 * KV_BYTES.get(kv_type, 2.0)
+    if free_gb <= 0 or per_token <= 0:
+        return 0
+    n = int(free_gb * GiB / per_token) // 8192 * 8192
+    return min(n, info.ctx_train) if info.ctx_train else n
 
 
 def _active_gb(info: ModelInfo, n_cpu_moe: int) -> float:

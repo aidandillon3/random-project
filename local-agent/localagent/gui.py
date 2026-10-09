@@ -818,7 +818,7 @@ class ChatPage(QWidget):
 
 # ====================================================================== model server page
 CTX_CHOICES = [8192, 16384, 32768, 65536, 131072, 262144]
-SPEEDUPS = [("off", "Off"), ("mtp", "MTP: built-in draft layers (~2x, no vision)"),
+SPEEDUPS = [("off", "Off"), ("mtp", "MTP: built-in draft layers (about 1.3-2x faster)"),
             ("ngram", "N-gram: reuse repeated text (great for code edits)"),
             ("draft", "Draft model: a small model guesses ahead")]
 
@@ -1224,13 +1224,9 @@ class ServerPage(QWidget):
             self.vision_btn.setEnabled(True)
             self.s.mmproj_path = str(state["path"])
             self.vision.setChecked(True)
-            note = ""
-            if self.speed.currentData() == "mtp":
-                self.speed.setCurrentIndex(self.speed.findData("off"))
-                note = " The MTP speed-up was switched off, because it doesn't work together with vision."
             self.s.save()
             self._model_changed()
-            self.vision_status.setText(f"Vision ready: {Path(state['path']).name}.{note}")
+            self.vision_status.setText(f"Vision ready: {Path(state['path']).name}.")
             if self.proc.running:
                 self.vision_status.setText(self.vision_status.text() + " Restart the model to use it.")
 

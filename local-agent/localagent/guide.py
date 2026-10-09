@@ -41,7 +41,7 @@ about 12x slower. Everything below is about putting the right parts of a model i
 |---|---|---|---|---|
 | **Qwen3.6-35B-A3B** (Q4_K_M) | MoE, 3B active | Yes | ~21 GB: attention on GPU, some experts in RAM. Fast. | **Best all-rounder for this app.** Quick tool loops and screen work |
 | **Qwen3.8-27B** (IQ4_XS or Q3_K_M) | Dense | Check the model page | Q4_K_M (~18 GB) spills to RAM and slows down; IQ4_XS/Q3 fit | The smartest model that runs locally; slower |
-| **Qwen3.6-27B** (IQ4_XS, MTP version) | Dense | Yes | ~14 GB, fits on the GPU | Hard coding and reasoning; turn on MTP for ~2x speed when you don't need vision |
+| **Qwen3.6-27B** (IQ4_XS, MTP version) | Dense | Yes | ~14 GB, fits on the GPU | Hard coding and reasoning; turn on MTP for about 1.3-2x faster writing |
 | **gpt-oss-20b** (MXFP4) | MoE, 3.6B active | No | ~13 GB, fully on the GPU. Very fast | Fast text and coding work with strong tool calling |
 
 Get them from Hugging Face (search the name plus "GGUF"; bartowski and unsloth upload good ones).
@@ -60,7 +60,7 @@ any model that supports tool calling will work here.
 | **KV cache quantization** (`-ctk/-ctv q8_0`) | Halves the memory the context uses, almost no quality loss | On (q8_0). q4_0 doubles context again with some loss |
 | **MoE expert offload** (`--n-cpu-moe`, `--fit`) | Keeps the small, always-used parts on the GPU and moves rarely-used experts to RAM. A 35B MoE then runs nearly as fast as if it fit | Automatic |
 | **Auto-fit** (`--fit on`) | llama.cpp measures your free VRAM and places layers itself | Automatic placement uses it |
-| **MTP speculative decoding** (`--spec-type draft-mtp`) | Models with built-in "multi-token prediction" layers guess several tokens and check them at once: about 2x faster text | Speed-up option. Turns vision off |
+| **MTP speculative decoding** (`--spec-type draft-mtp`) | Models with built-in "multi-token prediction" layers guess several tokens and check them at once: about 1.3-2x faster text | Speed-up option. Works with vision |
 | **Draft-model speculation** (`-md`) | A tiny model of the same family guesses tokens for the big one | Speed-up option |
 | **N-gram speculation** (`--spec-type ngram-mod`) | Reuses text already in the conversation; great when editing code, which repeats a lot | Speed-up option, no extra memory |
 | **Prompt caching** (`--cache-reuse`, one slot `-np 1`) | The server keeps the conversation it already read, so each new step only reads the new part. The app only rewrites old messages occasionally so the cache stays valid | Always on |
