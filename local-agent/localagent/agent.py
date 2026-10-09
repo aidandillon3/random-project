@@ -188,7 +188,10 @@ class Agent:
                 self.ui.notice("Stopped.")
                 break
             if not calls:
-                if turn.finish_reason == "length":
+                if turn.finish_reason == "length" and self.estimate_total() > self.context_limit() * 0.9:
+                    self.ui.notice("The reply filled the whole context and was cut off. Pick a longer "
+                                   "'Context length' on the Model server page, or say 'continue'.")
+                elif turn.finish_reason == "length":
                     self.ui.notice("The reply hit the max-tokens limit and was cut off. Raise "
                                    "'Max reply tokens' in Settings, or say 'continue'.")
                 final = content_text

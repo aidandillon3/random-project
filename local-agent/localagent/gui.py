@@ -605,7 +605,7 @@ class ChatPage(QWidget):
     def _ensure_agent(self):
         s = self.s
         sig = (s.base_url, s.model, s.api_key, s.workspace, s.tool_mode, s.enable_shell, s.enable_control,
-               s.enable_web, s.enable_subagents, s.enable_github, s.enable_code, s.github_token, s.coord_mode,
+               s.enable_web, s.enable_subagents, s.enable_github, s.enable_code, s.enable_unity, s.github_token, s.coord_mode,
                s.shell)
         if self.agent is None or sig != self._agent_sig:
             prev = self.agent
@@ -818,7 +818,7 @@ class ChatPage(QWidget):
 
 # ====================================================================== model server page
 CTX_CHOICES = [8192, 16384, 32768, 65536, 131072, 262144]
-SPEEDUPS = [("off", "Off"), ("mtp", "MTP: built-in draft layers (~2x, no vision)"),
+SPEEDUPS = [("off", "Off"), ("mtp", "MTP: built-in draft layers (about 1.3-2x faster)"),
             ("ngram", "N-gram: reuse repeated text (great for code edits)"),
             ("draft", "Draft model: a small model guesses ahead")]
 
@@ -1224,13 +1224,9 @@ class ServerPage(QWidget):
             self.vision_btn.setEnabled(True)
             self.s.mmproj_path = str(state["path"])
             self.vision.setChecked(True)
-            note = ""
-            if self.speed.currentData() == "mtp":
-                self.speed.setCurrentIndex(self.speed.findData("off"))
-                note = " The MTP speed-up was switched off, because it doesn't work together with vision."
             self.s.save()
             self._model_changed()
-            self.vision_status.setText(f"Vision ready: {Path(state['path']).name}.{note}")
+            self.vision_status.setText(f"Vision ready: {Path(state['path']).name}.")
             if self.proc.running:
                 self.vision_status.setText(self.vision_status.text() + " Restart the model to use it.")
 
@@ -1354,7 +1350,9 @@ class SettingsPage(QWidget):
         self.sub.setChecked(s.enable_subagents)
         self.code = QCheckBox("Coding mode: work in a private git copy, run tests until they pass, map the code")
         self.code.setChecked(s.enable_code)
-        for w in (self.shell, self.control, self.web, self.sub, self.code):
+        self.unity = QCheckBox("Unity: work in the open Unity editor (scenes, objects, scripts, play mode)")
+        self.unity.setChecked(s.enable_unity)
+        for w in (self.shell, self.control, self.web, self.sub, self.code, self.unity):
             w.toggled.connect(self._save)
             f.addRow(w)
         self.dangerous = QCheckBox("Always ask before dangerous commands (format, delete everything, registry...)")
@@ -1488,6 +1486,7 @@ class SettingsPage(QWidget):
         s.enable_shell, s.enable_control = self.shell.isChecked(), self.control.isChecked()
         s.enable_web, s.enable_subagents = self.web.isChecked(), self.sub.isChecked()
         s.enable_code = self.code.isChecked()
+        s.enable_unity = self.unity.isChecked()
         s.always_ask_dangerous = self.dangerous.isChecked()
         s.enable_github, s.always_ask_publish = self.github.isChecked(), self.publish.isChecked()
         s.github_token = self.gh_token.text().strip()

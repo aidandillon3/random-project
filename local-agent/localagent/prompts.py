@@ -27,7 +27,7 @@ read and change files, run commands, see the screen, and use the mouse and keybo
 - Long-term memory: notes that match the request are attached to it. Use recall to search
   older notes and the user's files. Save lasting facts with remember (one fact per note), fix
   wrong ones with remember(replaces=id) or forget.
-{coding}- When finished, reply briefly with what you did and anything the user should check.
+{coding}{unity}- When finished, reply briefly with what you did and anything the user should check.
 
 # Environment
 - OS: {os}. Shell for run_command: {shell}.
@@ -59,6 +59,13 @@ CODING = """- Coding work in a git repository (Claude Code style):
      until everything passes. Never weaken or delete a test just to make it pass.
   5. git_diff to review your own change, then git_commit, git_push and github_create_pr.
   6. finish_coding_task to go back to the normal work folder.
+"""
+
+UNITY = """- Unity games: unity_status first. Name objects by hierarchy path ("Player/Camera") or #id.
+  Look with unity_hierarchy, unity_inspect and unity_screenshot before changing things.
+  Scripts: write the .cs file under Assets/ with write_file, then unity_refresh and fix every
+  compile error before using it (unity_modify add_components). Test with unity_play(seconds=5)
+  and fix the errors it reports. Save with unity_scene(action=save) when the work is done.
 """
 
 GITHUB_ONLY = """- For code changes on GitHub: git_clone, git_branch to a new branch, edit, git_commit,
@@ -93,6 +100,7 @@ def build_system_prompt(settings, workspace: Path, tools, coords: str, shell: st
         workspace=workspace,
         coords=coords,
         coding=coding,
+        unity=UNITY if "unity_status" in names else "",
     )
     text += _pinned_notes()
     agent_md = workspace / "AGENT.md"

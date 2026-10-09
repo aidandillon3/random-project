@@ -115,7 +115,7 @@ class GuiTest(unittest.TestCase):
         page.speed.setCurrentIndex(page.speed.findData("mtp"))
         self.assertIn("draft-mtp", page.cmd.toPlainText())
 
-        # "Find vision file online": downloads next to the model, turns vision on and MTP off
+        # "Find vision file online": downloads next to the model and turns vision on (MTP stays on)
         from localagent import gguf, vision
         from tests.test_vision import FakeHF
 
@@ -131,7 +131,7 @@ class GuiTest(unittest.TestCase):
         finally:
             vision.find, self.gui.QMessageBox.question = orig_find, orig_q
         self.assertTrue(page.vision.isChecked())
-        self.assertEqual(page.speed.currentData(), "off")
+        self.assertEqual(page.speed.currentData(), "mtp")
         # the test model is 2048 wide, so the 2048 projector is the one that fits
         self.assertEqual(Path(s.mmproj_path).parent, d)
         self.assertEqual(gguf.read_meta_bytes(Path(s.mmproj_path).read_bytes())["clip.vision.projection_dim"], 2048)

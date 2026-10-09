@@ -128,6 +128,20 @@ class GGUFTest(unittest.TestCase):
         self.assertTrue(pl.fits_fully)
         self.assertEqual(pl.gpu_layers, 999)
 
+    def test_context_that_fits(self):
+        p = self.dir / "Swift-1.5-Qwen3.8-27B-IQ3_XXS-mtp.gguf"
+        dense_model(p, layer_gb=(11.3 - 0.8) / 64, layers=64)   # about the size of Aidan's model
+        info = gguf.model_info(p)
+        pl = gguf.plan(info, 16384, "q8_0", 15.9, extra_gb=0.63)   # with the vision file
+        self.assertTrue(pl.fits_fully)
+        self.assertTrue(48 * 1024 <= pl.ctx_fit <= 64 * 1024, pl.ctx_fit)
+        self.assertTrue(any("room for about" in n for n in pl.notes))
+        # no nagging when the context is already close to the most that fits
+        self.assertFalse(any("room for" in n for n in gguf.plan(info, 32768, "q8_0", 15.9, 0.63).notes))
+        # q4_0 cache fits about twice as much; never more than the model was trained on
+        self.assertGreater(gguf.plan(info, 16384, "q4_0", 15.9, 0.63).ctx_fit, pl.ctx_fit * 1.8)
+        self.assertEqual(gguf.plan(info, 16384, "q8_0", 64.0).ctx_fit, 131072)
+
     def test_not_gguf(self):
         p = self.dir / "x.gguf"
         p.write_bytes(b"nope" * 10)
@@ -171,12 +185,12 @@ class LaunchTest(unittest.TestCase):
         self.assertIn("--n-cpu-moe 3", a)
         self.assertIn("--fit off", a)
 
-    def test_mtp_turns_vision_off(self):
+    def test_mtp_keeps_vision(self):
         lp = build_launch(self.settings(speedup="mtp"), self.exe, NEW_HELP)
         a = " ".join(lp.args)
-        self.assertIn("--spec-type draft-mtp", a)
-        self.assertNotIn("--mmproj ", a + " ")
-        self.assertTrue(any("vision" in n for n in lp.notes))
+        self.assertIn("--spec-type draft-mtp --spec-draft-n-max 2", a)
+        self.assertIn("--mmproj ", a)
+        self.assertIn("-np 1", a)
 
     def test_draft_model(self):
         draft = self.dir / "draft.gguf"

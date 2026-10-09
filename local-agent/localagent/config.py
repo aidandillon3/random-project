@@ -38,7 +38,7 @@ class Settings:
     top_p: float = 0.95
     top_k: int = 20
     min_p: float = 0.0
-    max_tokens: int = 8192
+    max_tokens: int = 32768            # thinking counts too, and Qwen3.8 at full effort thinks long
     auto_sampling: bool = True         # use the model maker's values, switched with thinking on/off
     thinking: str = "auto"             # auto | off | low | medium | high ("on" = high, from older versions)
     send_back_reasoning: bool = True
@@ -63,6 +63,8 @@ class Settings:
     enable_subagents: bool = True
     enable_github: bool = True
     enable_code: bool = True           # coding mode: own git copy, test loop, code map
+    enable_unity: bool = True          # work in the open Unity editor (needs the bridge script in the project)
+    unity_project: str = ""            # which Unity project, when several are open
     github_token: str = ""             # only kept in data/settings.json on this PC; empty = use the gh CLI login
 
     # long-term memory
@@ -96,6 +98,7 @@ class Settings:
     use_vision: bool = True
 
     extra: dict = field(default_factory=dict)
+    settings_version: int = 2          # bumped when an old saved default needs moving on load
 
     # ---------------------------------------------------------------
     def workspace_path(self) -> Path:
@@ -114,6 +117,8 @@ class Settings:
             for k, v in raw.items():
                 if k in names:
                     setattr(s, k, v)
+            if raw.get("settings_version", 1) < 2 and raw.get("max_tokens") == 8192:
+                s.max_tokens = 32768      # the old default cut long thinking short
         except (OSError, ValueError):
             pass
         return s

@@ -76,6 +76,7 @@ class ToolContext:
     ui_cache: list = field(default_factory=list)  # last ui_elements result
     processes: dict = field(default_factory=dict)
     coding: dict = field(default_factory=dict)   # the active coding task (see tools/code.py)
+    unity: dict = field(default_factory=dict)    # the Unity project in use (see tools/unity.py)
 
     def resolve(self, path: str) -> Path:
         p = Path(str(path).strip().strip('"')).expanduser()

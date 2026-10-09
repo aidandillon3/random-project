@@ -95,6 +95,36 @@ Everything is in `data/memory.db` on your PC. The **Memory** page lets you read,
 edit, pin and delete notes, and pick which folders are indexed. Your old `memory.md` notes
 are moved in automatically.
 
+## Unity
+
+It can work inside the **Unity Editor** while you have your project open: see the scene, place
+and change objects, set component values, make prefabs and materials, write scripts and fix
+their compile errors, play the game for a few seconds to test, and read the console.
+
+1. Open your project in Unity.
+2. Ask, for example: "set up Unity for my project in D:/Games/MyGame". It adds one small editor
+   script (`Assets/Editor/LocalAgent/`) to the project. Click into the Unity window once so
+   Unity loads it. (Or copy the two files from this app's `unity` folder there yourself.)
+3. Ask for things: "add a red cube that falls when the game starts", "why does the player fall
+   through the floor?", "make an enemy prefab that walks toward the player".
+
+How it works on a script change: it writes the `.cs` file, makes Unity compile it, reads the
+errors, fixes them until it compiles, adds the script to an object, then plays the game for a
+few seconds and checks the console and a picture of the game view.
+
+Good to know:
+- Its scene changes go through Unity's undo, so **Ctrl+Z in Unity** takes them back. It doesn't
+  save the scene unless you ask (or it finishes a task you gave it).
+- Changes made during play mode are lost when play stops, like in Unity itself, so it stops
+  play mode before editing.
+- The editor script only listens on your own PC (127.0.0.1) and needs a random key that Unity
+  writes into the project's `Library` folder. Delete `Assets/Editor/LocalAgent` to remove it.
+- If Unity is minimized and answers slowly, set Unity's *Preferences > General > Interaction
+  Mode* to *No Throttling*.
+- Pictures of the game view come from the cameras, so screen-space overlay UI doesn't show.
+- Turn the Unity tools off in Settings if you don't use Unity; they take a little room in
+  the model's context.
+
 ## GitHub
 
 It can work on your GitHub repositories the way Claude does here: clone one, make a branch,
@@ -144,7 +174,7 @@ tell it to work on the other (Settings > Screen > Which screen).
 |---|---|---|---|---|
 | **Qwen3.6-35B-A3B** (Q4_K_M) | MoE, 3B active | Yes | ~21 GB: attention on the GPU, some experts in RAM. Fast | **Best all-rounder for this app** |
 | **Qwen3.8-27B** (IQ4_XS or Q3_K_M) | Dense | Check the model page | Q4_K_M (~18 GB) spills into RAM and slows down; IQ4_XS/Q3 fit | Smartest model that runs locally, slower |
-| **Qwen3.6-27B** (IQ4_XS, "MTP" upload) | Dense | Yes | ~14 GB, fits | Hard coding/reasoning; MTP speed-up ~2x without vision |
+| **Qwen3.6-27B** (IQ4_XS, "MTP" upload) | Dense | Yes | ~14 GB, fits | Hard coding/reasoning; MTP speed-up about 1.3-2x |
 | **gpt-oss-20b** (MXFP4) | MoE, 3.6B active | No | ~13 GB, fully on the GPU. Very fast | Fast text and coding work |
 
 Search Hugging Face for the name plus "GGUF" (bartowski and unsloth make good ones), and for
@@ -162,7 +192,7 @@ Qwen3.8-27B includes vision wasn't confirmed. Any model with tool calling works 
 | Flash attention | Faster attention, less memory | Always on |
 | KV cache q8_0 | Context uses half the memory, practically no quality loss | Default; q4_0 option |
 | MoE expert offload + auto-fit | Rarely-used experts go to RAM, everything else stays on the GPU, so a 35B MoE runs fast on 16 GB | Automatic (llama.cpp `--fit`, or the app's own plan on older builds) |
-| MTP speculative decoding | Models with built-in prediction layers write ~2x faster | Speed-up option (turns vision off) |
+| MTP speculative decoding | Models with built-in prediction layers write about 1.3-2x faster | Speed-up option (works with vision) |
 | Draft model | A tiny model of the same family guesses ahead | Speed-up option |
 | N-gram speculation | Reuses text already in the chat; fast when editing code | Speed-up option |
 | Prompt caching | The server remembers the conversation so each step only reads what's new; the app avoids rewriting old messages so the cache keeps working | Always on |
@@ -186,13 +216,15 @@ maker's recommended values** for sampling.
 | The server stops right after starting | Read the log under the Start button. "out of memory": pick a shorter context or q4_0 KV cache. "CUDA driver version is insufficient": update the NVIDIA driver |
 | It writes tool calls as plain text, or ignores tools | Use a model made for tool calling (the list above). The app already starts llama.cpp with `--jinja`, which most models need |
 | Clicks land in the wrong place | Settings > Screen > Click coordinates: try the other option. Turning on the grid also helps smaller models aim |
-| It can't see screenshots | Press **Find vision file online** on the Model server page, keep "Let it see images" on, and leave the MTP speed-up off |
+| Unity tools say no editor is running | Open the project in Unity, then ask it to set up Unity for that project. If the scripts have compile errors, choose *Ignore* when Unity offers Safe Mode |
+| It can't see screenshots | Press **Find vision file online** on the Model server page, and keep "Let it see images" on |
 
 ## For the curious
 
 - `localagent/agent.py`: the loop, approvals, context summarizing, memory recall.
 - `localagent/memory.py`: notes and the file index (SQLite full-text search).
 - `localagent/tools/code.py`: coding mode (private copies, test loop, code map).
+- `localagent/tools/unity.py` + `unity/LocalAgentBridge.cs`: the Unity tools and the editor script they talk to.
 - `localagent/tools/`: every tool; adding one is a single decorated function.
 - `localagent/launcher.py` + `gguf.py`: reads the model file header and plans GPU/RAM placement.
 - `tests/`: run `python -m pytest tests` (uses a fake model server; no GPU needed).
