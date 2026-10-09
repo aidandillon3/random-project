@@ -2,22 +2,30 @@
 
 from __future__ import annotations
 
-# Sampling the model makers recommend. Matched by name, first hit wins.
+# Sampling the model makers recommend, for thinking and for non-thinking answers. Matched by
+# name, first hit wins, so specific names come before family names.
+_QWEN38_THINK = dict(temperature=1.0, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=0.0)
+_QWEN38_FAST = dict(temperature=0.7, top_p=0.8, top_k=20, min_p=0.0, presence_penalty=1.5)
 SAMPLING = [
-    ("gpt-oss", dict(temperature=1.0, top_p=1.0, top_k=0, min_p=0.0)),
-    ("qwen", dict(temperature=0.6, top_p=0.95, top_k=20, min_p=0.0)),
-    ("gemma", dict(temperature=1.0, top_p=0.95, top_k=64, min_p=0.0)),
-    ("glm", dict(temperature=0.7, top_p=0.95, top_k=40, min_p=0.0)),
-    ("mistral", dict(temperature=0.15, top_p=1.0, top_k=0, min_p=0.0)),
-    ("devstral", dict(temperature=0.15, top_p=1.0, top_k=0, min_p=0.0)),
+    # Qwen3.8 model page, October 2026
+    ("qwen3.8", _QWEN38_THINK, _QWEN38_FAST),
+    # Qwen3 family (model cards): thinking vs. non-thinking
+    ("qwen", dict(temperature=0.6, top_p=0.95, top_k=20, min_p=0.0),
+             dict(temperature=0.7, top_p=0.8, top_k=20, min_p=0.0)),
+    ("gpt-oss", dict(temperature=1.0, top_p=1.0, top_k=0, min_p=0.0), None),
+    ("gemma", dict(temperature=1.0, top_p=0.95, top_k=64, min_p=0.0), None),
+    ("glm", dict(temperature=0.7, top_p=0.95, top_k=40, min_p=0.0), None),
+    ("mistral", dict(temperature=0.15, top_p=1.0, top_k=0, min_p=0.0), None),
+    ("devstral", dict(temperature=0.15, top_p=1.0, top_k=0, min_p=0.0), None),
 ]
 
 
-def sampling_for(model_name: str) -> dict | None:
+def sampling_for(model_name: str, thinking: bool = True) -> dict | None:
+    """The maker's recommended sampling for this model, in thinking or non-thinking mode."""
     low = (model_name or "").lower()
-    for key, vals in SAMPLING:
+    for key, think, fast in SAMPLING:
         if key in low:
-            return vals
+            return dict(think if thinking or fast is None else fast)
     return None
 
 
@@ -63,8 +71,10 @@ context costs memory and slows every step), and Q2 quants of big models.
 
 ## Making the model smarter
 
-- **Thinking on** (Settings) for hard tasks: slower, but plans better. Off for quick clicks.
-- **Recommended sampling**: Settings has a button that sets the model maker's values.
+- **Thinking** (Settings): High for hard tasks (slower, plans better), Low or Off for quick clicks.
+  Models with their own levels (Qwen3.8: low / medium / xhigh) get the closest one.
+- **Recommended sampling**: on by default. The app uses the model maker's values and switches
+  them when thinking goes on or off (Qwen3.8 wants different ones for each).
 - **Context**: 32K is a good default; 64K for big codebases (uses more memory).
 - **AGENT.md**: put instructions in a file called AGENT.md in your work folder and the AI reads
   them every time (like a briefing).

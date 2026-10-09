@@ -39,7 +39,8 @@ class Settings:
     top_k: int = 20
     min_p: float = 0.0
     max_tokens: int = 8192
-    thinking: str = "auto"             # auto | on | off
+    auto_sampling: bool = True         # use the model maker's values, switched with thinking on/off
+    thinking: str = "auto"             # auto | off | low | medium | high ("on" = high, from older versions)
     send_back_reasoning: bool = True
 
     # context

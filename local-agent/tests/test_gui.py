@@ -62,6 +62,13 @@ class GuiTest(unittest.TestCase):
         w = self.gui.MainWindow(s)
         w.show()
         chat = w.chat
+        # the thinking picker in the chat bar changes the setting straight away
+        chat.think.setCurrentIndex(chat.think.findData("low"))
+        self.assertEqual(s.thinking, "low")
+        w.nav.setCurrentRow(2)
+        w.settings_page.thinking.setCurrentIndex(w.settings_page.thinking.findData("medium"))
+        w.nav.setCurrentRow(0)
+        self.assertEqual(chat.think.currentData(), "medium")
         chat.input.setPlainText("write hello.txt")
         chat.send()
         self.assertTrue(self.wait_until(lambda: not chat.busy() and chat.send_btn.isEnabled()))

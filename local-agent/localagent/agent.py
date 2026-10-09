@@ -11,6 +11,7 @@ from collections import deque
 from pathlib import Path
 
 from . import prompts
+from .guide import sampling_for
 from .llm import LLMClient, ServerError, ToolCall, ToolsUnsupported, Turn, extract_text_tool_calls
 from .permissions import ApprovalRequest, Decision, Policy, is_dangerous, risk_text
 from .tools import SAFE, ToolContext, ToolError, ToolResult, enabled_tools
@@ -20,6 +21,29 @@ from .tools.shell import shell_kind
 
 IMAGE_TOKENS = 1200          # rough cost of one screenshot, for estimates only
 CHARS_PER_TOKEN = 3.5
+
+
+EFFORTS = ["low", "medium", "high", "xhigh"]
+
+
+def effort_levels(template: str) -> list[str]:
+    """Thinking levels a chat template understands, e.g. Qwen3.8: low, medium, xhigh;
+    gpt-oss: low, medium, high. Older models with only on/off have none."""
+    if "reasoning_effort" not in template:
+        return []
+    return [e for e in EFFORTS if re.search(rf"['\"]{e}['\"]", template)]
+
+
+def pick_effort(want: str, levels: list[str]) -> str | None:
+    """The model's own level closest to the one picked in Settings; "high" means its highest."""
+    if not levels:
+        return None
+    if want in ("high", "xhigh"):
+        return levels[-1]
+    if want in levels:
+        return want
+    i = EFFORTS.index(want)
+    return min(levels, key=lambda lv: (abs(EFFORTS.index(lv) - i), EFFORTS.index(lv)))
 
 
 class AgentUI:
@@ -86,6 +110,7 @@ class Agent:
         self._known = (0, 0)          # (message count, tokens) from the server's last usage report
         self._recent: deque = deque(maxlen=8)
         self.steps_used = 0
+        self._efforts: list[str] | None = None
 
     # ------------------------------------------------------------------ setup
     def system_prompt(self) -> str:
@@ -243,10 +268,26 @@ class Agent:
             p["top_k"] = s.top_k
         if s.min_p:
             p["min_p"] = s.min_p
-        if s.thinking in ("on", "off"):
-            p["chat_template_kwargs"] = {"enable_thinking": s.thinking == "on"}
-            p["reasoning_effort"] = "high" if s.thinking == "on" else "low"
+        if s.auto_sampling:
+            rec = sampling_for(self.client.resolve_model(), thinking=s.thinking != "off")
+            if rec:
+                p.update(rec)
+        want = "high" if s.thinking == "on" else s.thinking
+        if want == "off":
+            p["chat_template_kwargs"] = {"enable_thinking": False}
+            if "low" in self.effort_levels():   # models that can't switch it off (gpt-oss) think least
+                p["reasoning_effort"] = p["chat_template_kwargs"]["reasoning_effort"] = "low"
+        elif want in EFFORTS:
+            p["chat_template_kwargs"] = {"enable_thinking": True}
+            level = pick_effort(want, self.effort_levels())
+            if level:  # sent both ways: llama.cpp passes either one to the template
+                p["reasoning_effort"] = p["chat_template_kwargs"]["reasoning_effort"] = level
         return p
+
+    def effort_levels(self) -> list[str]:
+        if self._efforts is None:
+            self._efforts = effort_levels(self.client.chat_template())
+        return self._efforts
 
     def wire_messages(self) -> list[dict]:
         """The messages as sent to the server: our private keys removed."""

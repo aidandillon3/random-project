@@ -253,6 +253,67 @@ class MemoryTest(Base):
         self.assertEqual(len(self.srv.requests), 4)
 
 
+class ThinkingTest(Base):
+    QWEN38 = "{%- if reasoning_effort == 'xhigh' %}..{%- elif reasoning_effort == 'medium' %}..{%- elif reasoning_effort == 'low' %}"
+    GPT_OSS = "Reasoning: {{ reasoning_effort | default('medium') }} {# low, 'medium' or \"high\" #} 'low' 'high'"
+
+    def test_levels_from_template(self):
+        from localagent.agent import effort_levels, pick_effort
+
+        self.assertEqual(effort_levels(self.QWEN38), ["low", "medium", "xhigh"])
+        self.assertEqual(effort_levels(self.GPT_OSS), ["low", "medium", "high"])
+        self.assertEqual(effort_levels("{% if enable_thinking %}"), [])
+        self.assertEqual(pick_effort("high", ["low", "medium", "xhigh"]), "xhigh")
+        self.assertEqual(pick_effort("medium", ["low", "high"]), "low")
+        self.assertEqual(pick_effort("low", ["medium", "xhigh"]), "medium")
+        self.assertIsNone(pick_effort("low", []))
+
+    def test_params_sent_to_the_server(self):
+        agent, _ = self.make([text("ok")], thinking="high")
+        agent.client._template = self.QWEN38
+        p = agent._params()
+        self.assertEqual(p["reasoning_effort"], "xhigh")
+        self.assertEqual(p["chat_template_kwargs"], {"enable_thinking": True, "reasoning_effort": "xhigh"})
+        agent.settings.thinking = "medium"
+        self.assertEqual(agent._params()["reasoning_effort"], "medium")
+        agent.settings.thinking = "off"
+        self.assertEqual(agent._params()["chat_template_kwargs"]["enable_thinking"], False)
+        agent.settings.thinking = "on"          # older settings files
+        self.assertEqual(agent._params()["reasoning_effort"], "xhigh")
+        agent.settings.thinking = "auto"
+        self.assertNotIn("chat_template_kwargs", agent._params())
+        # a model with only on/off: no level is sent
+        agent2, _ = self.make([text("ok")], thinking="low")
+        agent2.client._template = "{% if enable_thinking %}"
+        p = agent2._params()
+        self.assertNotIn("reasoning_effort", p)
+        self.assertTrue(p["chat_template_kwargs"]["enable_thinking"])
+
+
+class SamplingTest(Base):
+    def test_recommended_values_follow_thinking(self):
+        from localagent.guide import sampling_for
+
+        name = "Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
+        self.assertEqual(sampling_for(name)["temperature"], 1.0)
+        self.assertEqual(sampling_for(name, thinking=False)["presence_penalty"], 1.5)
+        self.assertEqual(sampling_for("Qwen3-8B-Q4_K_M.gguf", thinking=False)["top_p"], 0.8)
+        self.assertEqual(sampling_for("gpt-oss-20b", thinking=False)["temperature"], 1.0)
+        self.assertIsNone(sampling_for("mystery-model"))
+
+        agent, _ = self.make([text("ok")], temperature=0.3, thinking="high")
+        agent.client.model = name
+        agent.client._template = ""
+        p = agent._params()
+        self.assertEqual((p["temperature"], p["top_p"], p["presence_penalty"]), (1.0, 0.95, 0.0))
+        agent.settings.thinking = "off"
+        p = agent._params()
+        self.assertEqual((p["temperature"], p["top_p"], p["presence_penalty"]), (0.7, 0.8, 1.5))
+        agent.settings.auto_sampling = False      # manual values win when switched off
+        self.assertEqual(agent._params()["temperature"], 0.3)
+        self.assertNotIn("presence_penalty", agent._params())
+
+
 class ParsingTest(unittest.TestCase):
     def test_parse_args_forgiving(self):
         self.assertEqual(parse_args('{"a": 1,}'), {"a": 1})
