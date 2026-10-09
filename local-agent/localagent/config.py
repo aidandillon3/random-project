@@ -61,7 +61,14 @@ class Settings:
     enable_web: bool = True
     enable_subagents: bool = True
     enable_github: bool = True
+    enable_code: bool = True           # coding mode: own git copy, test loop, code map
     github_token: str = ""             # only kept in data/settings.json on this PC; empty = use the gh CLI login
+
+    # long-term memory
+    auto_recall: bool = True           # show the model saved notes that match each request
+    auto_memory: bool = True           # after a bigger task, save what's worth remembering
+    index_files: bool = True           # keep a search index of the work folder + index_folders
+    index_folders: list = field(default_factory=list)
 
     # screen
     screenshot_max_side: int = 1280

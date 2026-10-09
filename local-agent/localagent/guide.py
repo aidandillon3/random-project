@@ -68,5 +68,8 @@ context costs memory and slows every step), and Q2 quants of big models.
 - **Context**: 32K is a good default; 64K for big codebases (uses more memory).
 - **AGENT.md**: put instructions in a file called AGENT.md in your work folder and the AI reads
   them every time (like a briefing).
-- **Memory**: the AI saves lasting facts with its remember tool (data/memory.md, you can edit it).
+- **Memory**: the AI saves lasting facts as short notes and is shown only the ones that match
+  your message, so a big memory doesn't slow it down. See and edit them on the Memory page.
+- **Coding**: ask for code changes in a git repo and it works in a private copy on a new branch,
+  running the tests until they pass before it commits.
 """

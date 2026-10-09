@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import threading
 import time
 from collections import deque
@@ -114,16 +115,28 @@ class Agent:
         self._known = (0, 0)
         self._system = None
         self.policy.session_allowed.clear()
+        self.ctx.coding.clear()
+        self.set_workspace(self.settings.workspace_path())
         self.ui.todos([])
 
     # ------------------------------------------------------------------ main loop
+    def set_workspace(self, path: Path):
+        """Switch the work folder mid-chat (coding mode works in its own copy of a repo)."""
+        self.workspace = Path(path)
+        self.ctx.workspace = self.workspace
+
     def run(self, text: str, images: list[bytes] | None = None) -> str:
         self.stop.clear()
+        sent = text + self._recalled(text)
         if images:
-            content = [{"type": "text", "text": text or "(see image)"}] + [png_part(p) for p in images]
+            content = [{"type": "text", "text": sent or "(see image)"}] + [png_part(p) for p in images]
         else:
-            content = text
-        self.messages.append({"role": "user", "content": content})
+            content = sent
+        msg = {"role": "user", "content": content}
+        if sent != text:
+            msg["_shown"] = text      # what the chat window shows: without the attached notes
+        self.messages.append(msg)
+        first_step = len(self.messages)
         final = ""
         for step in range(int(self.settings.max_steps)):
             if self.stop.is_set():
@@ -164,7 +177,64 @@ class Agent:
             self._record_results(results)
         else:
             self.ui.notice(f"Paused after {self.settings.max_steps} steps. Say 'continue' to keep going.")
+        tool_rounds = sum(1 for m in self.messages[first_step:] if m["role"] == "assistant" and
+                          (m.get("tool_calls") or "<tool_call>" in str(m.get("content", ""))))
+        if final and tool_rounds >= 3 and self.depth == 0 and self.settings.auto_memory and not self.stop.is_set():
+            self._save_memories(text, final)
         return final
+
+    # ------------------------------------------------------------------ long-term memory
+    def _recalled(self, text: str) -> str:
+        """Saved notes that match this request, attached to it so the model sees them without
+        having to search. Only a few, and only good matches, to keep the context lean."""
+        if self.depth > 0 or not self.settings.auto_recall or not text.strip():
+            return ""
+        try:
+            from .memory import get_memory
+
+            notes = get_memory().recall_for(text)
+        except Exception:  # noqa: BLE001 - memory problems must never break the chat
+            return ""
+        if not notes:
+            return ""
+        return ("\n\n[From your long-term memory, may be relevant - ignore what isn't]\n"
+                + "\n".join("- " + n.line() for n in notes))
+
+    def _save_memories(self, request: str, final: str):
+        """Ask the model, as one more turn on top of this same conversation (so the server's
+        prompt cache is reused and it costs only a short reply), what is worth remembering."""
+        try:
+            from .memory import get_memory
+
+            mem = get_memory()
+            existing = mem.search_notes(f"{request} {final}", limit=6)
+            ask = prompts.MEMORY_PROMPT.format(existing="\n".join("- " + n.line() for n in existing) or "(none)")
+            tools = None if self.prompt_mode else [t.schema() for t in self.tools.values()]
+            params = dict(self._params(), max_tokens=700, chat_template_kwargs={"enable_thinking": False},
+                          reasoning_effort="low")
+            self.ui.status("Checking what's worth remembering...")
+            turn = self.client.stream(self.wire_messages() + [{"role": "user", "content": ask}], tools, params,
+                                      stop=self.stop)
+            items = _json_list(turn.content)
+        except Exception:  # noqa: BLE001 - a failed memory check is not worth bothering the user
+            return
+        finally:
+            self.ui.status("")
+        saved = []
+        for it in items[:3]:
+            if not isinstance(it, dict) or not str(it.get("note") or "").strip():
+                continue
+            note, title = str(it["note"]).strip()[:500], str(it.get("title") or "").strip()[:80]
+            try:
+                if it.get("replaces"):
+                    n = mem.update(int(it["replaces"]), body=note, title=title or None)
+                else:
+                    n = mem.add(note, title)
+            except (KeyError, ValueError, TypeError):
+                continue
+            saved.append(n.title or n.body[:60])
+        if saved:
+            self.ui.notice("Remembered: " + "; ".join(saved))
 
     def _params(self) -> dict:
         s = self.settings
@@ -312,6 +382,7 @@ class Agent:
                     client=LLMClient(self.client.base_url, self.client.api_key, self.client.model),
                     depth=self.depth + 1, policy=self.policy, stop=self.stop)
         sub.system_extra = prompts.SUBAGENT_NOTE
+        sub.set_workspace(self.workspace)
         sub._ctx_limit = self._ctx_limit
         self.ui.notice(f"Started a helper: {task[:200]}")
         report = sub.run(task)
@@ -408,16 +479,34 @@ class Agent:
     # ------------------------------------------------------------------ saving
     def to_json(self) -> dict:
         return {"messages": self.messages, "todos": self.todos, "model": self.client.model,
-                "saved": time.strftime("%Y-%m-%d %H:%M")}
+                "workspace": str(self.workspace), "coding": self.ctx.coding, "saved": time.strftime("%Y-%m-%d %H:%M")}
 
     def load_json(self, data: dict):
         self.messages = list(data.get("messages") or [])
+        ws = Path(data.get("workspace") or "")
+        if data.get("workspace") and ws.is_dir():
+            self.set_workspace(ws)
+        self.ctx.coding.clear()
+        self.ctx.coding.update(data.get("coding") or {})
         self.set_todos(list(data.get("todos") or []))
         self._known = (0, 0)
 
     def save(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.to_json(), ensure_ascii=False), encoding="utf-8")
+
+
+def _json_list(text: str) -> list:
+    """The first JSON list in a reply, forgiving code fences and chatter around it."""
+    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
+    start, end = text.find("["), text.rfind("]")
+    if start < 0 or end <= start:
+        return []
+    try:
+        data = json.loads(text[start:end + 1])
+    except ValueError:
+        return []
+    return data if isinstance(data, list) else []
 
 
 class _HelperUI(AgentUI):

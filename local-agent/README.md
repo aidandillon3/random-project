@@ -42,7 +42,9 @@ aren't `.gguf` files you can browse to, so for Ollama models use Ollama itself.)
 | Screen | screenshot (with the mouse pointer marked), zoom in to read small text, click, double/right click, drag, scroll, type, key shortcuts, list and focus windows, open programs/files/links, read the buttons and menus of the active window and click them by name, clipboard |
 | Web | search (DuckDuckGo, no account), read pages |
 | Git and GitHub | clone, status, diff, log, branch, commit, pull, push; list your repos; list, read and open pull requests (and ask for reviewers); list and open issues; comment |
-| Thinking | a to-do plan shown on the right, long-term memory, ask you a question, wait, hand a big search to a helper agent with its own fresh memory |
+| Coding | work in a private git copy of a repo, run the tests until they pass, map a project's classes and functions, several exact edits at once, a syntax check after every edit |
+| Memory | save notes, search notes and your indexed files, forget notes, add a folder to the index |
+| Thinking | a to-do plan shown on the right, ask you a question, wait, hand a big search to a helper agent with its own fresh memory |
 
 Things it does the way Claude does:
 
@@ -57,6 +59,41 @@ Things it does the way Claude does:
   without proper tool support get the tools described in the prompt instead.
 - **Reads `AGENT.md`**: put standing instructions in a file called `AGENT.md` in the work folder.
 - Paste images into the chat (Ctrl+V), attach files, or press **Add screenshot**.
+
+## Coding mode
+
+Ask it to change code in a git repository ("fix the crash when the config file is missing in
+my body-tracker repo") and it works the way Claude Code does:
+
+1. It makes a **private copy** of the repo on a new branch (a git worktree, in
+   `.worktrees` inside the work folder). Your own checkout and files aren't touched.
+2. It maps the code (classes and functions per file) to find its way around.
+3. It edits, and every edit gets a quick syntax check so a broken file is noticed at once.
+4. It **runs the tests** (pytest, npm, cargo, go, dotnet, maven or gradle, found
+   automatically), reads the failures, fixes them, and runs them again until they pass. It
+   isn't allowed to delete or weaken tests to get there. If it's stuck after six failed runs
+   in a row, it stops and tells you what fails.
+5. It reviews its own diff, commits, and if you asked, pushes and opens a pull request.
+
+Packages your project needs (node_modules, .venv) aren't copied into the private copy. For
+Python it uses your project's `.venv` automatically; for other languages it installs them in
+the copy when the tests need them. Turn coding mode off in Settings if you don't want it.
+
+## Long-term memory
+
+The AI keeps short notes between chats: your preferences, where your projects are, what fixed
+a problem. To keep it fast and focused it is **not** shown all of them. With each message it
+sees only the few notes that clearly match what you asked (plus any you pin), and it can
+search the rest whenever it needs to. After bigger tasks it asks itself what's worth
+remembering and saves up to three notes, updating old ones instead of piling up duplicates.
+
+It also keeps a **search index of your files** (the work folder, plus any folders you add on
+the Memory page), so it can find "the budget spreadsheet" or "where I handle logins" by what's
+inside them. The index updates itself every 10 minutes and only re-reads changed files.
+
+Everything is in `data/memory.db` on your PC. The **Memory** page lets you read, search,
+edit, pin and delete notes, and pick which folders are indexed. Your old `memory.md` notes
+are moved in automatically.
 
 ## GitHub
 
@@ -152,7 +189,9 @@ maker's recommended values** for sampling.
 
 ## For the curious
 
-- `localagent/agent.py`: the loop, approvals, context summarizing.
+- `localagent/agent.py`: the loop, approvals, context summarizing, memory recall.
+- `localagent/memory.py`: notes and the file index (SQLite full-text search).
+- `localagent/tools/code.py`: coding mode (private copies, test loop, code map).
 - `localagent/tools/`: every tool; adding one is a single decorated function.
 - `localagent/launcher.py` + `gguf.py`: reads the model file header and plans GPU/RAM placement.
 - `tests/`: run `python -m pytest tests` (uses a fake model server; no GPU needed).

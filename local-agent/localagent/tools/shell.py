@@ -53,7 +53,7 @@ def run_command(ctx: ToolContext, a: dict):
     if not cwd.is_dir():
         raise ToolError(f"cwd is not a folder: {cwd}")
     argv = _argv(shell_kind(ctx), a["command"])
-    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", **(a.get("_env") or {}))
     if a.get("background"):
         return _start_background(ctx, argv, cwd, env, a["command"])
     timeout = min(1800, max(1, int(a.get("timeout") or 120)))

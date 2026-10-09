@@ -137,6 +137,37 @@ class GuiTest(unittest.TestCase):
             w.grab().save(out.replace(".png", "_server.png"))
         w.close()
 
+    def test_memory_page(self):
+        from localagent import memory
+        from localagent.config import Settings
+
+        ws = Path(tempfile.mkdtemp())
+        (ws / "plan.md").write_text("the zeppelin launch checklist")
+        s = Settings(base_url="http://127.0.0.1:9/v1", workspace=str(ws))
+        w = self.gui.MainWindow(s)
+        page = w.memory
+        mem = memory.get_memory()
+        mem.add("Aidan's favourite colour is teal", "Colour")
+        w.nav.setCurrentRow(3)
+        self.assertTrue(any("teal" in page.list.item(i).text() for i in range(page.list.count())))
+        page.search.setText("colour")
+        self.assertEqual(page.list.count(), 1)
+        page.list.setCurrentRow(0)
+        page._pin()
+        self.assertTrue(page.list.item(0).text().startswith("📌"))
+        self.assertIn("(work folder)", page.folders.item(0).text())
+        # the background indexer picks up the work folder
+        self.assertTrue(self.wait_until(lambda: mem.search_files("zeppelin"), 15))
+        self.assertTrue(self.wait_until(lambda: "indexed. Last check" in page.index_status.text(), 5),
+                        page.index_status.text())
+        out = os.environ.get("GUI_SHOT")
+        if out:
+            w.resize(1280, 860)
+            self.app.processEvents()
+            w.grab().save(out.replace(".png", "_memory.png"))
+        memory.indexer().stop()
+        w.close()
+
 
 if __name__ == "__main__":
     unittest.main()

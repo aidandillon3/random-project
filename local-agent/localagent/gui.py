@@ -10,9 +10,9 @@ from pathlib import Path
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
-    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -22,6 +22,7 @@ from .config import APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import gpu_info, model_info
 from .guide import GUIDE, sampling_for
 from .llm import LLMClient, ServerError
+from . import memory as memory_mod
 from .permissions import ApprovalRequest, Decision, risk_text
 from .tools import REGISTRY, RISK_LABELS
 
@@ -36,6 +37,9 @@ QMainWindow, QWidget#page {{ background: #16181d; color: #e6e8ee; }}
 QLabel, QCheckBox, QRadioButton {{ color: #e6e8ee; }}
 QLabel[muted="true"] {{ color: #9aa1ad; }}
 QLabel#h1 {{ font-size: 16pt; font-weight: 600; }}
+QListWidget {{ background: #1e2128; border: 1px solid #2c303a; border-radius: 8px; color: #e6e8ee; }}
+QListWidget::item {{ padding: 5px 6px; }}
+QListWidget::item:selected {{ background: #2b3550; color: white; }}
 QListWidget#nav {{ background: #101216; border: none; color: #c9ced8; font-size: 11pt; padding-top: 8px; }}
 QListWidget#nav::item {{ padding: 10px 16px; }}
 QListWidget#nav::item:selected {{ background: #232733; color: white; border-left: 3px solid {ACCENT}; }}
@@ -580,13 +584,17 @@ class ChatPage(QWidget):
     def _ensure_agent(self):
         s = self.s
         sig = (s.base_url, s.model, s.api_key, s.workspace, s.tool_mode, s.enable_shell, s.enable_control,
-               s.enable_web, s.enable_subagents, s.enable_github, s.github_token, s.coord_mode, s.shell)
+               s.enable_web, s.enable_subagents, s.enable_github, s.enable_code, s.github_token, s.coord_mode,
+               s.shell)
         if self.agent is None or sig != self._agent_sig:
-            old = self.agent.messages if self.agent else []
-            todos = self.agent.todos if self.agent else []
+            prev = self.agent
             self.agent = Agent(s, GuiUI(self.bridge, self.stop, s), stop=self.stop)
-            self.agent.messages = old
-            self.agent.todos = todos
+            if prev is not None:
+                self.agent.messages, self.agent.todos = prev.messages, prev.todos
+                if prev.ctx.coding and sig[3] == (self._agent_sig or sig)[3]:
+                    # mid coding task: stay in its private copy
+                    self.agent.ctx.coding.update(prev.ctx.coding)
+                    self.agent.set_workspace(prev.workspace)
             self._agent_sig = sig
         pol = self.agent.policy   # safety switches apply straight away, even mid-chat
         pol.mode, pol.always_ask_dangerous, pol.always_ask_publish = (
@@ -675,6 +683,7 @@ class ChatPage(QWidget):
         for m in self.agent.messages:
             c = m.get("content")
             text = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or [] if p.get("type") == "text")
+            text = m.get("_shown", text)
             if m["role"] == "user" and "_kind" not in m:
                 self._add(UserBubble(text, []))
             elif m["role"] == "assistant" and text.strip():
@@ -1314,7 +1323,9 @@ class SettingsPage(QWidget):
         self.web.setChecked(s.enable_web)
         self.sub = QCheckBox("Start helper agents for big searches")
         self.sub.setChecked(s.enable_subagents)
-        for w in (self.shell, self.control, self.web, self.sub):
+        self.code = QCheckBox("Coding mode: work in a private git copy, run tests until they pass, map the code")
+        self.code.setChecked(s.enable_code)
+        for w in (self.shell, self.control, self.web, self.sub, self.code):
             w.toggled.connect(self._save)
             f.addRow(w)
         self.dangerous = QCheckBox("Always ask before dangerous commands (format, delete everything, registry...)")
@@ -1372,7 +1383,7 @@ class SettingsPage(QWidget):
             f.addRow(w)
         lay.addWidget(g)
 
-        g = QGroupBox("Memory and limits")
+        g = QGroupBox("Limits")
         f = QFormLayout(g)
         self.ctx_limit = self._spin(s.context_limit, 0, 1_048_576)
         self.ctx_limit.setSpecialValueText("Ask the server")
@@ -1383,9 +1394,6 @@ class SettingsPage(QWidget):
         f.addRow("Steps before it checks in:", self.max_steps)
         self.max_out = self._spin(s.max_tool_output, 2000, 200000)
         f.addRow("Longest tool result (characters):", self.max_out)
-        b = QPushButton("Open memory file")
-        b.clicked.connect(self._open_memory)
-        f.addRow(b)
         lay.addWidget(g)
         lay.addStretch(1)
         area.setWidget(body)
@@ -1441,6 +1449,7 @@ class SettingsPage(QWidget):
         s.top_k, s.min_p, s.max_tokens = self.top_k.value(), self.min_p.value(), self.max_tokens.value()
         s.enable_shell, s.enable_control = self.shell.isChecked(), self.control.isChecked()
         s.enable_web, s.enable_subagents = self.web.isChecked(), self.sub.isChecked()
+        s.enable_code = self.code.isChecked()
         s.always_ask_dangerous = self.dangerous.isChecked()
         s.enable_github, s.always_ask_publish = self.github.isChecked(), self.publish.isChecked()
         s.github_token = self.gh_token.text().strip()
@@ -1502,20 +1511,183 @@ class SettingsPage(QWidget):
         self.top_k.setValue(vals["top_k"])
         self.min_p.setValue(vals["min_p"])
 
-    def _open_memory(self):
-        from .prompts import memory_path
 
-        p = memory_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        if not p.exists():
-            p.write_text("# Things the AI should remember\n", encoding="utf-8")
-        import os
-        import sys
+# ====================================================================== memory
+class NoteDialog(QDialog):
+    def __init__(self, parent=None, title="", body="", pinned=False):
+        super().__init__(parent)
+        self.setWindowTitle("Note")
+        self.resize(520, 300)
+        lay = QFormLayout(self)
+        self.title = QLineEdit(title)
+        self.title.setPlaceholderText("A few words, e.g. Projects folder")
+        lay.addRow("Title:", self.title)
+        self.body = QPlainTextEdit(body)
+        self.body.setPlaceholderText("One fact, short and specific")
+        lay.addRow("Note:", self.body)
+        self.pinned = QCheckBox("Pinned: always show it to the AI (for things needed in nearly every chat)")
+        self.pinned.setChecked(pinned)
+        lay.addRow(self.pinned)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addRow(bb)
 
-        if sys.platform == "win32":
-            os.startfile(str(p))
+
+class MemoryPage(QWidget):
+    """Saved notes and the file index. The AI only sees the notes that match what you ask
+    (plus pinned ones), so a long list here doesn't slow it down."""
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__()
+        self.setObjectName("page")
+        self.win = win
+        s = self.s = win.settings
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 14, 20, 14)
+        h = QLabel("Memory")
+        h.setObjectName("h1")
+        lay.addWidget(h)
+        lay.addWidget(muted("Notes the AI keeps between chats. With each message it's shown only the few notes "
+                            "that match what you asked, plus pinned ones, so it doesn't get bogged down. It can "
+                            "search everything else, including your indexed files, with its recall tool."))
+        self.recall = QCheckBox("Show it matching notes with each message")
+        self.recall.setChecked(s.auto_recall)
+        self.auto = QCheckBox("After bigger tasks, let it save what's worth remembering")
+        self.auto.setChecked(s.auto_memory)
+        for w in (self.recall, self.auto):
+            w.toggled.connect(self._save)
+            lay.addWidget(w)
+
+        row = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search notes...")
+        self.search.textChanged.connect(self.refresh)
+        row.addWidget(self.search, 1)
+        for label, fn in (("New note", self._new), ("Edit", self._edit), ("Pin / unpin", self._pin),
+                          ("Delete", self._delete)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        lay.addLayout(row)
+        self.list = QListWidget()
+        self.list.setWordWrap(True)
+        self.list.itemDoubleClicked.connect(lambda _i: self._edit())
+        lay.addWidget(self.list, 1)
+        self.count = muted("")
+        lay.addWidget(self.count)
+
+        g = QGroupBox("File index")
+        v = QVBoxLayout(g)
+        v.addWidget(muted("Lets it find your files by what's in them (\"the budget spreadsheet\", \"where I "
+                          "handle login\"). The work folder is always included. Updates itself every 10 "
+                          "minutes; only changed files are read again."))
+        self.index_on = QCheckBox("Keep a search index of these folders")
+        self.index_on.setChecked(s.index_files)
+        self.index_on.toggled.connect(self._save)
+        v.addWidget(self.index_on)
+        self.folders = QListWidget()
+        self.folders.setMaximumHeight(120)
+        v.addWidget(self.folders)
+        row = QHBoxLayout()
+        for label, fn in (("Add folder...", self._add_folder), ("Remove", self._remove_folder),
+                          ("Update now", self._reindex)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        v.addLayout(row)
+        self.index_status = muted("")
+        v.addWidget(self.index_status)
+        lay.addWidget(g)
+        self.timer = QTimer(self, interval=1000, timeout=self._tick)
+        self.timer.start()
+        self.refresh()
+
+    def _save(self, *_):
+        s = self.s
+        s.auto_recall, s.auto_memory = self.recall.isChecked(), self.auto.isChecked()
+        was = s.index_files
+        s.index_files = self.index_on.isChecked()
+        s.save()
+        if s.index_files and not was:
+            self._reindex()
+
+    def refresh(self, *_):
+        mem = memory_mod.get_memory()
+        self.list.clear()
+        for n in mem.notes(self.search.text()):
+            it = QListWidgetItem(("📌 " if n.pinned else "") + (f"{n.title}: " if n.title else "") + n.body)
+            it.setData(Qt.UserRole, n.id)
+            it.setToolTip(f"Note #{n.id}, last changed {n.updated}")
+            self.list.addItem(it)
+        self.count.setText(f"{mem.count_notes()} notes saved.")
+        self.folders.clear()
+        for i, r in enumerate(memory_mod.index_roots(self.s)):
+            self.folders.addItem(f"{r}  (work folder)" if i == 0 else str(r))
+
+    def _selected(self):
+        it = self.list.currentItem()
+        return memory_mod.get_memory().get(it.data(Qt.UserRole)) if it else None
+
+    def _new(self):
+        d = NoteDialog(self)
+        if d.exec() and d.body.toPlainText().strip():
+            memory_mod.get_memory().add(d.body.toPlainText(), d.title.text(), d.pinned.isChecked())
+            self.refresh()
+
+    def _edit(self):
+        n = self._selected()
+        if not n:
+            return
+        d = NoteDialog(self, n.title, n.body, n.pinned)
+        if d.exec() and d.body.toPlainText().strip():
+            memory_mod.get_memory().update(n.id, d.body.toPlainText(), d.title.text(), d.pinned.isChecked())
+            self.refresh()
+
+    def _pin(self):
+        n = self._selected()
+        if n:
+            memory_mod.get_memory().update(n.id, pinned=not n.pinned)
+            self.refresh()
+
+    def _delete(self):
+        n = self._selected()
+        if n and QMessageBox.question(self, "Delete note", f"Delete this note?\n\n{n.body[:300]}") == QMessageBox.Yes:
+            memory_mod.get_memory().delete(n.id)
+            self.refresh()
+
+    def _add_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Folder to index", str(Path.home()))
+        if d and d not in self.s.index_folders:
+            self.s.index_folders = list(self.s.index_folders) + [d]
+            self.s.save()
+            self.refresh()
+            self._reindex()
+
+    def _remove_folder(self):
+        row = self.folders.currentRow()
+        if row <= 0:  # the work folder always stays
+            return
+        root = memory_mod.index_roots(self.s)[row]
+        self.s.index_folders = [f for f in self.s.index_folders if Path(f).expanduser().resolve() != root]
+        self.s.save()
+        threading.Thread(target=memory_mod.get_memory().forget_folder, args=(root,), daemon=True).start()
+        self.refresh()
+
+    def _reindex(self):
+        idx = memory_mod.indexer()
+        if idx is None or not idx.is_alive():
+            memory_mod.start_indexer(self.s)
         else:
-            QMessageBox.information(self, "Memory", str(p))
+            idx.refresh_now()
+
+    def _tick(self):
+        idx = memory_mod.indexer()
+        if not self.s.index_files:
+            self.index_status.setText("File index is off.")
+        elif idx is not None:
+            self.index_status.setText(idx.status)
 
 
 # ====================================================================== window
@@ -1538,11 +1710,12 @@ class MainWindow(QMainWindow):
         self.chat = ChatPage(self)
         self.server = ServerPage(self)
         self.settings_page = SettingsPage(self)
+        self.memory = MemoryPage(self)
         guide = QTextBrowser()
         guide.setMarkdown(GUIDE)
         guide.setOpenExternalLinks(True)
         for name, page in [("Chat", self.chat), ("Model server", self.server), ("Settings", self.settings_page),
-                           ("Guide", guide)]:
+                           ("Memory", self.memory), ("Guide", guide)]:
             self.nav.addItem(name)
             self.stack.addWidget(page)
         self.nav.currentRowChanged.connect(self._nav)
@@ -1551,11 +1724,15 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.nav.setCurrentRow(0)
         QTimer.singleShot(300, self.refresh_connection)
+        if self.settings.index_files:
+            memory_mod.start_indexer(self.settings)
 
     def _nav(self, i):
         self.stack.setCurrentIndex(i)
         if i == 2:
             self.settings_page.reload()
+        if i == 3:
+            self.memory.refresh()
 
     def refresh_connection(self):
         s = self.settings
