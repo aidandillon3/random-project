@@ -95,6 +95,36 @@ Everything is in `data/memory.db` on your PC. The **Memory** page lets you read,
 edit, pin and delete notes, and pick which folders are indexed. Your old `memory.md` notes
 are moved in automatically.
 
+## Unity
+
+It can work inside the **Unity Editor** while you have your project open: see the scene, place
+and change objects, set component values, make prefabs and materials, write scripts and fix
+their compile errors, play the game for a few seconds to test, and read the console.
+
+1. Open your project in Unity.
+2. Ask, for example: "set up Unity for my project in D:/Games/MyGame". It adds one small editor
+   script (`Assets/Editor/LocalAgent/`) to the project. Click into the Unity window once so
+   Unity loads it. (Or copy the two files from this app's `unity` folder there yourself.)
+3. Ask for things: "add a red cube that falls when the game starts", "why does the player fall
+   through the floor?", "make an enemy prefab that walks toward the player".
+
+How it works on a script change: it writes the `.cs` file, makes Unity compile it, reads the
+errors, fixes them until it compiles, adds the script to an object, then plays the game for a
+few seconds and checks the console and a picture of the game view.
+
+Good to know:
+- Its scene changes go through Unity's undo, so **Ctrl+Z in Unity** takes them back. It doesn't
+  save the scene unless you ask (or it finishes a task you gave it).
+- Changes made during play mode are lost when play stops, like in Unity itself, so it stops
+  play mode before editing.
+- The editor script only listens on your own PC (127.0.0.1) and needs a random key that Unity
+  writes into the project's `Library` folder. Delete `Assets/Editor/LocalAgent` to remove it.
+- If Unity is minimized and answers slowly, set Unity's *Preferences > General > Interaction
+  Mode* to *No Throttling*.
+- Pictures of the game view come from the cameras, so screen-space overlay UI doesn't show.
+- Turn the Unity tools off in Settings if you don't use Unity; they take a little room in
+  the model's context.
+
 ## GitHub
 
 It can work on your GitHub repositories the way Claude does here: clone one, make a branch,
@@ -186,6 +216,7 @@ maker's recommended values** for sampling.
 | The server stops right after starting | Read the log under the Start button. "out of memory": pick a shorter context or q4_0 KV cache. "CUDA driver version is insufficient": update the NVIDIA driver |
 | It writes tool calls as plain text, or ignores tools | Use a model made for tool calling (the list above). The app already starts llama.cpp with `--jinja`, which most models need |
 | Clicks land in the wrong place | Settings > Screen > Click coordinates: try the other option. Turning on the grid also helps smaller models aim |
+| Unity tools say no editor is running | Open the project in Unity, then ask it to set up Unity for that project. If the scripts have compile errors, choose *Ignore* when Unity offers Safe Mode |
 | It can't see screenshots | Press **Find vision file online** on the Model server page, and keep "Let it see images" on |
 
 ## For the curious
@@ -193,6 +224,7 @@ maker's recommended values** for sampling.
 - `localagent/agent.py`: the loop, approvals, context summarizing, memory recall.
 - `localagent/memory.py`: notes and the file index (SQLite full-text search).
 - `localagent/tools/code.py`: coding mode (private copies, test loop, code map).
+- `localagent/tools/unity.py` + `unity/LocalAgentBridge.cs`: the Unity tools and the editor script they talk to.
 - `localagent/tools/`: every tool; adding one is a single decorated function.
 - `localagent/launcher.py` + `gguf.py`: reads the model file header and plans GPU/RAM placement.
 - `tests/`: run `python -m pytest tests` (uses a fake model server; no GPU needed).

@@ -1,6 +1,6 @@
 """All tools. Importing this package registers them."""
 
-from . import code, files, github, misc, screen, shell, web  # noqa: F401  (registers tools)
+from . import code, files, github, misc, screen, shell, unity, web  # noqa: F401  (registers tools)
 from .base import CONTROL, EDIT, PUBLISH, REGISTRY, RISK_LABELS, RUN, SAFE, Tool, ToolContext, ToolError, ToolResult
 
 
@@ -16,6 +16,8 @@ def enabled_tools(settings, depth: int = 0) -> list[Tool]:
         groups.add("github")
     if getattr(settings, "enable_code", True):
         groups.add("code")
+    if getattr(settings, "enable_unity", True):
+        groups.add("unity")
     if settings.enable_subagents and depth == 0:
         groups.add("subagents")
     tools = [t for t in REGISTRY.values() if t.group in groups]

@@ -63,6 +63,8 @@ class Settings:
     enable_subagents: bool = True
     enable_github: bool = True
     enable_code: bool = True           # coding mode: own git copy, test loop, code map
+    enable_unity: bool = True          # work in the open Unity editor (needs the bridge script in the project)
+    unity_project: str = ""            # which Unity project, when several are open
     github_token: str = ""             # only kept in data/settings.json on this PC; empty = use the gh CLI login
 
     # long-term memory
