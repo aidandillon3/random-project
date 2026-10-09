@@ -204,6 +204,55 @@ class ContextTest(Base):
         self.assertTrue(all(m["tool_call_id"] in ids for m in wire if m["role"] == "tool"))
 
 
+class MemoryTest(Base):
+    def test_matching_notes_are_attached_to_the_request(self):
+        from localagent.memory import get_memory
+
+        get_memory().add("Aidan's dog is called Biscuit", "Dog name")
+        get_memory().add("The router password is on the fridge", "Router")
+        agent, ui = self.make([text("Biscuit!")])
+        agent.run("what is my dog called")
+        sent = self.srv.requests[0]["messages"][1]["content"]
+        self.assertIn("Biscuit", sent)
+        self.assertNotIn("router", sent.lower())
+        self.assertEqual(agent.messages[0]["_shown"], "what is my dog called")
+
+    def test_pinned_notes_are_in_the_system_prompt(self):
+        from localagent.memory import get_memory
+
+        get_memory().add("Always answer in British English", "Spelling", pinned=True)
+        agent, _ = self.make([text("ok")])
+        self.assertIn("Always answer in British English", agent.system_prompt())
+
+    def test_saves_memories_after_a_bigger_task(self):
+        from localagent.memory import get_memory
+
+        todo = ("todo_write", {"todos": [{"content": "a", "status": "in_progress"}]})
+        agent, ui = self.make([calls(todo), calls(todo), calls(todo), text("All done."),
+                               text('Sure:\n```json\n[{"title": "Code editor", "note": "Aidan edits code in '
+                                    'VS Code", "replaces": null}]\n```')])
+        self.assertEqual(agent.run("set up my editor config"), "All done.")
+        self.assertEqual(len(self.srv.requests), 5)
+        ask = self.srv.requests[-1]
+        self.assertIn("Memory check", ask["messages"][-1]["content"])
+        # same tools and same conversation prefix as the last real step, so the prompt cache is reused
+        self.assertEqual(ask["tools"], self.srv.requests[-2]["tools"])
+        self.assertEqual(ask["messages"][:len(self.srv.requests[-2]["messages"])], self.srv.requests[-2]["messages"])
+        self.assertEqual(get_memory().search_notes("code editor")[0].body, "Aidan edits code in VS Code")
+        self.assertTrue(any(n.startswith("Remembered: Code editor") for n in ui.notices))
+        # the extra question isn't part of the conversation
+        self.assertNotIn("Memory check", json.dumps(agent.messages))
+
+    def test_no_memory_check_for_small_tasks_or_when_off(self):
+        agent, _ = self.make([calls(("todo_write", {"todos": []})), text("ok")])
+        agent.run("hi")
+        self.assertEqual(len(self.srv.requests), 2)
+        todo = ("todo_write", {"todos": []})
+        agent, _ = self.make([calls(todo), calls(todo), calls(todo), text("ok")], auto_memory=False)
+        agent.run("hi")
+        self.assertEqual(len(self.srv.requests), 4)
+
+
 class ParsingTest(unittest.TestCase):
     def test_parse_args_forgiving(self):
         self.assertEqual(parse_args('{"a": 1,}'), {"a": 1})

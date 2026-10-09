@@ -89,11 +89,40 @@ def write_file(ctx: ToolContext, a: dict):
     existed = path.exists()
     with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(a["content"])
-    return f"{'Replaced' if existed else 'Created'} {path} ({len(a['content'])} characters)."
+    return f"{'Replaced' if existed else 'Created'} {path} ({len(a['content'])} characters)." + check_syntax(path)
 
 
 def _loose(s: str) -> str:
     return "\n".join(line.rstrip() for line in s.replace("\r\n", "\n").split("\n"))
+
+
+def _apply_edit(path: Path, text: str, old: str, new: str, replace_all: bool) -> tuple[str, str]:
+    """One exact replacement on a file's text. Returns (new text, what happened)."""
+    if not old:
+        raise ToolError("old_text is empty. Use write_file to create a file.")
+    crlf = "\r\n" in text
+    count = text.count(old)
+    if count == 0 and crlf:
+        old2, new2 = old.replace("\r\n", "\n").replace("\n", "\r\n"), new.replace("\r\n", "\n").replace("\n", "\r\n")
+        if text.count(old2):
+            old, new, count = old2, new2, text.count(old2)
+    if count == 0:
+        # Forgive trailing-whitespace differences, the most common near miss.
+        loose_text, loose_old = _loose(text), _loose(old)
+        n = loose_text.count(loose_old)
+        if n == 1 or (n > 1 and replace_all):
+            text = loose_text.replace(loose_old, new.replace("\r\n", "\n"))
+            if crlf:
+                text = text.replace("\n", "\r\n")
+            return text, f"{n} match, ignoring trailing spaces"
+        hint = _closest(text, old)
+        raise ToolError(f"old_text was not found in {path}. Read the file again and copy the text exactly."
+                        + (f"\nClosest line in the file: {hint!r}" if hint else ""))
+    if count > 1 and not replace_all:
+        raise ToolError(f"old_text matches {count} places. Add surrounding lines so it is unique, "
+                        "or set replace_all to true.")
+    text = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+    return text, f"{count} replacement{'s' if count > 1 else ''}"
 
 
 @tool("edit_file", """
@@ -110,35 +139,75 @@ def edit_file(ctx: ToolContext, a: dict):
     path = ctx.resolve(a["path"])
     if not path.is_file():
         raise ToolError(f"No such file: {path}")
-    text = _read_text(path)
-    old, new = a["old_text"], a["new_text"]
-    if not old:
-        raise ToolError("old_text is empty. Use write_file to create a file.")
-    crlf = "\r\n" in text
-    count = text.count(old)
-    if count == 0 and crlf:
-        old2, new2 = old.replace("\r\n", "\n").replace("\n", "\r\n"), new.replace("\r\n", "\n").replace("\n", "\r\n")
-        if text.count(old2):
-            old, new, count = old2, new2, text.count(old2)
-    if count == 0:
-        # Forgive trailing-whitespace differences, the most common near miss.
-        loose_text, loose_old = _loose(text), _loose(old)
-        n = loose_text.count(loose_old)
-        if n == 1 or (n > 1 and a.get("replace_all")):
-            text = loose_text.replace(loose_old, new.replace("\r\n", "\n"))
-            if crlf:
-                text = text.replace("\n", "\r\n")
-            path.write_text(text, encoding="utf-8", newline="")
-            return f"Edited {path} ({n} match, ignoring trailing spaces)."
-        hint = _closest(text, old)
-        raise ToolError(f"old_text was not found in {path}. Read the file again and copy the text exactly."
-                        + (f"\nClosest line in the file: {hint!r}" if hint else ""))
-    if count > 1 and not a.get("replace_all"):
-        raise ToolError(f"old_text matches {count} places. Add surrounding lines so it is unique, "
-                        "or set replace_all to true.")
-    text = text.replace(old, new) if a.get("replace_all") else text.replace(old, new, 1)
+    text, what = _apply_edit(path, _read_text(path), a["old_text"], a["new_text"], bool(a.get("replace_all")))
     path.write_text(text, encoding="utf-8", newline="")
-    return f"Edited {path} ({count} replacement{'s' if count > 1 else ''})."
+    return f"Edited {path} ({what})." + check_syntax(path)
+
+
+@tool("multi_edit", """
+Make several exact replacements in one file at once, in order. Each edit works like edit_file
+(old_text must match exactly and be unique unless replace_all). If any edit fails, none are
+saved, so the file is never left half-changed.""",
+      {"path": {"type": "string"},
+       "edits": {"type": "array", "items": {"type": "object", "properties": {
+           "old_text": {"type": "string"}, "new_text": {"type": "string"},
+           "replace_all": {"type": "boolean"}}, "required": ["old_text", "new_text"]}}},
+      required=["path", "edits"], risk=EDIT, risk_for=_edit_risk,
+      describe=lambda a: f"Make {len(a.get('edits') or [])} edits in {a.get('path')}")
+def multi_edit(ctx: ToolContext, a: dict):
+    path = ctx.resolve(a["path"])
+    if not path.is_file():
+        raise ToolError(f"No such file: {path}")
+    edits = a.get("edits") or []
+    if not edits:
+        raise ToolError("edits is empty.")
+    text = _read_text(path)
+    for i, e in enumerate(edits, 1):
+        if not isinstance(e, dict):
+            raise ToolError(f"Edit {i} must be an object with old_text and new_text.")
+        try:
+            text, _ = _apply_edit(path, text, e.get("old_text", ""), e.get("new_text", ""), bool(e.get("replace_all")))
+        except ToolError as err:
+            raise ToolError(f"Edit {i} of {len(edits)} failed, so nothing was saved: {err}")
+    path.write_text(text, encoding="utf-8", newline="")
+    return f"Made {len(edits)} edits in {path}." + check_syntax(path)
+
+
+def check_syntax(path: Path) -> str:
+    """A quick syntax check after an edit, so a broken file is noticed straight away instead
+    of several steps later. Returns a warning to append, or ''."""
+    ext = path.suffix.lower()
+    try:
+        if ext in (".py", ".pyw"):
+            compile(path.read_bytes(), str(path), "exec", dont_inherit=True)
+        elif ext == ".json":
+            import json
+
+            json.loads(path.read_text(encoding="utf-8-sig"))
+        elif ext == ".toml":
+            import tomllib
+
+            tomllib.loads(path.read_text(encoding="utf-8"))
+        elif ext in (".js", ".mjs", ".cjs"):
+            node = shutil.which("node")
+            if not node:
+                return ""
+            import subprocess
+            import sys
+
+            r = subprocess.run([node, "--check", str(path)], capture_output=True, text=True, timeout=20,
+                               creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+            if r.returncode != 0:
+                return "\nWarning, the file now has a syntax error:\n" + (r.stderr or r.stdout).strip()[-1500:]
+        else:
+            return ""
+    except SyntaxError as e:
+        return f"\nWarning, the file now has a syntax error at line {e.lineno}: {e.msg}. Fix it."
+    except ValueError as e:  # json and toml errors
+        return f"\nWarning, the file is no longer valid {ext[1:].upper()}: {e}. Fix it."
+    except Exception:  # noqa: BLE001 - the check is a bonus, never a reason to fail the edit
+        return ""
+    return ""
 
 
 def _closest(text: str, old: str) -> str:

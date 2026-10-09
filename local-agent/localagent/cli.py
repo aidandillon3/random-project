@@ -77,6 +77,10 @@ def main(argv: list[str]) -> int:
     if "--url" in argv:
         settings.base_url = argv[argv.index("--url") + 1]
     agent = Agent(settings, TerminalUI())
+    if settings.index_files:
+        from .memory import start_indexer
+
+        start_indexer(settings)
     print(f"Local Agent (terminal). Server: {settings.base_url}. Work folder: {agent.workspace}")
     print("Type a message. /new starts over, /quit exits. Ctrl+C stops the current task.\n")
     while True:
