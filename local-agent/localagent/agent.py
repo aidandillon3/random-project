@@ -11,6 +11,7 @@ from collections import deque
 from pathlib import Path
 
 from . import prompts
+from .guide import sampling_for
 from .llm import LLMClient, ServerError, ToolCall, ToolsUnsupported, Turn, extract_text_tool_calls
 from .permissions import ApprovalRequest, Decision, Policy, is_dangerous, risk_text
 from .tools import SAFE, ToolContext, ToolError, ToolResult, enabled_tools
@@ -267,6 +268,10 @@ class Agent:
             p["top_k"] = s.top_k
         if s.min_p:
             p["min_p"] = s.min_p
+        if s.auto_sampling:
+            rec = sampling_for(self.client.resolve_model(), thinking=s.thinking != "off")
+            if rec:
+                p.update(rec)
         want = "high" if s.thinking == "on" else s.thinking
         if want == "off":
             p["chat_template_kwargs"] = {"enable_thinking": False}

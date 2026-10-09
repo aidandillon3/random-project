@@ -290,6 +290,30 @@ class ThinkingTest(Base):
         self.assertTrue(p["chat_template_kwargs"]["enable_thinking"])
 
 
+class SamplingTest(Base):
+    def test_recommended_values_follow_thinking(self):
+        from localagent.guide import sampling_for
+
+        name = "Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
+        self.assertEqual(sampling_for(name)["temperature"], 1.0)
+        self.assertEqual(sampling_for(name, thinking=False)["presence_penalty"], 1.5)
+        self.assertEqual(sampling_for("Qwen3-8B-Q4_K_M.gguf", thinking=False)["top_p"], 0.8)
+        self.assertEqual(sampling_for("gpt-oss-20b", thinking=False)["temperature"], 1.0)
+        self.assertIsNone(sampling_for("mystery-model"))
+
+        agent, _ = self.make([text("ok")], temperature=0.3, thinking="high")
+        agent.client.model = name
+        agent.client._template = ""
+        p = agent._params()
+        self.assertEqual((p["temperature"], p["top_p"], p["presence_penalty"]), (1.0, 0.95, 0.0))
+        agent.settings.thinking = "off"
+        p = agent._params()
+        self.assertEqual((p["temperature"], p["top_p"], p["presence_penalty"]), (0.7, 0.8, 1.5))
+        agent.settings.auto_sampling = False      # manual values win when switched off
+        self.assertEqual(agent._params()["temperature"], 0.3)
+        self.assertNotIn("presence_penalty", agent._params())
+
+
 class ParsingTest(unittest.TestCase):
     def test_parse_args_forgiving(self):
         self.assertEqual(parse_args('{"a": 1,}'), {"a": 1})

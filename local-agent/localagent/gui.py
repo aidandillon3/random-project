@@ -31,6 +31,9 @@ OK = "#2fbf71"
 WARN = "#e0a43a"
 BAD = "#e5534b"
 
+THINKING_LEVELS = [("auto", "Model default"), ("off", "Off (fastest)"), ("low", "Low"), ("medium", "Medium"),
+                   ("high", "High (smartest)")]
+
 STYLE = f"""
 QWidget {{ font-size: 10pt; }}
 QMainWindow, QWidget#page {{ background: #16181d; color: #e6e8ee; }}
@@ -406,6 +409,15 @@ class ChatPage(QWidget):
         self.mode.setCurrentIndex(list(APPROVAL_MODES).index(self.s.approval_mode))
         self.mode.currentIndexChanged.connect(self._mode_changed)
         top.addWidget(self.mode)
+        top.addWidget(QLabel("Thinking:"))
+        self.think = QComboBox()
+        for k, v in THINKING_LEVELS:
+            self.think.addItem(v, k)
+        self.think.setToolTip("How long it thinks before answering. Applies from your next message. "
+                              "High is best for hard tasks, Off or Low for quick clicks.")
+        self.sync_thinking()
+        self.think.currentIndexChanged.connect(self._thinking_changed)
+        top.addWidget(self.think)
         self.ws_btn = QPushButton()
         self.ws_btn.clicked.connect(self._pick_workspace)
         top.addWidget(self.ws_btn)
@@ -528,6 +540,15 @@ class ChatPage(QWidget):
         self.ws_btn.setText(f"Work folder: {self.s.workspace_path().name}")
         self.ws_btn.setToolTip(str(self.s.workspace_path()))
         self.side_mode.setText(f"Model server: {self.s.base_url}")
+
+    def sync_thinking(self):
+        self.think.blockSignals(True)
+        self.think.setCurrentIndex(max(0, self.think.findData("high" if self.s.thinking == "on" else self.s.thinking)))
+        self.think.blockSignals(False)
+
+    def _thinking_changed(self):
+        self.s.thinking = self.think.currentData()
+        self.s.save()
 
     def _mode_changed(self):
         self.s.approval_mode = self.mode.currentData()
@@ -1295,14 +1316,17 @@ class SettingsPage(QWidget):
 
         g = QGroupBox("Answers")
         f = QFormLayout(g)
-        self.thinking = self._combo([("auto", "Model default"), ("off", "Off (fastest)"), ("low", "Low"),
-                                     ("medium", "Medium"), ("high", "High (smartest, slowest)")],
-                                    "high" if s.thinking == "on" else s.thinking)
+        self.thinking = self._combo(THINKING_LEVELS, "high" if s.thinking == "on" else s.thinking)
         self.thinking.setToolTip("How long the model thinks before answering. Models with levels (Qwen3.8: "
                                  "low / medium / xhigh, gpt-oss: low / medium / high) get the closest one; "
                                  "High means the model's highest. Models with only on/off treat every "
                                  "level as on.")
         f.addRow("Thinking:", self.thinking)
+        self.auto_sampling = QCheckBox("Use the model maker's recommended sampling, switched automatically "
+                                       "when thinking goes on or off")
+        self.auto_sampling.setChecked(s.auto_sampling)
+        self.auto_sampling.toggled.connect(self._save)
+        f.addRow(self.auto_sampling)
         self.temp = self._dspin(s.temperature, 0, 2, 0.05)
         self.top_p = self._dspin(s.top_p, 0, 1, 0.05)
         self.top_k = self._spin(s.top_k, 0, 200)
@@ -1406,6 +1430,8 @@ class SettingsPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(area)
         self._sync_preset()
+        for w in (self.temp, self.top_p, self.top_k, self.min_p):
+            w.setEnabled(not s.auto_sampling)
 
     def _combo(self, items, current):
         c = QComboBox()
@@ -1440,6 +1466,10 @@ class SettingsPage(QWidget):
             self._save()
 
     def reload(self):
+        self.thinking.blockSignals(True)
+        self.thinking.setCurrentIndex(max(0, self.thinking.findData(
+            "high" if self.s.thinking == "on" else self.s.thinking)))
+        self.thinking.blockSignals(False)
         self.url.setText(self.s.base_url)
         self.model.setEditText(self.s.model)
         self._sync_preset()
@@ -1450,6 +1480,9 @@ class SettingsPage(QWidget):
         s.model = self.model.currentText().strip()
         s.tool_mode = self.tool_mode.currentData()
         s.thinking = self.thinking.currentData()
+        s.auto_sampling = self.auto_sampling.isChecked()
+        for w in (self.temp, self.top_p, self.top_k, self.min_p):
+            w.setEnabled(not s.auto_sampling)   # the recommended values win while that box is ticked
         s.temperature, s.top_p = self.temp.value(), self.top_p.value()
         s.top_k, s.min_p, s.max_tokens = self.top_k.value(), self.min_p.value(), self.max_tokens.value()
         s.enable_shell, s.enable_control = self.shell.isChecked(), self.control.isChecked()
@@ -1738,6 +1771,8 @@ class MainWindow(QMainWindow):
             self.settings_page.reload()
         if i == 3:
             self.memory.refresh()
+        if i == 0:
+            self.chat.sync_thinking()
 
     def refresh_connection(self):
         s = self.settings
