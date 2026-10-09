@@ -1295,8 +1295,13 @@ class SettingsPage(QWidget):
 
         g = QGroupBox("Answers")
         f = QFormLayout(g)
-        self.thinking = self._combo([("auto", "Model default"), ("on", "On (smarter, slower)"), ("off", "Off (faster)")],
-                                    s.thinking)
+        self.thinking = self._combo([("auto", "Model default"), ("off", "Off (fastest)"), ("low", "Low"),
+                                     ("medium", "Medium"), ("high", "High (smartest, slowest)")],
+                                    "high" if s.thinking == "on" else s.thinking)
+        self.thinking.setToolTip("How long the model thinks before answering. Models with levels (Qwen3.8: "
+                                 "low / medium / xhigh, gpt-oss: low / medium / high) get the closest one; "
+                                 "High means the model's highest. Models with only on/off treat every "
+                                 "level as on.")
         f.addRow("Thinking:", self.thinking)
         self.temp = self._dspin(s.temperature, 0, 2, 0.05)
         self.top_p = self._dspin(s.top_p, 0, 1, 0.05)

@@ -63,7 +63,8 @@ context costs memory and slows every step), and Q2 quants of big models.
 
 ## Making the model smarter
 
-- **Thinking on** (Settings) for hard tasks: slower, but plans better. Off for quick clicks.
+- **Thinking** (Settings): High for hard tasks (slower, plans better), Low or Off for quick clicks.
+  Models with their own levels (Qwen3.8: low / medium / xhigh) get the closest one.
 - **Recommended sampling**: Settings has a button that sets the model maker's values.
 - **Context**: 32K is a good default; 64K for big codebases (uses more memory).
 - **AGENT.md**: put instructions in a file called AGENT.md in your work folder and the AI reads

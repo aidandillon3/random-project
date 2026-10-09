@@ -168,7 +168,8 @@ Qwen3.8-27B includes vision wasn't confirmed. Any model with tool calling works 
 | Prompt caching | The server remembers the conversation so each step only reads what's new; the app avoids rewriting old messages so the cache keeps working | Always on |
 | Quant choice | Q4_K_M is the sweet spot; IQ4_XS ~10% smaller; below Q3 gets dumb | Shown per model |
 
-Smarter answers: turn **Thinking** on (Settings) for hard tasks, and press **Use the model
+Smarter answers: set **Thinking** (Settings > Answers) to Medium or High for hard tasks, Off or
+Low for quick clicks, and press **Use the model
 maker's recommended values** for sampling.
 
 ## Other ways to run it

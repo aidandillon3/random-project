@@ -253,6 +253,43 @@ class MemoryTest(Base):
         self.assertEqual(len(self.srv.requests), 4)
 
 
+class ThinkingTest(Base):
+    QWEN38 = "{%- if reasoning_effort == 'xhigh' %}..{%- elif reasoning_effort == 'medium' %}..{%- elif reasoning_effort == 'low' %}"
+    GPT_OSS = "Reasoning: {{ reasoning_effort | default('medium') }} {# low, 'medium' or \"high\" #} 'low' 'high'"
+
+    def test_levels_from_template(self):
+        from localagent.agent import effort_levels, pick_effort
+
+        self.assertEqual(effort_levels(self.QWEN38), ["low", "medium", "xhigh"])
+        self.assertEqual(effort_levels(self.GPT_OSS), ["low", "medium", "high"])
+        self.assertEqual(effort_levels("{% if enable_thinking %}"), [])
+        self.assertEqual(pick_effort("high", ["low", "medium", "xhigh"]), "xhigh")
+        self.assertEqual(pick_effort("medium", ["low", "high"]), "low")
+        self.assertEqual(pick_effort("low", ["medium", "xhigh"]), "medium")
+        self.assertIsNone(pick_effort("low", []))
+
+    def test_params_sent_to_the_server(self):
+        agent, _ = self.make([text("ok")], thinking="high")
+        agent.client._template = self.QWEN38
+        p = agent._params()
+        self.assertEqual(p["reasoning_effort"], "xhigh")
+        self.assertEqual(p["chat_template_kwargs"], {"enable_thinking": True, "reasoning_effort": "xhigh"})
+        agent.settings.thinking = "medium"
+        self.assertEqual(agent._params()["reasoning_effort"], "medium")
+        agent.settings.thinking = "off"
+        self.assertEqual(agent._params()["chat_template_kwargs"]["enable_thinking"], False)
+        agent.settings.thinking = "on"          # older settings files
+        self.assertEqual(agent._params()["reasoning_effort"], "xhigh")
+        agent.settings.thinking = "auto"
+        self.assertNotIn("chat_template_kwargs", agent._params())
+        # a model with only on/off: no level is sent
+        agent2, _ = self.make([text("ok")], thinking="low")
+        agent2.client._template = "{% if enable_thinking %}"
+        p = agent2._params()
+        self.assertNotIn("reasoning_effort", p)
+        self.assertTrue(p["chat_template_kwargs"]["enable_thinking"])
+
+
 class ParsingTest(unittest.TestCase):
     def test_parse_args_forgiving(self):
         self.assertEqual(parse_args('{"a": 1,}'), {"a": 1})

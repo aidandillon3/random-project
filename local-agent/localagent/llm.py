@@ -153,6 +153,7 @@ class LLMClient:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.trust_env = False   # never send local traffic through a system proxy
+        self._template: str | None = None
 
     @property
     def root(self) -> str:
@@ -197,6 +198,19 @@ class LLMClient:
         except (requests.RequestException, ValueError):
             pass
         return None
+
+    def chat_template(self) -> str:
+        """The model's chat template, when the server shares it (llama.cpp does). Used to see
+        which thinking levels the model understands."""
+        if self._template is None:
+            self._template = ""
+            try:
+                r = self.session.get(f"{self.root}/props", timeout=5)
+                if r.ok:
+                    self._template = r.json().get("chat_template") or ""
+            except (requests.RequestException, ValueError):
+                pass
+        return self._template
 
     def health(self) -> bool:
         try:
