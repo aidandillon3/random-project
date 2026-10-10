@@ -170,6 +170,19 @@ tell it to work on the other (Settings > Screen > Which screen).
 
 ## Models for a 5080 (16 GB) + 64 GB RAM
 
+**Ready-made modes** (Model server page > Mode): pick one and press the button. If the files
+aren't on your PC it downloads them first (it can pause and resume), then switches the model,
+its vision file and the server settings, and restarts the model. Sampling and thinking levels
+follow whichever model is running.
+
+| Mode | Download | How it runs | Pick it for |
+|---|---|---|---|
+| **Swift 1.5 Qwen3.8 27B** (IQ3_XXS, MTP) | 11 GB | Fully on the GPU, MTP speed-up, 48K context | Everyday work, fastest |
+| **Swift 1.5 Qwen3.8 Flash Next** (IQ2_XS) | 69 GB | 125B MoE, 6B active: experts in RAM, its 28 GB n-gram table read from the SSD as needed, 64K context | Hardest tasks; slower |
+
+Flash Next needs about 40 GB of RAM + VRAM plus space on a fast SSD. Its speed on your PC hasn't
+been measured yet.
+
 | Model | Type | Sees the screen | On your PC | Pick it for |
 |---|---|---|---|---|
 | **Qwen3.6-35B-A3B** (Q4_K_M) | MoE, 3B active | Yes | ~21 GB: attention on the GPU, some experts in RAM. Fast | **Best all-rounder for this app** |

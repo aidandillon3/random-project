@@ -144,6 +144,42 @@ class GuiTest(unittest.TestCase):
             w.grab().save(out.replace(".png", "_server.png"))
         w.close()
 
+    def test_ready_made_mode_switches_model_and_settings(self):
+        from localagent import catalog
+        from localagent.config import Settings
+
+        d = Path(tempfile.mkdtemp())
+        flash = catalog.BY_KEY["swift-flash-next"]
+        folder = d / flash.folder
+        folder.mkdir()
+        for _, name in flash.all_files():
+            with open(folder / name, "wb") as f:
+                f.truncate(flash.sizes[name])          # sparse: right size, no real data
+        exe = d / "llama-server"
+        exe.write_text("#!/bin/sh\ncat <<'EOF'\n" + NEW_HELP + "\nEOF\n")
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+        s = Settings(server_exe=str(exe), models_dir=str(d), base_url="http://127.0.0.1:9/v1", speedup="mtp",
+                     ctx_size=32768)
+        w = self.gui.MainWindow(s)
+        page = w.server
+        self.assertTrue(self.wait_until(lambda: page.exe is not None, 10))
+        page.preset_box.setCurrentIndex(page.preset_box.findData("swift-27b"))
+        self.assertIn("Needs a 11.1 GB download", page.preset_info.text())
+        page.preset_box.setCurrentIndex(page.preset_box.findData("swift-flash-next"))
+        self.assertIn("On this PC", page.preset_info.text())
+        page._use_preset()
+        self.assertEqual(Path(s.model_path).name, flash.files[0])
+        self.assertEqual(Path(s.mmproj_path).name, "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf")
+        self.assertEqual((s.ctx_size, s.speedup), (65536, "off"))
+        self.assertEqual(page.ctx.currentData(), 65536)
+        self.assertEqual(page.speed.currentData(), "off")
+        cmd = page.cmd.toPlainText()
+        self.assertIn("-c 65536", cmd)
+        self.assertIn("mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf", cmd)
+        self.assertNotIn("draft-mtp", cmd)
+        page.stop()
+        w.close()
+
     def test_memory_page(self):
         from localagent import memory
         from localagent.config import Settings

@@ -122,6 +122,7 @@ class ModelInfo:
     expert_bytes: dict = field(default_factory=dict)    # layer -> bytes of MoE expert weights
     layer_bytes: dict = field(default_factory=dict)     # layer -> all bytes in that layer
     has_mtp: bool = False
+    lazy_bytes: int = 0       # huge lookup tables (n-gram / per-layer embeddings) read from disk on demand
     quant: str = ""
     embedding_length: int = 0
     meta: dict = field(default_factory=dict, repr=False)
@@ -193,6 +194,9 @@ def model_info(path: str | Path) -> ModelInfo:
     for name, size in tensors:
         lm = re.match(r"blk\.(\d+)\.", name)
         if not lm:
+            # llama.cpp's --lazy-mode (on by default for tables over 4 GiB) leaves these on disk
+            if size > LAZY_MIN and "embd" in name:
+                info.lazy_bytes += size
             continue
         layer = int(lm.group(1))
         info.layer_bytes[layer] = info.layer_bytes.get(layer, 0) + size
@@ -229,6 +233,7 @@ class Plan:
     ctx_fit: int = 0          # the longest context that still fits fully on the GPU (0 = none)
 
 
+LAZY_MIN = 4 * 1024 ** 3
 GPU_BW, RAM_BW = 960e9, 70e9   # RTX 5080 memory bandwidth, typical dual-channel DDR5 (bytes/s)
 
 
@@ -239,12 +244,15 @@ def plan(info: ModelInfo, ctx: int, kv_type: str = "q8_0", vram_gb: float = 16.0
     kv_gb = info.kv_bytes_per_token_f16 / 2.0 * KV_BYTES.get(kv_type, 2.0) * ctx / GiB
     compute_gb = 0.7 + (0.5 if info.is_moe else 0.0)
     budget = vram_gb - reserve_gb - compute_gb - kv_gb - extra_gb
-    weights = info.file_bytes / GiB
+    weights = (info.file_bytes - info.lazy_bytes) / GiB
     notes = []
+    if info.lazy_bytes:
+        notes.append(f"{info.lazy_bytes / GiB:.0f} GB of n-gram/embedding tables stay on the drive and are read as "
+                     "needed (best on an SSD).")
     n_layers = max(1, info.n_layers)
     fit = context_that_fits(info, kv_type, vram_gb - reserve_gb - compute_gb - extra_gb - weights)
     if weights <= budget:
-        p = Plan(999, 0, kv_gb, weights + kv_gb + compute_gb + extra_gb, 0.0, True, 0.0, ctx_fit=fit)
+        p = Plan(999, 0, kv_gb, weights + kv_gb + compute_gb + extra_gb, 0.0, True, 0.0, notes, fit)
         active = _active_gb(info, 0)
         p.tokens_per_sec = _speed(active, 0.0)
         if fit >= ctx * 2 and fit >= 16384:
@@ -293,7 +301,7 @@ def context_that_fits(info: ModelInfo, kv_type: str, free_gb: float) -> int:
 
 
 def _active_gb(info: ModelInfo, n_cpu_moe: int) -> float:
-    total = info.file_bytes / GiB
+    total = (info.file_bytes - info.lazy_bytes) / GiB
     if not info.is_moe:
         return total
     exp = sum(info.expert_bytes.values()) / GiB

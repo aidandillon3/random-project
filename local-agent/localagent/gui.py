@@ -16,9 +16,9 @@ from PySide6.QtWidgets import (
     QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import launcher
+from . import catalog, launcher
 from .agent import Agent, AgentUI
-from .config import APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
+from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import gpu_info, model_info
 from .guide import GUIDE, sampling_for
 from .llm import LLMClient, ServerError
@@ -817,7 +817,7 @@ class ChatPage(QWidget):
 
 
 # ====================================================================== model server page
-CTX_CHOICES = [8192, 16384, 32768, 65536, 131072, 262144]
+CTX_CHOICES = [8192, 16384, 32768, 49152, 65536, 131072, 262144]
 SPEEDUPS = [("off", "Off"), ("mtp", "MTP: built-in draft layers (about 1.3-2x faster)"),
             ("ngram", "N-gram: reuse repeated text (great for code edits)"),
             ("draft", "Draft model: a small model guesses ahead")]
@@ -876,6 +876,24 @@ class ServerPage(QWidget):
 
         g = QGroupBox("2. Model")
         f = QFormLayout(g)
+        row = QHBoxLayout()
+        self.preset_box = QComboBox()
+        self.preset_box.addItem("Pick a ready-made mode, or choose a file below", "")
+        for p in catalog.PRESETS:
+            self.preset_box.addItem(p.title, p.key)
+        self.preset_box.currentIndexChanged.connect(self._preset_picked)
+        row.addWidget(self.preset_box, 1)
+        self.preset_btn = QPushButton("Use it")
+        self.preset_btn.clicked.connect(self._use_preset)
+        row.addWidget(self.preset_btn)
+        f.addRow("Mode:", row)
+        self.preset_info = muted("")
+        f.addRow(self.preset_info)
+        self.preset_bar = QProgressBar()
+        self.preset_bar.setRange(0, 1000)
+        self.preset_bar.setVisible(False)
+        f.addRow(self.preset_bar)
+        self._dl_state = None
         row = QHBoxLayout()
         self.dir_label = QLabel()
         row.addWidget(self.dir_label, 1)
@@ -1030,8 +1048,14 @@ class ServerPage(QWidget):
         self.model_box.setCurrentIndex(idx if idx >= 0 else 0)
         self.model_box.blockSignals(False)
         if not models:
-            self.info_label.setText("No .gguf models found. Pick your models folder, or a file.")
+            self.info_label.setText("No .gguf models found. Pick your models folder, or a file, or a mode above.")
         self._model_changed()
+        p = catalog.matching(self.s.model_path)
+        if self._dl_state is None:
+            self.preset_box.blockSignals(True)
+            self.preset_box.setCurrentIndex(max(0, self.preset_box.findData(p.key if p else "")))
+            self.preset_box.blockSignals(False)
+            self._preset_picked()
 
     def _browse_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Folder with your .gguf models", self.s.models_dir or str(Path.home()))
@@ -1063,6 +1087,114 @@ class ServerPage(QWidget):
             self.s.draft_path = f
             self.s.save()
             self._changed()
+
+    # ---------------------------------------------------------------- ready-made modes
+    def _models_root(self) -> Path:
+        return Path(self.s.models_dir) if self.s.models_dir else APP_DIR / "models"
+
+    def _preset(self):
+        return catalog.BY_KEY.get(self.preset_box.currentData() or "")
+
+    def _preset_picked(self):
+        p = self._preset()
+        if self._dl_state is not None:
+            return
+        if not p:
+            self.preset_info.setText("")
+            self.preset_btn.setEnabled(False)
+            self.preset_btn.setText("Use it")
+            return
+        self.preset_btn.setEnabled(True)
+        model, mm, missing = catalog.model_path(p, self._dirs() + [self._models_root()])
+        active = catalog.matching(self.s.model_path) is p
+        if not missing:
+            where = f"On this PC in {model.parent}."
+            self.preset_btn.setText("Restart with it" if active and self.proc.running else
+                                    "Start it" if active else "Use it")
+        else:
+            gb = sum(p.sizes.get(f, 0) for f in missing) / catalog.GB
+            dest = catalog.download_folder(p, self._models_root(), self._dirs() + [self._models_root()])
+            where = f"Needs a {gb:.1f} GB download into {dest}."
+            self.preset_btn.setText(f"Download ({gb:.0f} GB) and use it" if gb >= 1 else "Download and use it")
+        self.preset_info.setText(f"{p.blurb} {where}")
+
+    def _use_preset(self):
+        st = self._dl_state
+        if st is not None:          # the button pauses a running download
+            st["stop"].set()
+            return
+        p = self._preset()
+        if not p:
+            return
+        dirs = self._dirs() + [self._models_root()]
+        model, mm, missing = catalog.model_path(p, dirs)
+        if not missing:
+            self._activate(p, model, mm)
+            return
+        dest = catalog.download_folder(p, self._models_root(), dirs)
+        gb = sum(p.sizes.get(f, 0) for f in missing) / catalog.GB
+        if QMessageBox.question(self, "Download model",
+                                f"Download {gb:.1f} GB from Hugging Face ({p.repo}) into\n{dest}?\n\n"
+                                "You can pause it and carry on later; it resumes where it stopped.") != QMessageBox.Yes:
+            return
+        st = self._dl_state = {"msg": "Starting...", "frac": 0.0, "done": None, "error": None,
+                               "stop": threading.Event()}
+
+        def work():
+            try:
+                st["done"] = catalog.download(p, dest, lambda m, f: st.update(msg=m, frac=f), st["stop"])
+            except Exception as e:  # noqa: BLE001
+                st["error"] = e
+
+        threading.Thread(target=work, daemon=True).start()
+        self.preset_bar.setVisible(True)
+        self.preset_box.setEnabled(False)
+        self.preset_btn.setText("Pause download")
+
+        def tick():
+            self.preset_bar.setValue(int(st["frac"] * 1000))
+            self.preset_info.setText(st["msg"])
+            if st["done"] is None and st["error"] is None:
+                QTimer.singleShot(300, tick)
+                return
+            self._dl_state = None
+            self.preset_bar.setVisible(False)
+            self.preset_box.setEnabled(True)
+            if st["error"] is not None:
+                self._preset_picked()
+                self.preset_info.setText(f"{st['error']}")
+                return
+            model2, mm2 = st["done"]
+            if model is not None:       # only the vision file was missing
+                model2 = model
+            self._activate(p, model2, mm2 or mm)
+
+        tick()
+
+    def _activate(self, p, model: Path, mm: Path | None):
+        """Switch to a mode: its file, its vision file and its server settings, then (re)start."""
+        catalog.apply(p, self.s, model, mm)
+        s = self.s
+        for w in (self.ctx, self.kv, self.placement, self.speed):
+            w.blockSignals(True)
+        self.ctx.setCurrentIndex(max(0, self.ctx.findData(s.ctx_size)))
+        self.kv.setCurrentIndex(max(0, self.kv.findData(s.kv_type)))
+        self.placement.setCurrentIndex(max(0, self.placement.findData(s.placement)))
+        self.speed.setCurrentIndex(max(0, self.speed.findData(s.speedup)))
+        for w in (self.ctx, self.kv, self.placement, self.speed):
+            w.blockSignals(False)
+        self.vision.blockSignals(True)
+        self.vision.setChecked(s.use_vision)
+        self.vision.blockSignals(False)
+        self._scan()
+        if not self.exe:
+            self.preset_info.setText(self.preset_info.text() + " Download llama.cpp above, then press Start model.")
+            return
+        if self.proc.running:
+            self.stop()
+        self.start()
+        self.preset_info.setText(f"Switched to {p.title}. Loading it now; the chat uses it as soon as it's ready. "
+                                 "Sampling and thinking levels follow the model automatically.")
 
     def _model_changed(self):
         path = self.model_box.currentData()
