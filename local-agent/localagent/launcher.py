@@ -199,19 +199,32 @@ class ServerProcess:
         self.proc: subprocess.Popen | None = None
         self.lines: collections.deque[str] = collections.deque(maxlen=3000)
         self._lock = threading.Lock()
+        self.cancelled = threading.Event()
 
     @property
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, args: list[str]):
+    def start(self, args: list[str], cwd: str | Path | None = None, clear: bool = True):
         self.stop()
-        self.lines.clear()
+        self.cancelled.clear()
+        if clear:
+            self.lines.clear()
         self.lines.append("> " + " ".join(f'"{a}"' if " " in a else a for a in args))
         self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                      creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0,
-                                     cwd=str(Path(args[0]).parent))
+                                     cwd=str(cwd or Path(args[0]).parent))
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
+
+    def run_step(self, args: list[str], cwd: str | Path) -> int:
+        """Run a setup command with its output in the log, and wait for it. Stop() ends it."""
+        self.lines.append("> " + " ".join(f'"{a}"' if " " in a else a for a in args))
+        proc = self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                            stdin=subprocess.DEVNULL, cwd=str(cwd),
+                                            creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
+        for raw in iter(proc.stdout.readline, b""):
+            self.lines.append(raw.decode("utf-8", "replace").rstrip())
+        return proc.wait()
 
     def _pump(self, proc):
         for raw in iter(proc.stdout.readline, b""):
@@ -220,18 +233,29 @@ class ServerProcess:
         self.lines.append(f"[server stopped, exit code {code}]")
 
     def stop(self):
+        self.cancelled.set()
         if self.running:
-            self.proc.terminate()
+            if WINDOWS:    # the whole tree: a setup script's Python, or a server's engine
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.proc.pid)], capture_output=True,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+            else:
+                self.proc.terminate()
             try:
-                self.proc.wait(8)
+                self.proc.wait(20)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
         self.proc = None
 
     def ready(self, port: int) -> bool:
+        """llama.cpp answers /health with 503 while loading; Strata answers 200 with "loaded": false."""
         try:
             r = requests.get(f"http://127.0.0.1:{port}/health", timeout=2, proxies={"http": None, "https": None})
-            return r.status_code == 200
+            if r.status_code != 200:
+                return False
+            try:
+                return r.json().get("loaded", True) is not False
+            except ValueError:
+                return True
         except requests.RequestException:
             return False
 

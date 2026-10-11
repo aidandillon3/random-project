@@ -82,6 +82,7 @@ class Settings:
     shell: str = "auto"                # auto | powershell | cmd | bash
 
     # model server launcher
+    engine: str = "auto"               # auto (the mode's recommended one) | llama.cpp | strata (catalog.py)
     server_exe: str = ""
     models_dir: str = ""
     model_path: str = ""

@@ -178,10 +178,18 @@ follow whichever model is running.
 | Mode | Download | How it runs | Pick it for |
 |---|---|---|---|
 | **Swift 1.5 Qwen3.8 27B** (IQ3_XXS, MTP) | 11 GB | Fully on the GPU, MTP speed-up, 48K context | Everyday work, fastest |
-| **Swift 1.5 Qwen3.8 Flash Next** (IQ2_XS) | 69 GB | 125B MoE, 6B active: experts in RAM, its 28 GB n-gram table read from the SSD as needed, 64K context | Hardest tasks; slower |
+| **Swift 1.5 Qwen3.8 Flash Next** (IQ2_XS) | 69 GB (+6 GB for Strata) | 125B MoE, 6B active, on Strata: busiest experts on the GPU, the rest in RAM, its 28 GB n-gram table read from the SSD as needed, 64K context | Hardest tasks |
 
-Flash Next needs about 40 GB of RAM + VRAM plus space on a fast SSD. Its speed on your PC hasn't
-been measured yet.
+Flash Next needs about 40 GB of RAM + VRAM plus space on a fast SSD. It runs on
+**[Strata](https://github.com/Niko1221/Strata)** by default (the "Run it with Strata" box under
+Mode), an engine made for this one model. Strata keeps the most-used experts on the GPU, works the
+rest out on the CPU at the same time, and adds a draft layer that guesses a few tokens ahead.
+Strata measured 79 tokens/s for this size on a 12 GB RTX 5070, where llama.cpp manages roughly
+20-27; nobody has measured a 5080 yet. The first start downloads Strata (pinned to a checked
+version) into `strata/` next to the app and runs its setup, which installs Python if needed and
+fetches its engine and the draft layer into `Strata-data` beside your models folder. Your model
+files are used where they are. Untick the box to run Flash Next on llama.cpp instead. Strata can't
+run the 27B, which stays on llama.cpp.
 
 | Model | Type | Sees the screen | On your PC | Pick it for |
 |---|---|---|---|---|

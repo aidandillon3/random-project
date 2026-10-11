@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import catalog, launcher
+from . import catalog, launcher, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import gpu_info, model_info
@@ -835,6 +835,7 @@ class ServerPage(QWidget):
         self.launch = None
         self.vram = 16.0
         self._was_ready = False
+        self._phase = None             # what a Strata start is doing, set from its worker thread
         self._build()
         self.timer = QTimer(self, interval=500, timeout=self._poll)
         self.timer.start()
@@ -889,6 +890,13 @@ class ServerPage(QWidget):
         f.addRow("Mode:", row)
         self.preset_info = muted("")
         f.addRow(self.preset_info)
+        self.strata_box = QCheckBox("Run it with Strata, an engine made for this model (recommended: about 2-4x "
+                                    "faster than llama.cpp here)")
+        self.strata_box.setToolTip("Strata (github.com/Niko1221/Strata) keeps the busiest experts on the GPU and "
+                                   "adds a draft layer. The first start downloads it and runs its setup once.")
+        self.strata_box.setVisible(False)
+        self.strata_box.toggled.connect(self._engine_toggled)
+        f.addRow(self.strata_box)
         self.preset_bar = QProgressBar()
         self.preset_bar.setRange(0, 1000)
         self.preset_bar.setVisible(False)
@@ -1099,6 +1107,12 @@ class ServerPage(QWidget):
         p = self._preset()
         if self._dl_state is not None:
             return
+        active = p is not None and catalog.matching(self.s.model_path) is p
+        self.strata_box.setVisible(strata.supports(p))
+        if strata.supports(p):
+            self.strata_box.blockSignals(True)
+            self.strata_box.setChecked(strata.active(self.s, p) if active else p.launch.get("engine") == "strata")
+            self.strata_box.blockSignals(False)
         if not p:
             self.preset_info.setText("")
             self.preset_btn.setEnabled(False)
@@ -1106,7 +1120,6 @@ class ServerPage(QWidget):
             return
         self.preset_btn.setEnabled(True)
         model, mm, missing = catalog.model_path(p, self._dirs() + [self._models_root()])
-        active = catalog.matching(self.s.model_path) is p
         if not missing:
             where = f"On this PC in {model.parent}."
             self.preset_btn.setText("Restart with it" if active and self.proc.running else
@@ -1171,10 +1184,20 @@ class ServerPage(QWidget):
 
         tick()
 
+    def _engine_toggled(self, on: bool):
+        p = self._preset()
+        if p and catalog.matching(self.s.model_path) is p:   # the running mode: switch engines now
+            self.s.engine = "strata" if on else "llama.cpp"
+            self.s.save()
+            self._changed()
+
     def _activate(self, p, model: Path, mm: Path | None):
         """Switch to a mode: its file, its vision file and its server settings, then (re)start."""
         catalog.apply(p, self.s, model, mm)
         s = self.s
+        if strata.supports(p):
+            s.engine = "strata" if self.strata_box.isChecked() else "llama.cpp"
+            s.save()
         for w in (self.ctx, self.kv, self.placement, self.speed):
             w.blockSignals(True)
         self.ctx.setCurrentIndex(max(0, self.ctx.findData(s.ctx_size)))
@@ -1187,7 +1210,7 @@ class ServerPage(QWidget):
         self.vision.setChecked(s.use_vision)
         self.vision.blockSignals(False)
         self._scan()
-        if not self.exe:
+        if not self.exe and not strata.active(s, p):
             self.preset_info.setText(self.preset_info.text() + " Download llama.cpp above, then press Start model.")
             return
         if self.proc.running:
@@ -1231,6 +1254,28 @@ class ServerPage(QWidget):
         self.ngl.setEnabled(manual)
         self.ncm.setEnabled(manual)
         self.draft_label.setText(f"Draft model: {Path(s.draft_path).name}" if s.draft_path else "No draft model picked")
+        p = catalog.matching(s.model_path)
+        on_strata = strata.active(s, p)
+        for w in (self.kv, self.placement, self.speed, self.extra):
+            w.setEnabled(not on_strata)
+        if on_strata:
+            self.ngl.setEnabled(False)
+            self.ncm.setEnabled(False)
+            self.launch = None
+            self.start_btn.setEnabled(True)
+            model = Path(s.model_path)
+            args = strata.setup_args(p, model, s) if strata.needs_setup(p, model, s) else strata.serve_args(p, s)
+            self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
+            first = not strata.installed() or strata.needs_setup(p, model, s)
+            self.plan_label.setText(
+                f"<b style='color:{OK}'>Runs on Strata.</b> It places the model itself: attention and the busiest "
+                "experts on the GPU, the other experts in RAM (worked on by the CPU at the same time), the n-gram "
+                "table on the SSD, plus a draft layer for faster writing. Context length, vision and port below "
+                "still apply; the other settings are llama.cpp's."
+                + ("<br>The first start downloads Strata (about 55 MB) and runs its setup, which installs Python if "
+                   "needed and fetches its engine and a ~6 GB draft layer. Later starts take 30-90 seconds."
+                   if first else ""))
+            return
         if not (self.exe and s.model_path):
             self.cmd.setPlainText("")
             self.plan_label.setText("")
@@ -1261,6 +1306,10 @@ class ServerPage(QWidget):
     # ---------------------------------------------------------------- running
     def start(self):
         self._changed()
+        p = catalog.matching(self.s.model_path)
+        if strata.active(self.s, p):
+            self._start_strata(p)
+            return
         if not self.launch:
             return
         try:
@@ -1273,10 +1322,70 @@ class ServerPage(QWidget):
 
     def stop(self):
         self.proc.stop()
+        self._phase = None
         self.state.setText("Stopped")
         self.win.refresh_connection()
 
+    def _start_strata(self, p):
+        s = self.s
+        model = Path(s.model_path)
+        if not strata.installed():
+            if QMessageBox.question(
+                    self, "Strata",
+                    "Download Strata (about 55 MB, from github.com/Niko1221/Strata) into\n"
+                    f"{strata.STRATA_DIR}\nand run its setup?\n\nSetup installs Python for your account if it's "
+                    "missing, then fetches Strata's engine and a ~6 GB draft layer into\n"
+                    f"{strata.data_dir(model)}.\nYour model files are used where they are.") \
+                    != QMessageBox.Yes:
+                return
+        self.proc.stop()
+        self.proc.lines.clear()
+        self.proc.cancelled.clear()
+        self._was_ready = False
+        self._phase = "Setting up Strata (first time only; see the log)..."
+        self.state.setText(self._phase)
+        stop = self.proc.cancelled
+
+        def say(msg, frac=None):
+            if not stop.is_set():
+                self._phase = msg
+
+        def work():
+            try:
+                if not strata.installed():
+                    strata.download(say)
+                    self.proc.lines.append(f"Strata {strata.COMMIT[:7]} downloaded to {strata.STRATA_DIR}")
+                if stop.is_set():
+                    return
+                if strata.needs_setup(p, model, s):
+                    say("Running Strata's setup (the first time it downloads its engine and draft layer)...")
+                    code = self.proc.run_step(strata.setup_args(p, model, s), strata.STRATA_DIR)
+                    if stop.is_set():
+                        return
+                    if code != 0 or not strata.config_path(p).is_file():
+                        say(f"error: Strata's setup stopped (exit code {code}). The log below says why; press "
+                            "Start model to try again, it carries on where it stopped.")
+                        return
+                    strata.mark_setup_done(p, model, s)
+                if stop.is_set():
+                    return
+                self.proc.start(strata.serve_args(p, s), cwd=strata.STRATA_DIR, clear=False)
+                say("Loading the model...")
+            except Exception as e:  # noqa: BLE001
+                say(f"error: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _poll(self):
+        phase = self._phase
+        if phase is not None:          # a Strata start in progress
+            if phase.startswith("error: "):
+                self.state.setText(f"<span style='color:{BAD}'>{phase[7:]}</span>")
+                self._phase = None
+            else:
+                self.state.setText(phase)
+                if phase.startswith("Loading"):       # from here on, as for llama.cpp
+                    self._phase = None
         if self.proc.lines:
             text = "\n".join(list(self.proc.lines)[-400:])
             if text != self.log.toPlainText():

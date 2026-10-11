@@ -30,6 +30,7 @@ class Preset:
     folder: str                           # sub-folder of the models folder it downloads into
     sizes: dict[str, int] = field(default_factory=dict)   # bytes, for the space check and progress
     launch: dict = field(default_factory=dict)            # Settings fields to apply
+    strata: dict | None = None            # Strata's setup choice, when Strata can run it (strata.py)
 
     def all_files(self) -> list[tuple[str, str]]:
         out = [(self.repo, f) for f in self.files]
@@ -60,7 +61,8 @@ PRESETS = [
         title="Swift 1.5 Qwen3.8 Flash Next (smartest, uses RAM)",
         blurb="125B MoE with 6B active per token, IQ2_XS. The experts sit in RAM and the 28 GB "
               "n-gram table is read from the SSD as needed, so it needs about 40 GB of RAM + VRAM. "
-              "Slower than the 27B but much more capable. Has its own vision file.",
+              "Much more capable than the 27B. With Strata it's about as quick; on plain llama.cpp it's "
+              "several times slower. Has its own vision file.",
         repo="ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
         files=["Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
                "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf"],
@@ -69,8 +71,11 @@ PRESETS = [
         sizes={"Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf": 39788473344,
                "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf": 28363693824,
                "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf": 907543520},
-        # no MTP layers in these files; its sparse attention keeps the context cache tiny
-        launch={"ctx_size": 65536, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": True},
+        # no MTP layers in these files (Strata fetches its own draft layer); its sparse attention keeps
+        # the context cache tiny
+        launch={"ctx_size": 65536, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": True,
+                "engine": "strata"},
+        strata={"family": "swift", "model": "IQ2_XS", "tag": "swift-"},
     ),
 ]
 BY_KEY = {p.key: p for p in PRESETS}

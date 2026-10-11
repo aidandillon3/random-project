@@ -19,6 +19,43 @@ from tests.mockserver import MockServer, calls, text  # noqa: E402
 from tests.test_launcher import NEW_HELP, moe_model  # noqa: E402
 
 
+def free_port() -> int:
+    import socket
+
+    with socket.socket() as so:
+        so.bind(("127.0.0.1", 0))
+        return so.getsockname()[1]
+
+
+FAKE_SERVER = """
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port = int(sys.argv[sys.argv.index("--port") + 1])
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        body = {"/health": {"status": "ok", "loaded": True, "service": "strata"},
+                "/v1/models": {"data": [{"id": "swift-1.5-iq2_xs"}]}}.get(self.path, {})
+        data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+print("ready: http://127.0.0.1:%d/v1" % port, flush=True)
+HTTPServer(("127.0.0.1", port), H).serve_forever()
+"""
+
+
+def fake_strata(root: Path):
+    """A stand-in for Strata's folder: setup.sh records its arguments and writes the config and the venv."""
+    (root / "serve").mkdir(parents=True)
+    (root / "setup.py").write_text("")
+    (root / "serve" / "server.py").write_text(FAKE_SERVER)
+    (root / "setup.sh").write_text(
+        "#!/bin/sh\ncd \"$(dirname \"$0\")\"\necho \"$@\" > setup-args.txt\nmkdir -p .venv/bin\n"
+        f"ln -sf {sys.executable} .venv/bin/python\necho {{}} > strata-swift-iq2_xs.json\necho setup done\n")
+
+
 @unittest.skipIf(QApplication is None, "PySide6 not installed")
 class GuiTest(unittest.TestCase):
     @classmethod
@@ -167,7 +204,10 @@ class GuiTest(unittest.TestCase):
         self.assertIn("Needs a 11.1 GB download", page.preset_info.text())
         page.preset_box.setCurrentIndex(page.preset_box.findData("swift-flash-next"))
         self.assertIn("On this PC", page.preset_info.text())
+        self.assertTrue(page.strata_box.isChecked())       # Strata by default for Flash Next...
+        page.strata_box.setChecked(False)                  # ...this test runs it on llama.cpp
         page._use_preset()
+        self.assertEqual(s.engine, "llama.cpp")
         self.assertEqual(Path(s.model_path).name, flash.files[0])
         self.assertEqual(Path(s.mmproj_path).name, "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf")
         self.assertEqual((s.ctx_size, s.speedup), (65536, "off"))
@@ -177,6 +217,50 @@ class GuiTest(unittest.TestCase):
         self.assertIn("-c 65536", cmd)
         self.assertIn("mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf", cmd)
         self.assertNotIn("draft-mtp", cmd)
+        page.stop()
+        w.close()
+
+    def test_flash_next_runs_on_strata(self):
+        from localagent import catalog, strata
+        from localagent.config import Settings
+
+        d = Path(tempfile.mkdtemp())
+        flash = catalog.BY_KEY["swift-flash-next"]
+        folder = d / flash.folder
+        folder.mkdir()
+        for _, name in flash.all_files():
+            with open(folder / name, "wb") as f:
+                f.truncate(flash.sizes[name])
+        root = d / "strata"
+        fake_strata(root)
+        old, strata.STRATA_DIR = strata.STRATA_DIR, root
+        self.addCleanup(setattr, strata, "STRATA_DIR", old)
+        port = free_port()
+        s = Settings(models_dir=str(d), base_url="http://127.0.0.1:9/v1", port=port, use_vision=True)
+        w = self.gui.MainWindow(s)
+        page = w.server
+        page.preset_box.setCurrentIndex(page.preset_box.findData("swift-flash-next"))
+        self.assertTrue(page.strata_box.isVisible() or page.strata_box.isVisibleTo(page))
+        page._use_preset()                                  # no llama.cpp needed
+        self.assertEqual(s.engine, "strata")
+        self.assertIn("Runs on Strata", page.plan_label.text())
+        self.assertFalse(page.speed.isEnabled())
+        self.assertTrue(self.wait_until(lambda: "Ready" in page.state.text(), 30), page.state.text())
+        self.assertEqual(s.base_url, f"http://127.0.0.1:{port}/v1")
+        setup = (root / "setup-args.txt").read_text().split()
+        self.assertEqual(setup[setup.index("--gguf-dir") + 1], str(folder))
+        self.assertEqual(setup[setup.index("--context") + 1], "65536")
+        self.assertEqual(setup[setup.index("--vision") + 1], "gpu")
+        self.assertFalse(strata.needs_setup(flash, Path(s.model_path), s))
+        # a second start skips setup and goes straight to the server
+        (root / "setup-args.txt").unlink()
+        page.stop()
+        page.start()
+        self.assertTrue(self.wait_until(lambda: "Ready" in page.state.text(), 30), page.state.text())
+        self.assertFalse((root / "setup-args.txt").exists())
+        # the 27B mode has no Strata switch
+        page.preset_box.setCurrentIndex(page.preset_box.findData("swift-27b"))
+        self.assertFalse(page.strata_box.isVisibleTo(page))
         page.stop()
         w.close()
 
