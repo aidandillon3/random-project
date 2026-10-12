@@ -354,11 +354,17 @@ class Agent:
             mem = get_memory()
             existing = mem.search_notes(f"{request} {final}", limit=6)
             ask = prompts.MEMORY_PROMPT.format(existing="\n".join("- " + n.line() for n in existing) or "(none)")
+            question = {"role": "user", "content": ask}
             params = dict(self._params(1024), reasoning_budget_tokens=256)
+            if self.context_known():     # the question and its answer must fit too (Strata refuses otherwise)
+                room = self.context_limit() - self.estimate_total() - estimate_tokens(question) - 64
+                if room < 384:
+                    return               # no room left: the next message compacts the chat first anyway
+                params["max_tokens"] = min(params["max_tokens"], room)
             if self.client.is_strata():
                 params["strata_checkpoint"] = False     # a side question no later request builds on
             self.ui.status("Checking what's worth remembering...")
-            turn = self.client.stream(self.wire_messages() + [{"role": "user", "content": ask}],
+            turn = self.client.stream(self.wire_messages() + [question],
                                       self._tool_schemas(), params, stop=self.stop)
             items = _json_list(turn.content) + _remember_calls(turn, self._param_schemas())
         except Exception:  # noqa: BLE001 - a failed memory check is not worth bothering the user
