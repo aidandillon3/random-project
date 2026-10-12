@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import threading
 import time
@@ -217,6 +218,7 @@ class AssistantBlock(QFrame):
         self.text, self.reasoning = "", ""
         self._dirty = False
         self._next = 0.0               # when the next re-render may happen (long replies render slower)
+        self._born = time.time()
         self._think_start = None
         self._think_secs = None
         lay = QVBoxLayout(self)
@@ -732,7 +734,7 @@ class ChatPage(QWidget):
             a.setCheckable(True)
             a.setChecked(p is current)
         m.addSeparator()
-        if srv.proc.running:
+        if srv.proc.running or srv._phase is not None:
             m.addAction("Stop the model", srv.stop)
         elif self.s.model_path:
             m.addAction(f"Start {Path(self.s.model_path).name}", srv.start)
@@ -766,6 +768,7 @@ class ChatPage(QWidget):
             self.s.workspace = str(Path(d))
             self.s.save()
             self._update_ws_btn()
+            mcp.manager().set_root(self.s.workspace_path())     # MCP servers that work on files follow it
 
     def _attach(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "Images", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp *.gif)")
@@ -815,6 +818,7 @@ class ChatPage(QWidget):
             self.agent = Agent(s, GuiUI(self.bridge, self.stop, s), stop=self.stop)
             if prev is not None:
                 self.agent.messages, self.agent.todos = prev.messages, prev.todos
+                self.agent.ctx.processes = prev.ctx.processes     # its background commands stay reachable
                 if prev.ctx.coding and sig[3] == (self._agent_sig or sig)[3]:
                     # mid coding task: stay in its private copy
                     self.agent.ctx.coding.update(prev.ctx.coding)
@@ -942,6 +946,8 @@ class ChatPage(QWidget):
             if len(reasoning) > len(blk.reasoning):    # a late </think>: what showed as the answer was thinking
                 blk.reasoning, blk.text = reasoning, getattr(turn, "content", "") or ""
                 blk.body.setVisible(bool(blk.text.strip()))
+                if blk._think_start is None:     # it thought from the start: "Thought for ...", no live line
+                    blk._think_start = blk._born
             blk.finish()
             if blk.is_empty():
                 blk.setVisible(False)
@@ -1076,7 +1082,14 @@ class ServerPage(QWidget):
         self._was_ready = False
         self._phase = None             # what a Strata start is doing, set from its worker thread
         self._strata_job: threading.Thread | None = None
+        self._strata_stop: threading.Event | None = None    # set to cancel that start
+        self._run_port = self.s.port   # the port the server was started on (the box can change meanwhile)
+        self._first_scan_done = False
+        self._help_job = None          # the llama-server being asked for its options on a worker thread
+        self._start_pending = False    # Start was pressed while that was being read
+        self._llama_dl: dict | None = None     # llama.cpp being downloaded
         self._located: dict = {}       # preset key -> catalog.model_path(), from the last folder scan
+        self._rechecked: set = set()   # modes whose missing files were looked for again since that scan
         self._last_model = self.s.model_path    # what autostart may start: the model used last time
         self._scanning: threading.Thread | None = None
         self._ready_job = None         # (thread, result) of the /health check in flight
@@ -1330,6 +1343,10 @@ class ServerPage(QWidget):
     def switch_to(self, key: str):
         """From the chat: pick a ready-made mode and use it (downloading what's missing)."""
         self.win.nav.setCurrentRow(1)
+        if self._dl_state is not None:     # the mode button would pause it
+            QMessageBox.information(self, "Model download", "A model is downloading. Let it finish (or pause it "
+                                    "here), then pick the mode again.")
+            return
         self.preset_box.setCurrentIndex(max(0, self.preset_box.findData(key)))
         self._use_preset()
 
@@ -1352,6 +1369,7 @@ class ServerPage(QWidget):
     def _scan(self, first: bool = False):
         """Look for model files (and, the first time, the GPU and llama.cpp) on a worker thread: walking
         Downloads or asking nvidia-smi can take seconds, and the window must stay responsive."""
+        first = first or not self._first_scan_done     # one that replaces the first scan does its job too
         dirs = self._dirs()
         self.dir_label.setText(", ".join(str(d) for d in dirs[:3]) or "(no folders yet: pick your models folder)")
         s, root = self.s, self._models_root()
@@ -1382,6 +1400,7 @@ class ServerPage(QWidget):
 
     def _apply_scan(self, out: dict, first: bool):
         if first:
+            self._first_scan_done = True
             g = out.get("gpu")
             if g:
                 self.vram = g[1]
@@ -1390,12 +1409,15 @@ class ServerPage(QWidget):
                 self.gpu.setText("No NVIDIA GPU found by nvidia-smi; planning for 16 GB.")
             self._show_exe(out.get("exe"))
         self._located = out.get("located") or {}
+        self._rechecked.clear()
         models = list(out.get("models") or [])
         saved = Path(self.s.model_path) if self.s.model_path else None
         if saved and saved not in models:
             models.insert(0, saved)      # kept even when its drive is unplugged: never swap it for another
         self.model_box.blockSignals(True)
         self.model_box.clear()
+        if saved is None and models:
+            self.model_box.addItem("(pick a model)", "")    # a first run: none is picked for the user
         for m in models:
             self.model_box.addItem(m.name + ("" if m.exists() else "  (not found)"), str(m))
         idx = next((i for i, m in enumerate(models) if saved and m == saved), 0)
@@ -1503,6 +1525,8 @@ class ServerPage(QWidget):
             self.preset_btn.setVisible(False)
             return
         model, mm, missing = self._locate(p)
+        if missing and p.key not in self._rechecked:
+            self._recheck(p)
         self.preset_btn.setVisible(bool(missing) or not active)    # else Start model below does it
         if not missing:
             where = f"On this PC in {model.parent}."
@@ -1513,6 +1537,20 @@ class ServerPage(QWidget):
             where = f"Needs a {gb:.1f} GB download into {dest}."
             self.preset_btn.setText(f"Download ({gb:.0f} GB) and use it" if gb >= 1 else "Download and use it")
         self.preset_info.setText(f"{p.blurb} {where}")
+
+    def _recheck(self, p):
+        """Files can arrive after the folder scan (copied in, downloaded in the browser): look for a mode's
+        missing files again, once per scan, on a worker thread."""
+        self._rechecked.add(p.key)
+        dirs = self._dirs() + [self._models_root()]
+
+        def done(got, _err):
+            if got is not None and got != self._located.get(p.key):
+                self._located[p.key] = got
+                if self._preset() is p:
+                    self._preset_picked()
+
+        in_background(lambda: catalog.model_path(p, dirs), done)
 
     def _use_preset(self):
         st = self._dl_state
@@ -1526,6 +1564,23 @@ class ServerPage(QWidget):
         if not missing:
             self._activate(p, model, mm)
             return
+        # the folder scan's answer can be old (files copied in since): look again before offering a download
+        dirs = self._dirs() + [self._models_root()]
+        self.preset_btn.setEnabled(False)
+
+        def done(got, _err):
+            self.preset_btn.setEnabled(True)
+            if got is not None:
+                self._located[p.key] = got
+            if self._preset() is p and self._dl_state is None:
+                self._use_located(p, *(got or (model, mm, missing)))
+
+        in_background(lambda: catalog.model_path(p, dirs), done)
+
+    def _use_located(self, p, model, mm, missing):
+        if not missing:
+            self._activate(p, model, mm)
+            return
         dest = model.parent if model else self._models_root() / p.folder
         gb = sum(p.sizes.get(f, 0) for f in missing) / catalog.GB
         if QMessageBox.question(self, "Download model",
@@ -1533,13 +1588,19 @@ class ServerPage(QWidget):
                                 "You can pause it and carry on later; it resumes where it stopped.") != QMessageBox.Yes:
             return
         st = self._dl_state = {"msg": "Starting...", "frac": 0.0, "done": None, "error": None,
-                               "stop": threading.Event()}
+                               "stop": threading.Event(), "finished": False}
+        dirs = self._dirs() + [self._models_root()]
 
         def work():
             try:
                 st["done"] = catalog.download(p, dest, lambda m, f: st.update(msg=m, frac=f), st["stop"])
             except Exception as e:  # noqa: BLE001
                 st["error"] = e
+            try:        # where its files are now (paused: some of them), looked up here, not on the window's thread
+                st["located"] = catalog.model_path(p, dirs)
+            except Exception:  # noqa: BLE001
+                pass
+            st["finished"] = True
 
         threading.Thread(target=work, daemon=True).start()
         self.preset_bar.setVisible(True)
@@ -1549,11 +1610,14 @@ class ServerPage(QWidget):
         def tick():
             self.preset_bar.setValue(int(st["frac"] * 1000))
             self.preset_info.setText(st["msg"])
-            if st["done"] is None and st["error"] is None:
+            if not st["finished"]:
                 QTimer.singleShot(300, tick)
                 return
             self._dl_state = None
-            self._located.pop(p.key, None)      # files changed: look again
+            if st.get("located") is not None:
+                self._located[p.key] = st["located"]
+            else:
+                self._located.pop(p.key, None)
             self.preset_bar.setVisible(False)
             self.preset_box.setEnabled(True)
             if st["error"] is not None:
@@ -1613,6 +1677,8 @@ class ServerPage(QWidget):
                 self.vision_btn.setText("Find a different vision file" if mm else "Find vision file online")
             except Exception as e:
                 self.info_label.setText(f"Couldn't read this file: {e}")
+        elif self.model_box.count():
+            self.info_label.setText("Pick a model file here, or a mode above.")
         self._changed()
 
     # ---------------------------------------------------------------- plan + command
@@ -1663,7 +1729,18 @@ class ServerPage(QWidget):
                                     "offers to download it first." if s.model_path else "")
             self._sync_start_btn()
             return
-        lp = launcher.build_launch(s, self.exe, launcher.server_help(self.exe), self.info, self.vram)
+        help_text = launcher.server_help(self.exe, wait=False)
+        if help_text is None:      # a llama-server not asked yet: --help can take seconds, so not on this thread
+            self.launch = None
+            self.cmd.setPlainText("")
+            self.plan_label.setText("Checking which options this llama.cpp build has...")
+            exe = self.exe
+            if self._help_job != exe:
+                self._help_job = exe
+                in_background(lambda: launcher.server_help(exe), lambda *_: self._help_read(exe))
+            self._sync_start_btn()
+            return
+        lp = launcher.build_launch(s, self.exe, help_text, self.info, self.vram)
         self.launch = lp
         self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in lp.args))
         lines = []
@@ -1684,13 +1761,30 @@ class ServerPage(QWidget):
         if manual and lp.plan and self.ngl.value() == 999 and self.ncm.value() == 0:
             self.ncm.setValue(lp.plan.n_cpu_moe)
 
+    def _help_read(self, exe):
+        if self._help_job == exe:
+            self._help_job = None
+        if exe != self.exe:
+            return          # another one was picked since; its own check carries on
+        self._changed()
+        if self._start_pending and self._help_job is None:
+            self._start_pending = False
+            if not self.proc.running and self._phase is None:
+                self.start()
+
     # ---------------------------------------------------------------- running
     def start(self):
+        if self._llama_dl is not None:     # llama.cpp is being downloaded: the model starts once it's there
+            self._llama_dl["then_start"] = True
+            return
+        if not self.exe:
+            self._refresh_exe()            # the first folder scan may not be back yet
         self._changed()
         p = catalog.matching(self.s.model_path)
         if strata.active(self.s, p):
             self._start_strata(p)
             return
+        self._cancel_strata()      # a stopped Strata start still downloading must not start anything later
         if self.s.model_path and not self.exe:
             if QMessageBox.question(self, "llama.cpp", "The model runs in llama.cpp's server program, which isn't on "
                                     "this PC yet. Download the newest build for your graphics card from GitHub now, "
@@ -1698,12 +1792,16 @@ class ServerPage(QWidget):
                 self._download(then_start=True)
             return
         if not self.launch:
+            if self._help_job is not None:     # still asking llama-server which options it has
+                self._start_pending = True
+                self.state.setText("Getting ready to start...")
             return
         try:
             self.proc.start(self.launch.args)
         except OSError as e:
             QMessageBox.warning(self, "Model server", f"Couldn't start llama-server: {e}")
             return
+        self._run_port = self.s.port
         self._was_ready = False
         self._ready_job = None
         self.state.setText("Loading the model...")
@@ -1711,6 +1809,8 @@ class ServerPage(QWidget):
         self.win.refresh_connection()
 
     def stop(self):
+        self._cancel_strata()
+        self._start_pending = False
         self.proc.stop()
         self._phase = None
         self._was_ready = False
@@ -1724,11 +1824,18 @@ class ServerPage(QWidget):
             text = "Cancel setup"
         elif self.proc.running:
             text = "Stop model"
+        elif self._llama_dl is not None:
+            text = "Downloading llama.cpp..."
         else:
             text = "Start model"
         if self.start_btn.text() != text:
             self.start_btn.setText(text)
-        self.start_btn.setEnabled(text != "Start model" or self._startable)
+        self.start_btn.setEnabled(text in ("Cancel setup", "Stop model") or (text == "Start model" and self._startable))
+
+    def _cancel_strata(self):
+        if self._strata_stop is not None:
+            self._strata_stop.set()
+        self._phase = None
 
     def _start_strata(self, p):
         s = self.s
@@ -1748,37 +1855,40 @@ class ServerPage(QWidget):
                 return
         self.proc.stop()
         self.proc.lines.clear()
-        self.proc.cancelled.clear()
         self._was_ready = False
         self._phase = "Setting up Strata (first time only; see the log)..."
         self.state.setText(self._phase)
-        stop = self.proc.cancelled
+        stop = self._strata_stop = threading.Event()
+        run = copy.copy(s)       # what this start uses, even if the settings change during a long setup
+        self._run_port = run.port
 
         def say(msg, frac=None):
             if not stop.is_set():
                 self._phase = msg
 
         def work():
+            # every step that starts a program checks stop under the lock Stop takes: a cancelled start
+            # never starts anything later (nor stops a model started since)
             try:
                 if not strata.installed():
-                    strata.download(say)
+                    strata.download(say, stop=stop)
                     self.proc.lines.append(f"Strata {strata.COMMIT[:7]} downloaded to {strata.STRATA_DIR}")
                 if stop.is_set():
                     return
-                if strata.needs_setup(p, model, s):
+                if strata.needs_setup(p, model, run):
                     say("Running Strata's setup (the first time it downloads its engine and draft layer)...")
-                    code = self.proc.run_step(strata.setup_args(p, model, s), strata.STRATA_DIR)
-                    if stop.is_set():
+                    code = self.proc.run_step(strata.setup_args(p, model, run), strata.STRATA_DIR, cancel=stop)
+                    if code is None or stop.is_set():
                         return
                     if code != 0 or not strata.config_path(p).is_file():
                         say(f"error: Strata's setup stopped (exit code {code}). The log below says why; press "
                             "Start model to try again, it carries on where it stopped.")
                         return
-                    strata.mark_setup_done(p, model, s)
-                if stop.is_set():
-                    return
-                self.proc.start(strata.serve_args(p, s), cwd=strata.STRATA_DIR, clear=False)
-                say("Loading the model...")
+                    strata.mark_setup_done(p, model, run)
+                if self.proc.start(strata.serve_args(p, run), cwd=strata.STRATA_DIR, clear=False, cancel=stop):
+                    say("Loading the model...")
+            except strata.Stopped:
+                pass
             except Exception as e:  # noqa: BLE001
                 say(f"error: {e}")
 
@@ -1789,6 +1899,8 @@ class ServerPage(QWidget):
 
     def _poll(self):
         phase = self._phase
+        if phase is not None and (self._strata_stop is None or self._strata_stop.is_set()):
+            phase = self._phase = None     # said by a start that was cancelled since
         if phase is not None:          # a Strata start in progress
             if phase.startswith("error: "):
                 self.state.setText(f"<span style='color:{BAD}'>{_esc(phase[7:])}</span>")
@@ -1809,7 +1921,7 @@ class ServerPage(QWidget):
             if self._ready_check() and self.proc.running:
                 self._was_ready = True
                 self.state.setText(f"<span style='color:{OK}'>Ready</span>")
-                self.s.base_url = f"http://127.0.0.1:{self.s.port}/v1"
+                self.s.base_url = f"http://127.0.0.1:{self._run_port}/v1"
                 self.s.model = ""
                 self.s.save()
                 self.win.chat._agent_sig = None     # a new model: the chat re-reads what it can do
@@ -1836,7 +1948,7 @@ class ServerPage(QWidget):
             self._ready_job = None
             if res.get("ok"):
                 return True
-        port, res = self.s.port, {}
+        port, res = self._run_port, {}
         t = threading.Thread(target=lambda: res.update(ok=launcher.ServerProcess().ready(port)), daemon=True)
         t.start()
         self._ready_job = (t, res)
@@ -1915,10 +2027,13 @@ class ServerPage(QWidget):
         tick()
 
     def _download(self, then_start: bool = False):
+        if self._llama_dl is not None:
+            return
+        state = self._llama_dl = {"msg": "", "frac": 0.0, "done": None, "then_start": then_start}
         self.dl_btn.setEnabled(False)
         self.dl_bar.setVisible(True)
         self.dl_bar.setRange(0, 100)
-        state = {"msg": "", "frac": 0.0, "done": None}
+        self._sync_start_btn()
 
         def work():
             try:
@@ -1931,14 +2046,15 @@ class ServerPage(QWidget):
         def tick():
             self.dl_bar.setValue(int(state["frac"] * 100))
             self.dl_bar.setFormat(state["msg"][:80] + "  %p%")
-            if then_start:
+            if state["then_start"]:
                 self.state.setText(f"Downloading llama.cpp: {state['msg'][:80]} {state['frac'] * 100:.0f}%")
             if state["done"] is None:
                 QTimer.singleShot(200, tick)
                 return
+            self._llama_dl = None
             self.dl_btn.setEnabled(True)
             self.dl_bar.setVisible(False)
-            if then_start:
+            if state["then_start"]:
                 self.state.setText("Stopped")
             if isinstance(state["done"], Exception):
                 QMessageBox.warning(self, "Download", f"Download failed: {state['done']}")
@@ -1947,8 +2063,9 @@ class ServerPage(QWidget):
                 self.s.save()
                 self._refresh_exe()
                 self._changed()
-                if then_start and not self.proc.running:
+                if state["then_start"] and not self.proc.running:
                     self.start()
+            self._sync_start_btn()
 
         tick()
 
@@ -2058,6 +2175,7 @@ class SettingsPage(QWidget):
         self.preset.currentIndexChanged.connect(self._preset)
         f.addRow("Server:", self.preset)
         self.url = QLineEdit(s.base_url)
+        self._conn_shown = (s.base_url, s.model)     # what the two boxes were filled with
         self.url.editingFinished.connect(self._save_connection)
         f.addRow("Address:", self.url)
         row = QHBoxLayout()
@@ -2193,6 +2311,7 @@ class SettingsPage(QWidget):
         """The Model server page changes the address and model when it starts one: show what's saved."""
         self.url.setText(self.s.base_url)
         self.model.setEditText(self.s.model)
+        self._conn_shown = (self.s.base_url, self.s.model)
         self._sync_preset()
         self._show_addons()
 
@@ -2247,10 +2366,16 @@ class SettingsPage(QWidget):
         dlg.exec()
 
     def _save_connection(self):
-        """Only the address and model, and only from their own boxes: saving them along with every other
-        switch would write back an address the Model server page has since changed."""
+        """Only the address and model, and only what was changed in their boxes: the Model server page may
+        have set both since this page showed them (starting a model), and that mustn't be undone."""
         s = self.s
-        url, model = self.url.text().strip() or s.base_url, self.model.currentText().strip()
+        url, model = self.url.text().strip(), self.model.currentText().strip()
+        shown_url, shown_model = self._conn_shown
+        url = url if url and url != shown_url else s.base_url
+        model = model if model != shown_model else s.model
+        self.url.setText(url)
+        self.model.setEditText(model)
+        self._conn_shown = (url, model)
         if (url, model) == (s.base_url, s.model):
             return
         s.base_url, s.model = url, model
@@ -2620,13 +2745,14 @@ class MainWindow(QMainWindow):
         check()
 
     def closeEvent(self, e):
-        if self.server.proc.running:
+        if self.server.proc.running or self.server._phase is not None:
             r = QMessageBox.question(self, "Quit", "Stop the model server too?",
                                      QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
             if r == QMessageBox.Cancel:
                 e.ignore()
                 return
             if r == QMessageBox.Yes:
+                self.server._cancel_strata()
                 self.server.proc.stop()
         self.chat.stop.set()
         _stop_background(self.chat.agent)

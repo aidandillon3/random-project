@@ -71,17 +71,24 @@ def load(folder: Path | None = None) -> list[str]:
         except Exception as e:  # noqa: BLE001 - a broken plugin mustn't stop the app
             errors[f.name] = f"{type(e).__name__}: {e}"
             for n in set(REGISTRY) - set(before):
-                REGISTRY.pop(n)
+                REGISTRY.pop(n, None)
+            _restore(before)            # it may have swapped out a built-in before failing
             continue
-        replaced = [n for n in before if REGISTRY[n] is not before[n]]
-        for n in replaced:              # a plugin can add tools, not swap out the built-in ones
-            REGISTRY[n] = before[n]
+        replaced = _restore(before)
         if replaced:
             errors[f.name] = f"Skipped tools named like built-in ones: {', '.join(replaced)}"
         names = sorted(set(REGISTRY) - set(before))
         _loaded[f.name] = names
         out += names
     return out
+
+
+def _restore(before: dict) -> list[str]:
+    """A plugin can add tools, not swap out the built-in ones: put back any it replaced."""
+    replaced = [n for n, t in before.items() if REGISTRY.get(n, t) is not t]   # MCP tools can go meanwhile
+    for n in replaced:
+        REGISTRY[n] = before[n]
+    return replaced
 
 
 def summary() -> str:

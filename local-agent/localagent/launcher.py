@@ -130,13 +130,16 @@ def _run_text(args: list[str]) -> str:
         return ""
 
 
-def server_help(exe: Path) -> str:
+def server_help(exe: Path, wait: bool = True) -> str | None:
     """llama-server's --help (which options this build has) plus its --version line. A failed run (e.g. a DLL
-    missing) is not kept, so the next call tries again."""
+    missing) is not kept, so the next call tries again. wait=False: None instead of running it (it can take
+    seconds) when it isn't known yet."""
     key = f"{exe}:{exe.stat().st_mtime if exe.exists() else 0}"
     if key not in _help_cache:
         if time.time() - _help_failed.get(key, 0) < 30:
             return ""
+        if not wait:
+            return None
         text = _run_text([str(exe), "--help"])
         if "--" not in text:      # it didn't run (a DLL missing, a virus scan that took too long, ...)
             _help_failed[key] = time.time()
@@ -313,30 +316,39 @@ class ServerProcess:
     def __init__(self):
         self.proc: subprocess.Popen | None = None
         self.lines: collections.deque[str] = collections.deque(maxlen=3000)
-        self._lock = threading.Lock()
-        self.cancelled = threading.Event()
+        self._lock = threading.RLock()      # a start on a worker thread and stop() don't cross
 
     @property
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, args: list[str], cwd: str | Path | None = None, clear: bool = True):
-        self.stop()
-        self.cancelled.clear()
-        if clear:
-            self.lines.clear()
-        self.lines.append("> " + " ".join(f'"{a}"' if " " in a else a for a in args))
-        self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                     creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0,
-                                     cwd=str(cwd or Path(args[0]).parent))
-        threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
+    def start(self, args: list[str], cwd: str | Path | None = None, clear: bool = True,
+              cancel: threading.Event | None = None) -> bool:
+        """cancel: the stop flag of the job starting it (a Strata start on a worker thread). Once it's set
+        nothing starts, and nothing started since is stopped: False."""
+        with self._lock:
+            if cancel is not None and cancel.is_set():
+                return False
+            self.stop()
+            if clear:
+                self.lines.clear()
+            self.lines.append("> " + " ".join(f'"{a}"' if " " in a else a for a in args))
+            self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                         stdin=subprocess.DEVNULL, cwd=str(cwd or Path(args[0]).parent),
+                                         creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
+            threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
+        return True
 
-    def run_step(self, args: list[str], cwd: str | Path) -> int:
-        """Run a setup command with its output in the log, and wait for it. Stop() ends it."""
-        self.lines.append("> " + " ".join(f'"{a}"' if " " in a else a for a in args))
-        proc = self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                            stdin=subprocess.DEVNULL, cwd=str(cwd),
-                                            creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
+    def run_step(self, args: list[str], cwd: str | Path, cancel: threading.Event | None = None) -> int | None:
+        """Run a setup command with its output in the log, and wait for it. Stop() ends it. None when
+        cancel was set before it started."""
+        with self._lock:
+            if cancel is not None and cancel.is_set():
+                return None
+            self.lines.append("> " + " ".join(f'"{a}"' if " " in a else a for a in args))
+            proc = self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                                stdin=subprocess.DEVNULL, cwd=str(cwd),
+                                                creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
         for raw in iter(proc.stdout.readline, b""):
             self.lines.append(raw.decode("utf-8", "replace").rstrip())
         return proc.wait()
@@ -348,18 +360,18 @@ class ServerProcess:
         self.lines.append(f"[server stopped, exit code {code}]")
 
     def stop(self):
-        self.cancelled.set()
-        if self.running:
-            if WINDOWS:    # the whole tree: a setup script's Python, or a server's engine
-                subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.proc.pid)], capture_output=True,
-                               creationflags=subprocess.CREATE_NO_WINDOW)
-            else:
-                self.proc.terminate()
-            try:
-                self.proc.wait(20)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-        self.proc = None
+        with self._lock:
+            if self.running:
+                if WINDOWS:    # the whole tree: a setup script's Python, or a server's engine
+                    subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.proc.pid)], capture_output=True,
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
+                else:
+                    self.proc.terminate()
+                try:
+                    self.proc.wait(20)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+            self.proc = None
 
     def ready(self, port: int) -> bool:
         """llama.cpp answers /health with 503 while loading; Strata answers 200 with "loaded": false."""

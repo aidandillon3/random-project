@@ -61,7 +61,8 @@ def enabled_tools(settings, depth: int = 0, workspace=None, full=()) -> list[Too
     if settings.enable_subagents and depth == 0:
         groups.add("subagents")
     groups.add("mcp")     # tools of the MCP servers in data/mcp.json (opt-in by being listed there)
-    tools = [t for t in REGISTRY.values() if t.group in groups]
+    # a copy: MCP servers and plugins change the registry from other threads
+    tools = [t for t in list(REGISTRY.values()) if t.group in groups]
     if "unity" in groups and "unity" not in full and not unity_likely(workspace, settings):
         tools = [t for t in tools if t.group != "unity" or t.name in UNITY_ALWAYS]
     if "github" in groups and "github" not in full and not github_signed_in(settings):

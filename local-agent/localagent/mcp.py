@@ -94,6 +94,8 @@ class Client:
 
     def __init__(self, name: str, cfg: dict, cwd: Path | None = None):
         self.name, self.cfg, self.cwd = name, cfg, cwd
+        self.root = cwd                # the work folder it's told about (roots/list); can change while it runs
+        self.retired = False           # the Manager dropped it: never start it again
         self.proc: subprocess.Popen | None = None
         self.tools: list[dict] = []
         self.info: dict = {}
@@ -113,16 +115,27 @@ class Client:
         args = [exe] + [str(a) for a in self.cfg.get("args") or []]
         env = dict(os.environ)
         env.update({str(k): str(v) for k, v in (self.cfg.get("env") or {}).items()})
-        cwd = self.cfg.get("cwd") or (str(self.cwd) if self.cwd else None)
+        cwd = self.cfg.get("cwd")
+        if not cwd and self.cwd:
+            cwd = str(self.cwd)
+            try:
+                Path(cwd).mkdir(parents=True, exist_ok=True)     # on a first run the work folder isn't made yet
+            except OSError:
+                cwd = None
         try:
             self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                          env=env, cwd=cwd,
                                          creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
         except OSError as e:
+            if cwd and (e.filename == cwd or not os.path.isdir(cwd)):     # the folder is the problem, not the program
+                raise McpError(f"Couldn't start '{cmd}' in the folder {cwd}: {e.strerror or e}.") from None
             raise McpError(f"Couldn't start '{cmd}': {e}. Is it installed (Node.js for npx, uv for uvx)?") from None
+        if self.retired:              # stopped while it was starting
+            self.close()
+            raise McpError(_gone(self.name))
         threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
         threading.Thread(target=self._drain, args=(self.proc,), daemon=True).start()
-        res = self.request("initialize", {"protocolVersion": PROTOCOL, "capabilities": {},
+        res = self.request("initialize", {"protocolVersion": PROTOCOL, "capabilities": {"roots": {"listChanged": True}},
                                           "clientInfo": {"name": "local-agent", "version": "1.0"}}, timeout)
         self.info = res.get("serverInfo") or {}
         self.notify("notifications/initialized")
@@ -137,9 +150,16 @@ class Client:
 
     def restart(self, timeout: float = 60) -> None:
         with self._start_lock:
+            if self.retired:          # an open chat's tool after Reload: don't run a copy the app doesn't manage
+                raise McpError(_gone(self.name))
             if not self.alive:
                 self.close()
                 self.start(timeout)
+
+    def retire(self) -> None:
+        """Close for good (the Manager stopped or replaced this server)."""
+        self.retired = True
+        self.close()
 
     def close(self) -> None:
         p, self.proc = self.proc, None
@@ -237,7 +257,7 @@ class Client:
                 if method == "ping":
                     reply = {"result": {}}
                 elif method == "roots/list":
-                    root = Path(self.cwd).resolve().as_uri() if self.cwd else None
+                    root = Path(self.root).resolve().as_uri() if self.root else None
                     reply = {"result": {"roots": [{"uri": root, "name": "work folder"}] if root else []}}
                 else:
                     reply = {"error": {"code": -32601, "message": f"{method} isn't supported by this client"}}
@@ -317,25 +337,36 @@ class McpTool(Tool):
                 "function": {"name": self.name, "description": self.description, "parameters": params}}
 
 
+def _gone(server: str) -> str:
+    return (f"The {server} MCP server was stopped or reloaded; this tool is gone. "
+            "Carry on without it, or ask the user to start a new chat to get the current MCP tools.")
+
+
 def _short(text: str) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= MAX_DESCRIPTION else text[:MAX_DESCRIPTION].rsplit(" ", 1)[0] + "..."
 
 
-def _register(client: Client) -> list[str]:
+def _register(client: Client, clients: dict[str, Client]) -> list[str]:
+    """Add the server's tools. A call goes to the server running under that name when it's made
+    (clients is the Manager's), so a chat that outlives a Reload uses the new one, never the old."""
     risk_cfg = str(client.cfg.get("risk", "ask")).lower()
     names = []
     for t in client.tools:
         name = tool_name(client.name, t["name"])
-        if name in REGISTRY and REGISTRY[name].group != GROUP:
+        old = REGISTRY.get(name)
+        if old is not None and old.group != GROUP:
             continue                       # never shadow a built-in tool
         hint = bool((t.get("annotations") or {}).get("readOnlyHint"))
         risk = (SAFE if hint else RUN) if risk_cfg == "hints" else RISKS.get(risk_cfg, RUN)
         schema = t.get("inputSchema") if isinstance(t.get("inputSchema"), dict) else {}
 
         def run(ctx, a, _t=t["name"]):
+            c = clients.get(client.name)
             try:
-                return client.call(_t, a, ctx.stop)
+                if c is None:
+                    raise McpError(_gone(client.name))
+                return c.call(_t, a, ctx.stop)
             except McpError as e:
                 raise ToolError(str(e)) from None
 
@@ -355,26 +386,32 @@ class Manager:
         self.clients: dict[str, Client] = {}
         self.errors: dict[str, str] = {}
         self.starting = False
+        self.root: Path | None = None          # the work folder the servers are told about
+        self._launching: set[Client] = set()   # still starting up: stop() ends these too
+        self._gen = 0                          # every start() and stop() adds one; an older start gives up
         self._lock = threading.Lock()
 
     def start(self, path: Path | None = None, cwd: Path | None = None, timeout: float = 90) -> None:
-        """(Re)start every server; blocks until each one is up or failed (they start side by side)."""
+        """(Re)start every server; blocks until each one is up or failed (they start side by side).
+        The lock isn't held while they start, so stop() and a newer start() don't wait for them."""
         with self._lock:
             self.starting = True
+            self._stop()
+            gen, self.root = self._gen, cwd
             try:
-                self._stop()
-                try:
-                    cfg = load_config(path)
-                except (OSError, ValueError) as e:
-                    self.errors["mcp.json"] = str(e)
-                    return
-                threads = [threading.Thread(target=self._start_one, args=(n, c, cwd, timeout), daemon=True)
-                           for n, c in cfg.items()]
-                for t in threads:
-                    t.start()
-                for t in threads:
-                    t.join(timeout + 10)
-            finally:
+                cfg = load_config(path)
+            except (OSError, ValueError) as e:
+                self.errors["mcp.json"] = str(e)
+                self.starting = False
+                return
+        threads = [threading.Thread(target=self._start_one, args=(gen, n, c, cwd, timeout), daemon=True)
+                   for n, c in cfg.items()]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout + 10)
+        with self._lock:
+            if gen == self._gen:
                 self.starting = False
 
     def start_background(self, path: Path | None = None, cwd: Path | None = None) -> threading.Thread:
@@ -382,35 +419,64 @@ class Manager:
         t.start()
         return t
 
-    def _start_one(self, name: str, cfg: dict, cwd: Path | None, timeout: float) -> None:
+    def _start_one(self, gen: int, name: str, cfg: dict, cwd: Path | None, timeout: float) -> None:
         c = Client(name, cfg, cwd)
+        with self._lock:
+            if gen != self._gen:
+                return
+            c.root = self.root
+            self._launching.add(c)
         try:
             c.start(timeout)
         except Exception as e:  # noqa: BLE001
             tail = "\n".join(list(c.stderr)[-5:])
-            self.errors[name] = f"{e}" + (f"\n{tail}" if tail and tail not in str(e) else "")
+            with self._lock:
+                self._launching.discard(c)
+                if gen == self._gen:
+                    self.errors[name] = f"{e}" + (f"\n{tail}" if tail and tail not in str(e) else "")
             c.close()
             return
-        self.clients[name] = c
-        _register(c)
+        with self._lock:
+            self._launching.discard(c)
+            if gen != self._gen:           # stop() or a newer start() came first and closed it
+                return
+            self.clients[name] = c
+            _register(c, self.clients)
 
     def _stop(self) -> None:
-        for name in [n for n, t in REGISTRY.items() if t.group == GROUP]:
-            del REGISTRY[name]
-        for c in self.clients.values():
-            c.close()
+        self._gen += 1
+        for name in [n for n, t in list(REGISTRY.items()) if t.group == GROUP]:
+            REGISTRY.pop(name, None)
+        for c in list(self.clients.values()) + list(self._launching):
+            c.retire()
         self.clients.clear()
+        self._launching.clear()
         self.errors.clear()
 
     def stop(self) -> None:
         with self._lock:
             self._stop()
+            self.starting = False
+
+    def set_root(self, path: Path | None) -> None:
+        """The work folder changed: tell the servers (their roots). They keep running in the folder
+        they started in. Doesn't wait for them."""
+        path = Path(path) if path else None
+        with self._lock:
+            if path == self.root:
+                return
+            self.root = path
+            for c in list(self._launching) + list(self.clients.values()):
+                c.root = path              # ones still starting ask for the roots once they're up
+            running = list(self.clients.values())
+        for c in running:
+            c.notify("notifications/roots/list_changed")
 
     def summary(self) -> str:
         if self.starting:
             return "Starting MCP servers..."
-        parts = [f"{n}: {len(c.tools)} tools" for n, c in self.clients.items()]
-        parts += [f"{n}: failed ({e.splitlines()[0][:120]})" for n, e in self.errors.items()]
+        parts = [f"{n}: {len(c.tools)} tools" for n, c in list(self.clients.items())]
+        parts += [f"{n}: failed ({e.splitlines()[0][:120]})" for n, e in list(self.errors.items())]
         return "; ".join(parts) or "No MCP servers set up."
 
 

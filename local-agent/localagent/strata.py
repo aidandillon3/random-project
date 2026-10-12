@@ -62,8 +62,14 @@ def config_path(preset, root: Path | None = None) -> Path:
     return root / f"strata-{(st.get('tag', '') + st['model']).lower()}.json"
 
 
-def download(progress=lambda msg, frac: None, root: Path | None = None, url: str = ZIP_URL, session=None) -> Path:
-    """Fetch Strata's source (about 55 MB) into root. Its setup fetches the rest."""
+class Stopped(Exception):
+    pass
+
+
+def download(progress=lambda msg, frac: None, root: Path | None = None, url: str = ZIP_URL, session=None,
+             stop=None) -> Path:
+    """Fetch Strata's source (about 55 MB) into root. Its setup fetches the rest. stop: an Event that ends
+    it early (Stopped), leaving the folder as it was."""
     root = root or STRATA_DIR
     session = session or requests.Session()
     progress("Downloading Strata from GitHub...", 0.0)
@@ -72,6 +78,8 @@ def download(progress=lambda msg, frac: None, root: Path | None = None, url: str
         total = int(r.headers.get("content-length") or 0)
         buf = io.BytesIO()
         for chunk in r.iter_content(1 << 20):
+            if stop is not None and stop.is_set():
+                raise Stopped()
             buf.write(chunk)
             progress(f"Downloading Strata ({buf.tell() / 1e6:.0f} MB)...", buf.tell() / total if total else 0.0)
     tmp = root.with_name(root.name + ".new")
