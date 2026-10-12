@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -66,6 +67,64 @@ class StrataTest(unittest.TestCase):
         cmd = strata.serve_args(self.flash, s, self.root)
         self.assertEqual(cmd[1:4], [str(self.root / "serve" / "server.py"), "--engine", "strata"])
         self.assertEqual(cmd[cmd.index("--config") + 1], str(self.root / "strata-swift-iq2_xs.json"))
+        # a prompt plus max_tokens longer than the context gets a shorter answer, not an error
+        self.assertIn("--fit-max-tokens", cmd)
+
+    def test_windows_setup_command_survives_spaces(self):
+        def after_cmd_c(line: str) -> str:
+            """What cmd.exe runs for "cmd ... /c <rest>" (cmd /?): when <rest> starts with a quote and has more
+            than two, the first and the last quote are removed."""
+            rest = line.split(" /c ", 1)[1].lstrip()
+            if rest.startswith('"') and rest.count('"') > 2:
+                i = rest.rindex('"')
+                rest = rest[1:i] + rest[i + 1:]
+            return rest
+
+        root = Path("C:/Users/Aidan Dillon/Local Agent/strata")
+        model = Path("C:/Users/Aidan Dillon/Local Agent/models/Swift-1.5-Qwen3.8-Flash-Next") / self.flash.files[0]
+        s = Settings(ctx_size=65536, use_vision=True, port=8080)
+        old = strata.WINDOWS
+        self.addCleanup(setattr, strata, "WINDOWS", old)
+        strata.WINDOWS = True
+        # the old way: the .bat's path loses its opening quote -> cmd runs C:\Users\Aidan
+        bat = str(root / "START-HERE.bat")
+        broken = subprocess.list2cmdline(["cmd", "/c", bat, "--gguf-dir", str(model.parent)])
+        self.assertTrue(after_cmd_c(broken).startswith(bat.split(" ")[0] + " "))
+        # first setup (no .venv yet): "call" first, so every quote stays where it was
+        a = strata.setup_args(self.flash, model, s, root)
+        self.assertEqual(a[:5], ["cmd", "/d", "/c", "call", bat])
+        line = subprocess.list2cmdline(a)
+        self.assertEqual(after_cmd_c(line), line.split(" /c ", 1)[1])
+        self.assertIn(f'call "{bat}" --yes', line)
+        self.assertIn(f'--gguf-dir "{model.parent}"', line)
+        # later setups: the .venv's Python runs setup.py directly, no cmd.exe at all
+        venv_root = Path(tempfile.mkdtemp()) / "Local Agent" / "strata"
+        strata.python(venv_root).parent.mkdir(parents=True)
+        strata.python(venv_root).write_text("")
+        a = strata.setup_args(self.flash, model, s, venv_root)
+        self.assertEqual(a[:2], [str(venv_root / ".venv" / "Scripts" / "python.exe"), str(venv_root / "setup.py")])
+        self.assertIn("--yes", a)
+
+    def test_engine_cache_options_are_put_back_after_setup(self):
+        self.root.mkdir(parents=True)
+        cfg_path = strata.config_path(self.flash, self.root)
+        self.assertFalse(strata.tune_config(self.flash, self.root))          # no config yet: nothing to do
+        cfg_path.write_text(json.dumps({"exe": "engine/strata.exe", "args": ["--serve", "--prompt-cache", "4"],
+                                        "sampling": {"temperature": 1.0}}), encoding="utf-8")
+        strata.serve_args(self.flash, Settings(), self.root)                  # done before each start
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        args = cfg["args"]
+        val = lambda k: args[args.index(k) + 1]  # noqa: E731
+        self.assertEqual(val("--prompt-cache"), "4")                           # set by hand: kept
+        self.assertEqual((val("--conversation-cache-mib"), val("--conversation-cache-min-tokens")), ("4096", "8192"))
+        self.assertEqual(cfg["sampling"], {"temperature": 1.0})
+        self.assertFalse(strata.tune_config(self.flash, self.root))            # already there: file left alone
+        cfg["args"] = ["--serve"]                                              # setup ran again and rewrote it
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.assertTrue(strata.tune_config(self.flash, self.root))
+        args = json.loads(cfg_path.read_text(encoding="utf-8"))["args"]
+        self.assertEqual(args.count("--prompt-cache"), 1)
+        self.assertEqual(args[args.index("--prompt-cache") + 1], "10")
 
     def test_setup_runs_again_only_when_its_choices_change(self):
         s = Settings(ctx_size=65536, use_vision=True)

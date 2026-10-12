@@ -14,6 +14,7 @@ import re
 import sqlite3
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,13 +43,26 @@ SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "env", "__pycache__", ".my
 MAX_TEXT_BYTES = 1_000_000
 CHUNK_LINES = 60
 MAX_CHUNKS = 999            # chunk ids are file_id * 1000 + n
-MAX_FILES_PER_RUN = 60_000
+MAX_FILES_PER_RUN = 60_000   # files read per run; the rest are read on the next one
+COMMIT_EVERY = 200           # files indexed per write to the disk
+MAX_NOTE_CHARS = 4000        # a note is a fact or two, not a document (recall_for shows at most 1,500 characters)
+
+
+def _fold(text: str) -> str:
+    """café -> cafe, as the search index sees it, so a request typed without accents still matches. Only Latin
+    letters: other scripts keep their marks (the index keeps them too)."""
+    out: list[str] = []
+    for c in unicodedata.normalize("NFD", text):
+        if unicodedata.combining(c) and out and out[-1] < "\u0250":
+            continue
+        out.append(c)
+    return unicodedata.normalize("NFC", "".join(out))
 
 
 def terms(text: str, limit: int = 16) -> list[str]:
     """The words worth searching for: lower-case, no filler words, no repeats."""
     out: list[str] = []
-    for w in re.findall(r"[^\W_]+", text.lower()):
+    for w in re.findall(r"[^\W_]+", _fold(text.lower())):
         if len(w) < 2 or w in STOP_WORDS or w in out:
             continue
         out.append(w)
@@ -99,6 +113,7 @@ class Memory:
         self.lock = threading.RLock()
         self.db = sqlite3.connect(str(self.path), check_same_thread=False, timeout=30)
         self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")     # safe with WAL, and much faster for the file index
         self._setup()
         self._import_old_notes()
 
@@ -131,13 +146,15 @@ class Memory:
             self.db.close()
 
     # ------------------------------------------------------------------ notes
-    def add(self, body: str, title: str = "", pinned: bool = False) -> Note:
+    def add(self, body: str, title: str = "", pinned: bool = False, replaces: int | None = None) -> Note:
+        """A new note; with replaces, that note is changed instead. Another note with the same title is left
+        alone (it may hold a different fact)."""
+        if replaces:
+            return self.update(int(replaces), body=body, title=title or None, pinned=pinned or None)
         body, title = body.strip(), title.strip()
         if not body:
             raise ValueError("The note is empty.")
-        same = self._same_title(title) if title else None
-        if same:
-            return self.update(same, body=body, pinned=pinned or None)
+        _check_length(body)
         now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
         with self.lock, self.db:
             cur = self.db.execute("INSERT INTO notes(title, body, pinned, created, updated) VALUES(?,?,?,?,?)",
@@ -146,11 +163,6 @@ class Memory:
             self.db.execute("INSERT INTO notes_fts(rowid, title, body) VALUES(?,?,?)", (nid, title, body))
         return self.get(nid)
 
-    def _same_title(self, title: str) -> int | None:
-        with self.lock:
-            row = self.db.execute("SELECT id FROM notes WHERE lower(title) = lower(?)", (title,)).fetchone()
-        return row[0] if row else None
-
     def update(self, nid: int, body: str | None = None, title: str | None = None,
                pinned: bool | None = None) -> Note:
         note = self.get(nid)
@@ -158,6 +170,10 @@ class Memory:
             raise KeyError(f"There is no note #{nid}.")
         body = note.body if body is None else body.strip()
         title = note.title if title is None else title.strip()
+        if not body:
+            raise ValueError("The note is empty.")
+        if body != note.body:
+            _check_length(body)
         pinned = note.pinned if pinned is None else pinned
         now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
         with self.lock, self.db:
@@ -205,24 +221,29 @@ class Memory:
                 "ORDER BY s LIMIT ?", (q, limit)).fetchall()
         return [Note(r[0], r[1], r[2], bool(r[3]), r[4] or "", -r[5]) for r in rows]
 
-    def recall_for(self, request: str, limit: int = 5, budget: int = 1500) -> list[Note]:
+    def recall_for(self, request: str, limit: int = 5, budget: int = 1500,
+                   exclude: set[int] | frozenset[int] = frozenset()) -> list[Note]:
         """Notes worth showing the model with this request, unasked. Stricter than a search:
         a note has to share two real words with the request (or the one word of a short request),
-        so the model isn't handed loosely related clutter."""
+        so the model isn't handed loosely related clutter. exclude: ids of notes the conversation
+        already has. All of their line()s together stay within budget characters (a long note is cut)."""
         want = terms(request)
         if not want:
             return []
         need = 1 if len(want) <= 2 else 2
         out, used = [], 0
-        for n in self.search_notes(request, limit=limit * 3):
-            if n.pinned:
-                continue  # already in the system prompt
+        for n in self.search_notes(request, limit=limit * 3 + len(exclude)):
+            if n.pinned or n.id in exclude:
+                continue  # pinned ones are in the system prompt already
             words = set(terms(f"{n.title} {n.body}", limit=400))
             hits = sum(1 for t in want if any(w.startswith(_stem(t)) for w in words))
             if hits < need:
                 continue
-            if used + len(n.line()) > budget and out:
-                break
+            over = used + len(n.line()) - budget
+            if over > 0:
+                if out:
+                    break
+                n.body = n.body[:max(0, len(n.body) - over - 4)].rstrip() + " ..."   # the first one, cut to fit
             out.append(n)
             used += len(n.line())
             if len(out) >= limit:
@@ -258,48 +279,62 @@ class Memory:
     def index_folder(self, root: Path, stop: threading.Event | None = None,
                      progress=lambda n, path: None, max_files: int = MAX_FILES_PER_RUN) -> dict:
         """Bring the index of one folder up to date: new and changed files are (re)read, files
-        that are gone are dropped. Unchanged files cost one stat call."""
+        that are gone are dropped. Unchanged files cost one stat call. At most max_files are read
+        per run ("left" says how many wait for the next one). A folder inside another indexed
+        folder shares its files' entries."""
         root = Path(root).expanduser().resolve()
-        stats = {"seen": 0, "updated": 0, "removed": 0}
+        stats = {"seen": 0, "updated": 0, "removed": 0, "left": 0}
         if not root.is_dir():
             return stats
         key = str(root)
-        with self.lock:
-            known = {p: (fid, m, s) for fid, p, m, s in self.db.execute(
-                "SELECT id, path, mtime, size FROM files WHERE root=?", (key,))}
+        prefix = key if key.endswith(os.sep) else key + os.sep
+        with self.lock:      # every file under root, whichever indexed folder added it
+            known = {p: (fid, m, s, r) for fid, p, m, s, r in self.db.execute(
+                "SELECT id, path, mtime, size, root FROM files WHERE root=? OR (path >= ? AND path < ?)",
+                (key, prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)))}
         seen: set[str] = set()
-        pending = 0
-        for dirpath, dirnames, filenames in os.walk(root):
-            if stop is not None and stop.is_set():
-                return stats
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
-            for name in filenames:
-                p = os.path.join(dirpath, name)
-                try:
-                    st = os.stat(p)
-                except OSError:
-                    continue
-                seen.add(p)
-                stats["seen"] += 1
-                old = known.get(p)
-                if old and old[1] == st.st_mtime and old[2] == st.st_size:
-                    continue
-                self._index_file(p, st, key, old[0] if old else None)
-                stats["updated"] += 1
-                pending += 1
-                if pending % 200 == 0:
-                    progress(stats["seen"], p)
-                if stats["seen"] >= max_files:
-                    break
-            if stats["seen"] >= max_files:
-                break
-        else:
-            gone = [(fid, p) for p, (fid, _m, _s) in known.items() if p not in seen]
-            with self.lock, self.db:
-                for fid, _p in gone:
+        try:
+            for dirpath, dirnames, filenames in os.walk(root):
+                if stop is not None and stop.is_set():
+                    return stats
+                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+                for name in filenames:
+                    p = os.path.join(dirpath, name)
+                    try:
+                        st = os.stat(p)
+                    except OSError:
+                        continue
+                    seen.add(p)
+                    stats["seen"] += 1
+                    old = known.get(p)
+                    if old and old[1] == st.st_mtime and old[2] == st.st_size:
+                        continue
+                    if stats["updated"] >= max_files:
+                        stats["left"] += 1          # read on the next run; the walk goes on so removal can run
+                        continue
+                    self._index_file(p, st, key, old[0] if old else None)
+                    stats["updated"] += 1
+                    if stats["updated"] % COMMIT_EVERY == 0:
+                        with self.lock:
+                            self.db.commit()
+                        progress(stats["seen"], p)
+            # the walk got through: drop what's gone. A file another indexed folder added and this walk
+            # skipped (e.g. inside a .hidden folder) only when it's really gone.
+            gone = [fid for p, (fid, _m, _s, r) in known.items()
+                    if p not in seen and (r == key or not os.path.exists(p))]
+            with self.lock:
+                for fid in gone:
                     self._drop_chunks(fid)
                     self.db.execute("DELETE FROM files WHERE id=?", (fid,))
             stats["removed"] = len(gone)
+        except BaseException:
+            with self.lock:
+                self.db.rollback()
+            raise
+        finally:
+            with self.lock:
+                if self.db.in_transaction:
+                    self.db.commit()
         return stats
 
     def forget_folder(self, root: Path):
@@ -313,8 +348,12 @@ class Memory:
         self.db.execute("DELETE FROM chunks_fts WHERE rowid BETWEEN ? AND ?", (fid * 1000, fid * 1000 + 999))
 
     def _index_file(self, path: str, st, root: str, fid: int | None):
+        """Writes without committing: index_folder commits every COMMIT_EVERY files."""
         text = _read_text(path, st.st_size)
-        with self.lock, self.db:
+        with self.lock:
+            if fid is None:      # another indexing run may have added it meanwhile
+                row = self.db.execute("SELECT id FROM files WHERE path=?", (path,)).fetchone()
+                fid = row[0] if row else None
             if fid is None:
                 fid = self.db.execute("INSERT INTO files(path, mtime, size, root) VALUES(?,?,?,?)",
                                       (path, st.st_mtime, st.st_size, root)).lastrowid
@@ -332,6 +371,12 @@ class Memory:
                 chunk = "\n".join(lines[start:start + CHUNK_LINES])
                 self.db.execute("INSERT INTO chunks_fts(rowid, path, start, text) VALUES(?,?,?,?)",
                                 (fid * 1000 + n, path, start + 1, chunk))
+
+
+def _check_length(body: str):
+    if len(body) > MAX_NOTE_CHARS:
+        raise ValueError(f"The note is {len(body):,} characters; keep it under {MAX_NOTE_CHARS:,}: one or two "
+                         "short facts per note (save a long text as a file instead).")
 
 
 def _read_text(path: str, size: int) -> str:
@@ -394,13 +439,16 @@ class Indexer(threading.Thread):
     def run(self):
         while not self.stop_event.is_set():
             if getattr(self.settings, "index_files", True):
-                self.run_once()
+                try:
+                    self.run_once()
+                except Exception as e:  # noqa: BLE001 - keep the thread alive; it tries again next time
+                    self.status = f"Indexing failed: {e}"
             self.wake.wait(self.every_s)
             self.wake.clear()
 
     def run_once(self):
         mem = get_memory()
-        total = {"seen": 0, "updated": 0, "removed": 0}
+        total = {"seen": 0, "updated": 0, "removed": 0, "left": 0}
         started = time.time()
         for root in index_roots(self.settings):
             self.status = f"Indexing {root}..."
@@ -411,6 +459,9 @@ class Indexer(threading.Thread):
         n = mem.file_count()
         self.status = (f"{n} file{'' if n == 1 else 's'} indexed. Last check {time.strftime('%H:%M')} "
                        f"({total['updated']} new or changed, {time.time() - started:.0f}s).")
+        if total["left"] and not self.stop_event.is_set():
+            self.status += f" {total['left']} more to read..."
+            self.wake.set()       # carry on right away
 
     def refresh_now(self):
         self.wake.set()

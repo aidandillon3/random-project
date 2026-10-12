@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
 import sys
 import zipfile
@@ -122,7 +123,16 @@ def setup_args(preset, model: Path, settings, root: Path | None = None) -> list[
     """Strata's own installer, without questions. It uses the model files where they are (--gguf-dir)."""
     root = root or STRATA_DIR
     w = wanted(preset, model, settings)
-    launch = ["cmd", "/c", str(root / "START-HERE.bat")] if WINDOWS else ["sh", str(root / "setup.sh")]
+    if not WINDOWS:
+        launch = ["sh", str(root / "setup.sh")]
+    elif python(root).is_file():
+        # what START-HERE.bat runs once its .venv exists, without cmd.exe in between
+        launch = [str(python(root)), str(root / "setup.py")]
+    else:
+        # The first time, the .bat installs Python and makes the .venv. "cmd /c" removes the first and the last
+        # quote of a line that starts with one and has more than two, which breaks paths with spaces
+        # (C:\Users\Aidan Dillon\...); a line starting with "call" keeps its quotes. /d: no AutoRun commands.
+        launch = ["cmd", "/d", "/c", "call", str(root / "START-HERE.bat")]
     return launch + ["--yes", "--no-start", "--no-browser", "--family", w["family"], "--model", w["model"],
                      "--gguf-dir", w["gguf_dir"], "--data-dir", str(data_dir(model)),
                      "--context", str(w["context"]), "--vision", "gpu" if w["vision"] else "no",
@@ -134,8 +144,41 @@ def mark_setup_done(preset, model: Path, settings, root: Path | None = None) -> 
     (root / STAMP).write_text(json.dumps(wanted(preset, model, settings)), encoding="utf-8")
 
 
+# Engine options setup doesn't write (and drops again on each setup run), put back into the config's "args":
+# keep up to 10 prompt checkpoints, and park conversations of 8K tokens or more (a helper's task in between
+# doesn't throw the main chat out) in 4 GiB of RAM. Not 8 GiB: IQ2_XS keeps about 48 GB of the 64 GB in RAM.
+ENGINE_ARGS = {"--prompt-cache": "10", "--conversation-cache-mib": "4096", "--conversation-cache-min-tokens": "8192"}
+
+
+def tune_config(preset, root: Path | None = None) -> bool:
+    """Add ENGINE_ARGS to strata-<model>.json where it doesn't have them (it keeps values set by hand). True
+    when the file changed."""
+    path = config_path(preset, root or STRATA_DIR)
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    args = cfg.get("args")
+    if not isinstance(args, list):
+        return False
+    add = [x for flag, value in ENGINE_ARGS.items() if flag not in args for x in (flag, value)]
+    if not add:
+        return False
+    cfg["args"] = args + add
+    tmp = path.with_name(path.name + ".tmp")          # whole or not at all, as Strata's setup writes it
+    try:
+        tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        return False                                  # it runs without them, just with less caching
+    return True
+
+
 def serve_args(preset, settings, root: Path | None = None) -> list[str]:
-    """What Strata's run-<model> script runs, minus opening the browser."""
+    """What Strata's run-<model> script runs, minus opening the browser. --fit-max-tokens: a request whose prompt
+    plus max_tokens is longer than the context gets a shorter answer instead of an error. Also makes sure the
+    config has ENGINE_ARGS (setup rewrites them away)."""
     root = root or STRATA_DIR
+    tune_config(preset, root)
     return [str(python(root)), str(root / "serve" / "server.py"), "--engine", "strata",
-            "--config", str(config_path(preset, root)), "--port", str(settings.port)]
+            "--config", str(config_path(preset, root)), "--port", str(settings.port), "--fit-max-tokens"]

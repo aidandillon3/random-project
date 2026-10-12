@@ -1,3 +1,4 @@
+import hashlib
 import os
 import sys
 import tempfile
@@ -31,6 +32,8 @@ class FakeHF:
 
     def __init__(self):
         self.ranges, self.fail_after, self.status = [], None, 200
+        self.linked = False        # send X-Linked-Size / X-Linked-Etag, as Hugging Face does for big files
+        self.etags: dict[str, str] = {}
         outer = self
 
         class H(BaseHTTPRequestHandler):
@@ -60,6 +63,9 @@ class FakeHF:
                 body = data[start:]
                 self.send_response(206 if rng else 200)
                 self.send_header("Content-Length", str(len(body)))
+                if outer.linked:
+                    self.send_header("X-Linked-Size", str(len(data)))
+                    self.send_header("X-Linked-Etag", '"%s"' % outer.etags.get(name, hashlib.sha256(data).hexdigest()))
                 self.end_headers()
                 if outer.fail_after is not None:
                     self.wfile.write(body[:outer.fail_after])    # then the connection drops
@@ -116,6 +122,50 @@ class CatalogTest(unittest.TestCase):
         n = len(self.hf.ranges)
         catalog.download(p, dest, base=self.hf.url)
         self.assertEqual(len(self.hf.ranges), n)
+
+    def test_checksum_is_checked_also_across_a_resume(self):
+        p = preset()
+        dest = self.root / p.folder
+        self.hf.linked = True
+        self.hf.fail_after = 100_000
+        with self.assertRaises(catalog.DownloadError):
+            catalog.download(p, dest, base=self.hf.url)
+        model, mm = catalog.download(p, dest, base=self.hf.url)
+        self.assertEqual(model.read_bytes(), FILES[("u/Flash-GGUF", "M-00001-of-00002.gguf")])
+        # a file that arrives damaged is deleted, so the next try starts clean
+        self.hf.etags["mmproj-M-BF16.gguf"] = "0" * 64
+        mm.unlink()
+        with self.assertRaises(catalog.DownloadError) as e:
+            catalog.download(p, dest, base=self.hf.url)
+        self.assertIn("checksum", str(e.exception))
+        self.assertFalse((dest / "mmproj-M-BF16.gguf.part").exists())
+        self.assertFalse(mm.exists())
+        del self.hf.etags["mmproj-M-BF16.gguf"]
+        self.assertTrue(catalog.download(p, dest, base=self.hf.url)[1].is_file())
+
+    def test_a_file_updated_on_hugging_face_is_taken_at_its_new_size(self):
+        p = preset()
+        p.sizes["M-00002-of-00002.gguf"] -= 1000      # what the app was made with: the uploader changed it since
+        dest = self.root / p.folder
+        self.hf.linked = True
+        seen = []
+        model, mm = catalog.download(p, dest, lambda m, f: seen.append(m), base=self.hf.url)
+        self.assertTrue(any("not the" in m and "M-00002-of-00002.gguf" in m for m in seen), seen[-1])
+        self.assertEqual((dest / "M-00002-of-00002.gguf").read_bytes(),
+                         FILES[("u/Flash-GGUF", "M-00002-of-00002.gguf")])
+        # and it counts as complete from now on (not downloaded again)
+        self.assertEqual(catalog.model_path(p, [self.root])[:2], (model, mm))
+        n = len(self.hf.ranges)
+        catalog.download(p, dest, base=self.hf.url)
+        self.assertEqual(len(self.hf.ranges), n)
+
+    def test_strata_data_is_not_searched(self):
+        p = preset()
+        d = self.root / "Strata-data" / "models"
+        d.mkdir(parents=True)
+        for (_, f), b in FILES.items():
+            (d / f).write_bytes(b)
+        self.assertEqual(catalog.locate(p, [self.root]), {})
 
     def test_wrong_size_or_missing_shard_is_not_ready(self):
         p = preset()

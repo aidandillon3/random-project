@@ -99,6 +99,13 @@ class VisionTest(unittest.TestCase):
         info.meta["general.base_model.0.repo_url"] = "https://huggingface.co/Qwen/Qwen3.8-27B"
         self.assertEqual(vision.base_names(info, "my-finetune.gguf"), ["Qwen3.8-27B"])
         self.assertEqual(vision.base_names(None, "mystery.gguf"), [])
+        # names with -VL- / -Omni- / -Small- in the middle
+        self.assertEqual(vision.base_names(None, "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"), ["Qwen3-VL-8B"])
+        self.assertEqual(vision.base_names(None, "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"), ["Qwen2.5-VL-7B"])
+        self.assertEqual(vision.base_names(None, "Qwen3-VL-30B-A3B-Thinking-Q4_K_M.gguf"), ["Qwen3-VL-30B-A3B"])
+        self.assertEqual(vision.base_names(None, "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"),
+                         ["Mistral-Small-3.2-24B"])
+        self.assertEqual(vision.base_names(None, "Llama-3.1-8B-Instruct-Q4_K_M.gguf"), ["Llama-3.1-8B"])
 
     def test_find_skips_wrong_size_and_prefers_q8(self):
         model = swift_model()
@@ -123,6 +130,16 @@ class VisionTest(unittest.TestCase):
         self.assertEqual(p, out_dir / "mmproj-Qwen3.8-27B-Q8_0.gguf")
         self.assertEqual(gguf.read_meta_bytes(p.read_bytes())["clip.vision.projection_dim"], 5120)
         self.assertFalse(list(out_dir.glob("*.part")))
+
+    def test_download_gives_generic_names_the_model_name(self):
+        out_dir = Path(tempfile.mkdtemp())
+        (out_dir / "mmproj-F16.gguf").write_bytes(b"another model's vision file")
+        c = vision.Candidate("unsloth/Qwen3.8-27B-GGUF", "mmproj-F16.gguf", base=self.hf.url, base_name="Qwen3.8-27B")
+        p = vision.download(c, out_dir)
+        self.assertEqual(p.name, "mmproj-Qwen3.8-27B-F16.gguf")
+        self.assertEqual((out_dir / "mmproj-F16.gguf").read_bytes(), b"another model's vision file")
+        c = vision.Candidate("ggml-org/Qwen3.8-27B-GGUF", "mmproj-Qwen3.8-27B-Q8_0.gguf", base_name="Qwen3.8-27B")
+        self.assertEqual(vision.local_name(c), "mmproj-Qwen3.8-27B-Q8_0.gguf")    # already named after it
 
     def test_unknown_model(self):
         with self.assertRaises(RuntimeError):

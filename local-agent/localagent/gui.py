@@ -1537,7 +1537,10 @@ class ServerPage(QWidget):
             model2, mm2 = st["done"]
             if model is not None:       # only the vision file was missing
                 model2 = model
+            note = st["msg"].removeprefix("Download complete.").strip()    # e.g. a file updated on Hugging Face
             self._activate(p, model2, mm2 or mm)
+            if note:
+                self.preset_info.setText(f"{self.preset_info.text()} {note}")
 
         tick()
 
@@ -1578,7 +1581,7 @@ class ServerPage(QWidget):
                 self.s.save()
             try:
                 self.info = model_info(path)
-                mm = Path(self.s.mmproj_path) if self.s.mmproj_path else launcher.find_mmproj(Path(path))
+                mm = Path(self.s.mmproj_path) if self.s.mmproj_path else launcher.find_mmproj(Path(path), self.info)
                 vis = f"vision file: {mm.name}" if mm else "no vision (mmproj) file next to it yet"
                 self.info_label.setText(f"{self.info.summary()}. {vis}.")
                 self.vision_btn.setText("Find a different vision file" if mm else "Find vision file online")
@@ -2437,7 +2440,10 @@ class MemoryPage(QWidget):
     def _new(self):
         d = NoteDialog(self)
         if d.exec() and d.body.toPlainText().strip():
-            memory_mod.get_memory().add(d.body.toPlainText(), d.title.text(), d.pinned.isChecked())
+            try:
+                memory_mod.get_memory().add(d.body.toPlainText(), d.title.text(), d.pinned.isChecked())
+            except ValueError as e:          # too long for one note
+                QMessageBox.warning(self, "Note", str(e))
             self.refresh()
 
     def _edit(self):
@@ -2446,7 +2452,10 @@ class MemoryPage(QWidget):
             return
         d = NoteDialog(self, n.title, n.body, n.pinned)
         if d.exec() and d.body.toPlainText().strip():
-            memory_mod.get_memory().update(n.id, d.body.toPlainText(), d.title.text(), d.pinned.isChecked())
+            try:
+                memory_mod.get_memory().update(n.id, d.body.toPlainText(), d.title.text(), d.pinned.isChecked())
+            except ValueError as e:
+                QMessageBox.warning(self, "Note", str(e))
             self.refresh()
 
     def _pin(self):

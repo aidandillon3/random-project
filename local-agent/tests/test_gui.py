@@ -141,7 +141,9 @@ class GuiTest(unittest.TestCase):
         d = Path(tempfile.mkdtemp())
         model = d / "Qwen3.8-27B-Q4_K_M.gguf"
         moe_model(model)
-        (d / "mmproj-F16.gguf").write_bytes(b"x" * 100)
+        from tests.test_launcher import projector
+
+        projector(d / "mmproj-F16.gguf", 2048)
         exe = d / "llama-server"
         exe.write_text("#!/bin/sh\ncat <<'EOF'\n" + NEW_HELP + "\nEOF\n")
         exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
