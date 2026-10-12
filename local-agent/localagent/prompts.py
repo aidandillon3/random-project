@@ -135,14 +135,24 @@ def build_context(workspace: Path, coords: str = "") -> str:
     text = CONTEXT.format(date=dt.date.today().strftime("%A %d %B %Y"), workspace=workspace,
                           screen=f"- Screen: {coords}\n" if coords else "")
     text += _pinned_notes()
+    return text + _agent_md(workspace) + "[End of context]\n\n"
+
+
+def _agent_md(workspace: Path) -> str:
     agent_md = Path(workspace) / "AGENT.md"
     try:
         if agent_md.is_file():
-            text += "\n# Instructions from AGENT.md in the work folder\n" + agent_md.read_text(
+            return "\n# Instructions from AGENT.md in the work folder\n" + agent_md.read_text(
                 encoding="utf-8", errors="replace")[:8000].rstrip() + "\n"
     except OSError:
         pass
-    return text + "[End of context]\n\n"
+    return ""
+
+
+def workspace_update(workspace: Path) -> str:
+    """For a message after the work folder changed mid-chat: the context note itself stays as it
+    was (changing it would make the server read the whole chat again)."""
+    return f"[Context update] The work folder is now {workspace}.\n{_agent_md(workspace)}[End of update]\n\n"
 
 
 SUBAGENT_NOTE = """

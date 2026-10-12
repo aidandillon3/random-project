@@ -75,6 +75,12 @@ class AgentUI:
         return ""
 
 
+# Screen tools that end with a picture of the screen (list_windows, ui_elements and the clipboard
+# only read): of several in one step, only the last one waits for the screen and takes it.
+SHOWS_SCREEN = {"click", "move_mouse", "drag", "scroll", "type_text", "press_keys", "focus_window", "open",
+                "click_element", "screenshot", "zoom"}
+
+
 def png_part(png: bytes) -> dict:
     return {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}}
 
@@ -134,6 +140,7 @@ class Agent:
         self.system_extra = ""
         self._system: str | None = None
         self._fixed: int | None = None    # tokens of the system prompt + tool definitions
+        self._fixed_key: tuple | None = None
         self._ctx_limit: int | None = None
         self._ctx_asked = 0.0
         self._known = (0, 0)          # (message count, tokens) from the server's last usage report
@@ -243,7 +250,8 @@ class Agent:
             calls = list(turn.tool_calls)
             content_text = turn.content
             if not calls and ("<tool_call>" in content_text or "<function=" in content_text):
-                content_text, calls = extract_text_tool_calls(content_text, self._param_schemas())
+                content_text, calls = extract_text_tool_calls(content_text, self._param_schemas(),
+                                                              at_end=not self.prompt_mode)
             if turn.stopped:
                 calls = []      # a call cut short by Stop is neither run nor kept half-written
             self._record_assistant(turn, content_text, calls)
@@ -275,8 +283,7 @@ class Agent:
     def _run_calls(self, calls: list[ToolCall], cut_off: bool = False):
         """Run one step's tool calls. Every call gets a result in the history whatever happens
         (Stop, an error): a call without one would break every later request."""
-        groups = [getattr(self.tools.get(c.name), "group", "") for c in calls]
-        last_control = max((i for i, g in enumerate(groups) if g == "control"), default=-1)
+        last_control = max((i for i, c in enumerate(calls) if c.name in SHOWS_SCREEN), default=-1)
         results: list[tuple[ToolCall, ToolResult]] = []
         try:
             for i, call in enumerate(calls):
@@ -298,7 +305,10 @@ class Agent:
     def _user_message(self, text: str, images: list[bytes] | None) -> dict:
         """The user's message as the model gets it: the chat's context note first (in the chat's
         first message only), then the text, then notes from memory that match it."""
-        context = "" if any(m.get("_context") for m in self.messages) else self._context_note()
+        first = not any(m.get("_context") for m in self.messages)
+        context = self._context_note() if first else ""
+        if not first and not self.ctx.coding and self._noted_workspace() not in (None, str(self.workspace)):
+            context = prompts.workspace_update(self.workspace)     # a new folder was picked mid-chat
         notes, ids = self._recalled(text)
         body = text or ("(see image)" if images else "")
         if images and self._no_vision():
@@ -312,10 +322,19 @@ class Agent:
         if sent != text:
             msg["_shown"] = text      # what the chat window shows: without the context and notes
         if context:
+            msg["_ws"] = str(self.workspace)
+        if context and first:
             msg["_context"] = context
         if ids:
             msg["_notes"] = ids       # not attached again while this message is in the chat
         return msg
+
+    def _noted_workspace(self) -> str | None:
+        """The work folder the model was last told about (None for chats saved before this was kept)."""
+        noted = None
+        for m in self.messages:
+            noted = m.get("_ws", noted)
+        return noted
 
     def _context_note(self) -> str:
         """What used to be in the system prompt but differs per chat (date, work folder...). It goes
@@ -478,9 +497,10 @@ class Agent:
 
     def _fixed_tokens(self) -> int:
         """The system prompt plus the tool definitions: sent with every request, but in no message."""
-        if self._fixed is None or self._system is None:
-            chars = len(self.system_prompt()) + len(json.dumps(self._tool_schemas() or []))
-            self._fixed = int(chars / CHARS_PER_TOKEN) + 8
+        key = (self.system_prompt(), tuple(self.tools), self.prompt_mode)    # a new chat may have other tools
+        if self._fixed is None or self._fixed_key != key:
+            chars = len(key[0]) + len(json.dumps(self._tool_schemas() or []))
+            self._fixed, self._fixed_key = int(chars / CHARS_PER_TOKEN) + 8, key
         return self._fixed
 
     def estimate_total(self) -> int:
@@ -572,7 +592,8 @@ class Agent:
         except Exception as e:  # noqa: BLE001 - e.g. a number where the tool wants text
             return ToolResult(f"Error: bad arguments for {call.name}: {type(e).__name__}: {e}", ok=False)
         self.ui.tool_start(call.id, call.name, args, summary)
-        dangerous = risk != SAFE and is_dangerous(danger_text(args))
+        add_on = tool.group == "mcp" or not getattr(tool.func, "__module__", "").startswith("localagent.")
+        dangerous = risk != SAFE and is_dangerous(danger_text(args, every=add_on))
         need = self.policy.needs_approval(risk, dangerous)
         if need is None:
             result = ToolResult(f"Not done: the app is in read-only mode, and this would {risk_text(risk)}. "
@@ -647,7 +668,8 @@ class Agent:
         have piled up. Rarely and many at once, because the server has to re-read the chat from the
         first changed message on. Images the user attached are kept: they're part of the request."""
         keep = max(1, int(self.settings.keep_images))
-        most = max(keep, int(getattr(self.settings, "max_images", 8)))
+        # at least a few clears apart (keep == max would rewrite the history on every screenshot)
+        most = max(keep + max(4, keep), int(getattr(self.settings, "max_images", 8)))
         shots = [m for m in self.messages if m.get("_kind") in ("tool_images", "tool_response")]
         total = sum(_count_images(m) for m in shots)
         if total <= most:
@@ -696,8 +718,11 @@ class Agent:
         finally:
             self.ui.status("")
         context = next((m["_context"] for m in self.messages if m.get("_context")), "")
+        context_ws = next((m.get("_ws") for m in self.messages if m.get("_context")), None)
+        noted = self._noted_workspace()
         request = self._latest_request(head)
-        text = f"{context}[Summary of the earlier part of this conversation]\n{summary}"
+        update = prompts.workspace_update(Path(noted)) if noted and context_ws and noted != context_ws else ""
+        text = f"{context}{update}[Summary of the earlier part of this conversation]\n{summary}"
         if request and not any(m["role"] == "user" and "_kind" not in m for m in tail):
             text += f"\n\n[The user's latest request, word for word]\n{request}"
         if self.todos:
@@ -707,6 +732,8 @@ class Agent:
             msg["_request"] = request      # carried into the next summary word for word
         if context:
             msg["_context"] = context
+        if noted:
+            msg["_ws"] = noted
         self.messages = [msg] + tail
         self._known = (0, 0)
         self.ui.notice(f"Summarized {len(head)} older messages to free up context.")
@@ -754,7 +781,9 @@ class Agent:
         request itself was summarized away already."""
         for m in reversed(head):
             if m["role"] == "user" and "_kind" not in m:
-                return m.get("_shown") or Agent._plain(m)
+                if "_shown" in m:     # without the context note and recalled notes
+                    return m["_shown"] or "(an image, no text)"
+                return Agent._plain(m)
             if m.get("_kind") == "summary" and m.get("_request"):
                 return m["_request"]
         return None

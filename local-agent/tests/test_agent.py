@@ -177,13 +177,14 @@ class AgentLoopTest(Base):
 
 class ContextTest(Base):
     def test_images_pruned_in_batches(self):
+        # max_images 4 is raised to keep + 4: clearing rewrites history, so never on every screenshot
         agent, _ = self.make([], keep_images=2, max_images=4)
-        for i in range(4):
+        for i in range(6):
             agent._record_results([(type("C", (), {"id": f"i{i}", "name": "screenshot"})(),
                                     ToolResult("shot", images=[b"png"]))])
         count = lambda: sum(1 for m in agent.messages if isinstance(m.get("content"), list)
                             for p in m["content"] if p.get("type") == "image_url")
-        self.assertEqual(count(), 4)       # 4 <= max_images: nothing rewritten yet
+        self.assertEqual(count(), 6)       # 6 <= keep + 4: nothing rewritten yet
         agent._record_results([(type("C", (), {"id": "i5", "name": "screenshot"})(),
                                 ToolResult("shot", images=[b"png"]))])
         self.assertEqual(count(), 2)

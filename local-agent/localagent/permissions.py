@@ -47,10 +47,13 @@ def is_dangerous(text: str) -> bool:
     return any(rx.search(text) for rx in _DANGER_RX)
 
 
-def danger_text(args) -> str:
-    """The part of a tool call's arguments to check with is_dangerous."""
+def danger_text(args, every: bool = False) -> str:
+    """The part of a tool call's arguments to check with is_dangerous. every: all of them, for tools
+    from MCP servers and plugins, whose fields can be named anything ("script", "cmd"...)."""
     if not isinstance(args, dict):
         return str(args)
+    if every:
+        return json.dumps(args, ensure_ascii=False).replace("\\\\", "\\")   # C:\\x back to C:\x
     return "\n".join(str(args[k]) for k in COMMAND_FIELDS if args.get(k) is not None)
 
 

@@ -138,17 +138,32 @@ def _xml_call(name: str, body: str, schemas: dict | None) -> ToolCall:
     return ToolCall(_new_id(), name, json.dumps(args, ensure_ascii=False))
 
 
-def extract_text_tool_calls(text: str, schemas: dict | None = None) -> tuple[str, list[ToolCall]]:
+_FENCE = re.compile(r"```.*?(?:```|$)", re.S)
+
+
+def extract_text_tool_calls(text: str, schemas: dict | None = None,
+                            at_end: bool = False) -> tuple[str, list[ToolCall]]:
     """Find tool calls written as text (<tool_call>{json}</tool_call>, or the XML style of Qwen's
     templates, <function=name><parameter=x>..., with or without <tool_call> around it). Returns the
     text without them, and the calls. Anything from a <tool_response> on is dropped: the model wrote
     it itself instead of waiting for the real one. schemas: {tool name: its parameters' properties},
-    so XML values are only turned into numbers, lists etc. where the tool expects that."""
+    so XML values are only turned into numbers, lists etc. where the tool expects that.
+    Calls shown inside ``` code blocks are examples, not calls. at_end: only calls that end the reply
+    count (a model with real tool calling only falls back to text for a call it makes last)."""
     text = text.split("<tool_response", 1)[0]
+    masked = _FENCE.sub(lambda m: " " * len(m.group(0)), text)     # same length: positions still match
+    found = list(_TOOL_BLOCK.finditer(masked))
+    bare = not found
+    if bare:   # <function=...> without the <tool_call> around it
+        found = list(_FUNC_XML.finditer(masked))
+    if not found or (at_end and text[found[-1].end():].strip()):
+        return text, []
     calls: list[ToolCall] = []
-    blocks = _TOOL_BLOCK.findall(text)
-    for block in blocks:
-        block = block.strip()
+    for m in found:
+        if bare:
+            calls.append(_xml_call(text[m.start(1):m.end(1)], text[m.start(2):m.end(2)], schemas))
+            continue
+        block = text[m.start(1):m.end(1)].strip()
         xml = _FUNC_XML.search(block)
         if xml:
             calls.append(_xml_call(xml.group(1), xml.group(2), schemas))
@@ -163,11 +178,14 @@ def extract_text_tool_calls(text: str, schemas: dict | None = None) -> tuple[str
             args, name = name.get("arguments", {}), name.get("name")
         if name:
             calls.append(ToolCall(_new_id(), str(name), args if isinstance(args, str) else json.dumps(args)))
-    if not blocks:   # <function=...> without the <tool_call> around it
-        calls = [_xml_call(m.group(1), m.group(2), schemas) for m in _FUNC_XML.finditer(text)]
-        return (_FUNC_XML.sub("", text).strip() if calls else text), calls
-    clean = _TOOL_BLOCK.sub("", text).strip() if calls else text
-    return clean, calls
+    if not calls:
+        return text, []
+    clean, last = [], 0
+    for m in found:
+        clean.append(text[last:m.start()])
+        last = m.end()
+    clean.append(text[last:])
+    return "".join(clean).strip(), calls
 
 
 def _new_id() -> str:
@@ -586,6 +604,7 @@ class LLMClient:
                     reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                     if reasoning:
                         first_token = first_token or time.time()
+                        splitter.seen = True    # thinking comes separately: a lone </think> in the answer is text
                         emit("reasoning", reasoning)
                     if delta.get("content"):
                         first_token = first_token or time.time()

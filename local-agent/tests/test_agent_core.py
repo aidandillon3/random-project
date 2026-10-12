@@ -301,14 +301,27 @@ class ResultsTest(Base):
         self.assertEqual(agent._output_limit(), agent.settings.max_tool_output)
 
     def test_only_the_last_screen_action_takes_a_screenshot(self):
-        agent = self.make(script({"calls": [("tap", {}), ("tap", {}), ("note", {})]}, {"text": "ok"}))
+        agent = self.make(script({"calls": [("click", {}), ("click", {}), ("note", {})]},
+                                 {"calls": [("click", {}), ("list_windows", {})]}, {"text": "ok"}))
         seen = []
-        self.add_tool("tap", lambda ctx, a: seen.append(ctx.capture_after) or "tapped", group="control")
+        self.add_tool("click", lambda ctx, a: seen.append(ctx.capture_after) or "clicked", group="control")
+        self.add_tool("list_windows", lambda ctx, a: seen.append(ctx.capture_after) or "windows", group="control")
         self.add_tool("note", lambda ctx, a: seen.append(ctx.capture_after) or "noted")
         agent.run("go")
-        self.assertEqual(seen, [False, True, True])
+        # a look-only screen tool last doesn't take the picture away from the click before it
+        self.assertEqual(seen, [False, True, True, True, True])
         self.assertTrue(agent.ctx.capture_after)
 
+
+    def test_add_on_tools_are_checked_for_dangerous_commands(self):
+        args = {"script": "Remove-Item -Recurse -Force C:\\Users\\me\\Documents"}
+        asked = []
+        agent = self.make(script({"calls": [("pwsh__run", args)]}, {"text": "ok"}), always_ask_dangerous=True)
+        self.ui.approve = lambda req: asked.append(req.dangerous) or Decision(False, note="no")
+        ran = []
+        self.add_tool("pwsh__run", lambda ctx, a: ran.append(a) or "ran", group="mcp", risk="run")
+        agent.run("clean up my documents")
+        self.assertEqual((asked, ran), ([True], []))      # Full auto still asks for this one
 
 # ---------------------------------------------------------------------- images
 class ImagesTest(Base):
@@ -533,6 +546,35 @@ class ParsingTest(unittest.TestCase):
         self.assertEqual((turn.content, turn.reasoning), ("It's fine.", "Plan: check the file."))
 
 
+    def test_calls_shown_as_examples_are_not_calls(self):
+        shown = ("Qwen writes a call like this:\n\n```\n<function=write_file>\n<parameter=path>\nhello.txt\n"
+                 "</parameter>\n</function>\n```\n\nllama.cpp turns that into tool_calls.")
+        self.assertEqual(self.call(shown), (shown, []))
+        call = "<function=read_file>\n<parameter=path>\na.py\n</parameter>\n</function>"
+        # with real tool calling, only a call that ends the reply is one
+        clean, calls = extract_text_tool_calls("Like this: " + call + " and then it runs.", self.SCHEMAS, at_end=True)
+        self.assertEqual(calls, [])
+        clean, calls = extract_text_tool_calls("Reading it.\n" + call, self.SCHEMAS, at_end=True)
+        self.assertEqual((clean, [c.name for c in calls]), ("Reading it.", ["read_file"]))
+        # a real call after a code block still counts, and the code block stays in the text
+        clean, calls = self.call("```py\nx = 1\n```\n<tool_call>\n" + call + "\n</tool_call>")
+        self.assertEqual((clean, [n for n, _ in calls]), ("```py\nx = 1\n```", ["read_file"]))
+
+    def test_a_closing_think_tag_is_text_when_the_thinking_came_separately(self):
+        answer = "The fix: split the reply on `</think>` and keep only what comes after it."
+
+        def chat(body, h):
+            start_sse(h)
+            send(h, {"choices": [{"delta": {"reasoning_content": "The user asks how to drop the thinking."}}]})
+            for i in range(0, len(answer), 9):
+                send(h, {"choices": [{"delta": {"content": answer[i:i + 9]}}]})
+            send(h, {"choices": [{"delta": {}, "finish_reason": "stop"}]})
+            send(h, b"[DONE]")
+        srv = FakeServer(chat)
+        self.addCleanup(srv.close)
+        turn = LLMClient(srv.url).stream([{"role": "user", "content": "x"}])
+        self.assertEqual((turn.content, turn.reasoning), (answer, "The user asks how to drop the thinking."))
+
 # ---------------------------------------------------------------------- compaction
 class CompactionTest(Base):
     def fill(self, agent, steps, request="Find every file that mentions TOKEN-XYZZY", size=3000):
@@ -619,6 +661,17 @@ class CompactionTest(Base):
         self.assertIn("Memory check", last_text(self.srv.requests[-1]))
 
 
+    def test_a_request_that_is_only_a_picture(self):
+        (self.ws / "AGENT.md").write_text("House rules: use tabs.")
+        agent = self.make(script(), context_limit=32768)
+        agent.messages.append(agent._user_message("", [b"png"]))
+        self.fill(agent, 8, request=None)
+        self.assertTrue(agent.compact())
+        first = agent.messages[0]
+        self.assertEqual(first["content"].count("[Context for this chat"), 1)
+        self.assertEqual(first["content"].count("House rules"), 1)
+        self.assertEqual(first["_request"], "(an image, no text)")
+
 # ---------------------------------------------------------------------- the server's prompt cache
 class PromptCacheTest(Base):
     def test_the_system_prompt_is_the_same_in_every_chat(self):
@@ -696,6 +749,39 @@ class PromptCacheTest(Base):
         agent._known = (0, 0)
         self.assertGreater(agent.estimate_total(), tools + len(agent.system_prompt()) / 3.5)
 
+
+    def test_a_new_work_folder_is_announced_without_touching_the_history(self):
+        agent = self.make()
+        agent.run("hello")
+        new = Path(tempfile.mkdtemp())
+        (new / "AGENT.md").write_text("Never touch the vendor/ folder.")
+        # what the window does when another folder is picked mid-chat: a new Agent with the old messages
+        agent2 = Agent(Settings(base_url=self.srv.url, workspace=str(new), enable_control=False,
+                                auto_memory=False, auto_recall=False), RecUI())
+        agent2.messages = agent.messages
+        agent2.run("read notes.txt")
+        agent2.run("and again")
+        first, second, third = self.srv.requests
+        self.assertEqual(second["messages"][:2], first["messages"][:2])     # the old note stays as it was
+        sent = second["messages"][-1]["content"]
+        self.assertTrue(sent.startswith(f"[Context update] The work folder is now {new}."))
+        self.assertIn("vendor/", sent)
+        self.assertTrue(sent.endswith("read notes.txt"))
+        self.assertNotIn("[Context update]", third["messages"][-1]["content"])     # said once
+        self.assertEqual(agent2.messages[-4]["_shown"], "read notes.txt")     # the window shows just that
+        agent2.messages += [{"role": "assistant", "content": "x" * 3000}] * 10
+        agent2.compact()
+        self.assertIn(f"The work folder is now {new}", agent2.messages[0]["content"])
+        agent2.run("once more")
+        self.assertNotIn("[Context update]", self.srv.chats()[-1]["messages"][-1]["content"])
+
+    def test_the_tool_estimate_follows_the_tools_offered(self):
+        agent = self.make()
+        agent.run("hi")
+        before = agent._fixed_tokens()
+        for i in range(10):
+            self.add_tool(f"big_{i}", lambda ctx, a: "ok").description = "x" * 600
+        self.assertGreater(agent._fixed_tokens(), before + 10 * 600 / 3.5)
 
 # ---------------------------------------------------------------------- which tools are offered
 class ToolSetTest(Base):
