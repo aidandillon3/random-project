@@ -663,6 +663,10 @@ class ChatPage(QWidget):
         sl.addWidget(self.ctx_hint)
         self.speed = muted("")
         sl.addWidget(self.speed)
+        self.timings = muted("")
+        self.timings.setToolTip("From the model server, for the last reply. The server reuses what it already "
+                                "read; a big re-read every step means the start of the chat keeps changing.")
+        sl.addWidget(self.timings)
         sl.addSpacing(12)
         sl.addWidget(QLabel("<b>Work folder</b>"))
         row = QHBoxLayout()
@@ -872,6 +876,7 @@ class ChatPage(QWidget):
         self.welcome.setVisible(True)
         self._on_todos([])
         self.ctx_bar.setValue(0)
+        self.timings.setText("")
 
     def _open_chat(self):
         if self.busy():
@@ -884,7 +889,8 @@ class ChatPage(QWidget):
         for f in files:
             try:
                 msgs = json.loads(f.read_text(encoding="utf-8"))["messages"]
-                first = next((m["content"] for m in msgs if m["role"] == "user" and isinstance(m["content"], str)), "")
+                first = next((m.get("_shown", m["content"]) for m in msgs
+                              if m["role"] == "user" and "_kind" not in m and isinstance(m["content"], str)), "")
             except (OSError, ValueError, KeyError):
                 first = ""
             labels.append(f"{f.stem}   {first[:60]}")
@@ -930,11 +936,31 @@ class ChatPage(QWidget):
         self._add(self.current)
 
     def _on_assistant_end(self, turn):
-        if self.current:
-            self.current.finish()
-            if self.current.is_empty():
-                self.current.setVisible(False)
+        blk = self.current
+        if blk:
+            reasoning = getattr(turn, "reasoning", "") or ""
+            if len(reasoning) > len(blk.reasoning):    # a late </think>: what showed as the answer was thinking
+                blk.reasoning, blk.text = reasoning, getattr(turn, "content", "") or ""
+                blk.body.setVisible(bool(blk.text.strip()))
+            blk.finish()
+            if blk.is_empty():
+                blk.setVisible(False)
         self.current = None
+        self._show_timings(getattr(turn, "usage", None) or {})
+
+    def _show_timings(self, u: dict):
+        """How much of the chat the server had to read again, and how well the speed-up guesses: a
+        big re-read on every step means something keeps changing the start of the prompt."""
+        parts = []
+        if u.get("prompt_n") is not None:
+            new, reused = int(u["prompt_n"]), int(u.get("cache_n") or 0)
+            secs = float(u.get("prompt_ms") or 0) / 1000
+            parts.append(f"Read {new:,} new tokens" + (f" in {secs:.1f} s" if secs >= 0.1 else "")
+                         + (f" ({reused:,} reused)" if reused else ""))
+        if u.get("draft_n"):
+            parts.append(f"speed-up guesses: {100 * int(u.get('draft_accepted') or 0) / int(u['draft_n']):.0f}% "
+                         "right")
+        self.timings.setText(". ".join(parts))
 
     def _on_tool_start(self, call_id, name, args, summary):
         if name == "todo_write":       # the plan already shows on the right
@@ -2106,7 +2132,11 @@ class SettingsPage(QWidget):
         self.ctx_limit.setSpecialValueText("Ask the server")
         f.addRow("Context size:", self.ctx_limit)
         self.keep_images = self._spin(s.keep_images, 1, 20)
-        f.addRow("Screenshots kept in the conversation:", self.keep_images)
+        f.addRow("Screenshots kept when old ones are cleared:", self.keep_images)
+        self.max_images = self._spin(s.max_images, 1, 40)
+        self.max_images.setToolTip("Clearing old screenshots makes the model re-read the chat from there, so "
+                                   "it's done in batches")
+        f.addRow("Clear old screenshots once there are more than:", self.max_images)
         self.max_steps = self._spin(s.max_steps, 5, 2000)
         f.addRow("Steps before it checks in:", self.max_steps)
         self.max_out = self._spin(s.max_tool_output, 2000, 200000)
@@ -2248,6 +2278,7 @@ class SettingsPage(QWidget):
         s.screenshot_after_action, s.grid_overlay = self.after.isChecked(), self.grid.isChecked()
         s.extra["minimize_during_control"] = self.minimize.isChecked()
         s.context_limit, s.keep_images = self.ctx_limit.value(), self.keep_images.value()
+        s.max_images = max(self.max_images.value(), s.keep_images)
         s.max_steps, s.max_tool_output = self.max_steps.value(), self.max_out.value()
         s.save()
 

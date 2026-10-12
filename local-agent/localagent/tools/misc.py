@@ -39,7 +39,7 @@ def _mem():
 
 
 def _remember_risk(ctx: ToolContext, a: dict) -> str:
-    """Pinned notes go into every future system prompt, so pinning or changing one asks like an edit
+    """Pinned notes go into the start of every future chat, so pinning or changing one asks like an edit
     (a web page the model read could otherwise plant instructions there)."""
     if a.get("pinned"):
         return EDIT

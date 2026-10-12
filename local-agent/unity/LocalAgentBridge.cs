@@ -29,13 +29,20 @@ using UnityEngine.SceneManagement;
 using D = System.Collections.Generic.Dictionary<string, object>;
 using L = System.Collections.Generic.List<object>;
 using Object = UnityEngine.Object;
+#if UNITY_2021_2_OR_NEWER
+using PStage = UnityEditor.SceneManagement.PrefabStage;
+using PStageUtil = UnityEditor.SceneManagement.PrefabStageUtility;
+#else
+using PStage = UnityEditor.Experimental.SceneManagement.PrefabStage;
+using PStageUtil = UnityEditor.Experimental.SceneManagement.PrefabStageUtility;
+#endif
 
 namespace LocalAgent
 {
     [InitializeOnLoad]
     public static class LocalAgentBridge
     {
-        public const string BridgeVersion = "1";
+        public const string BridgeVersion = "2";
         const int FirstPort = 6461, LastPort = 6480;
         static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -44,13 +51,15 @@ namespace LocalAgent
         static volatile bool running;
         static string token;
         static int port;
+        static int pid;
         static string projectRoot;
 
         class Pending
         {
             public D req;
             public string resp;
-            public bool cancelled;
+            public bool cancelled;   // given up on before it started: never run it
+            public bool started;     // taken off the queue by the main thread
             public readonly ManualResetEvent done = new ManualResetEvent(false);
         }
 
@@ -59,13 +68,20 @@ namespace LocalAgent
 
         static LocalAgentBridge()
         {
+            // Other Unity processes load editor scripts too: asset import workers, the standalone
+            // Profiler and command-line (batch mode) runs. Only the editor the user sees serves.
+            if (Application.isBatchMode || AssetDatabase.IsAssetImportWorkerProcess() ||
+                UnityEditor.MPE.ProcessService.level == UnityEditor.MPE.ProcessLevel.Secondary)
+                return;
             projectRoot = Directory.GetParent(Application.dataPath).FullName.Replace('\\', '/');
+            pid = System.Diagnostics.Process.GetCurrentProcess().Id;
             token = SessionState.GetString("LocalAgent.token", "");
             if (token == "")
             {
                 token = Guid.NewGuid().ToString("N");
                 SessionState.SetString("LocalAgent.token", token);
             }
+            SessionState.SetInt("LocalAgent.domainLoads", SessionState.GetInt("LocalAgent.domainLoads", 0) + 1);
             RestoreLogs();
             RestoreCompile();
             Application.logMessageReceivedThreaded += OnLog;
@@ -73,14 +89,25 @@ namespace LocalAgent
             CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
             CompilationPipeline.compilationFinished += OnCompileFinished;
             AssemblyReloadEvents.beforeAssemblyReload += BeforeReload;
+            EditorApplication.playModeStateChanged += OnPlayMode;
             EditorApplication.quitting += Quit;
             EditorApplication.update += Pump;
-            StartListening();
+            // The scripts failed to compile before this bridge was listening (e.g. when the editor
+            // started): compile again so the errors get recorded.
+            if (EditorUtility.scriptCompilationFailed && ErrorCount() == 0 &&
+                !SessionState.GetBool("LocalAgent.recompiled", false))
+            {
+                SessionState.SetBool("LocalAgent.recompiled", true);
+                EditorApplication.delayCall += () => CompilationPipeline.RequestScriptCompilation();
+            }
+            // Listen once the editor loop runs, so a request never waits on a half-loaded editor.
+            EditorApplication.delayCall += StartListening;
         }
 
         // ------------------------------------------------------------------ networking
         static void StartListening()
         {
+            if (listener != null) return;
             int last = SessionState.GetInt("LocalAgent.port", 0);
             var ports = new List<int>();
             if (last != 0) ports.Add(last);
@@ -118,7 +145,7 @@ namespace LocalAgent
             {
                 foreach (var p in queue)
                 {
-                    p.resp = Json.Write(Fail("Unity is reloading scripts; try again in a few seconds."));
+                    p.resp = Json.Write(Retry("Unity is reloading scripts; try again in a few seconds."));
                     p.done.Set();
                 }
                 queue.Clear();
@@ -129,6 +156,9 @@ namespace LocalAgent
         {
             SaveLogs();
             StopListening();
+            // Tell the app the bridge is coming back, so it waits instead of giving up.
+            if (port == 0) port = SessionState.GetInt("LocalAgent.port", 0);
+            if (port != 0) WriteDiscovery(true);
         }
 
         static void Quit()
@@ -136,8 +166,19 @@ namespace LocalAgent
             StopListening();
             foreach (var f in DiscoveryFiles())
             {
-                try { File.Delete(f); } catch (Exception) { }
+                // another editor may have taken the file over since; leave it alone then
+                try { if (Ours(f)) File.Delete(f); } catch (Exception) { }
             }
+        }
+
+        static bool Ours(string f)
+        {
+            try
+            {
+                var d = Json.Parse(File.ReadAllText(f)) as D;
+                return d != null && (int)Num(d, "pid", -1) == pid && (int)Num(d, "port", -1) == port;
+            }
+            catch (Exception) { return false; }
         }
 
         static string[] DiscoveryFiles()
@@ -151,13 +192,14 @@ namespace LocalAgent
             };
         }
 
-        static void WriteDiscovery()
+        static void WriteDiscovery(bool reloading = false)
         {
             var info = new D
             {
                 {"project", projectRoot}, {"port", port}, {"token", token}, {"unity", Application.unityVersion},
-                {"pid", System.Diagnostics.Process.GetCurrentProcess().Id}, {"bridge", BridgeVersion},
+                {"pid", pid}, {"bridge", BridgeVersion},
             };
+            if (reloading) info["reloading"] = true;
             string text = Json.Write(info);
             foreach (var f in DiscoveryFiles())
             {
@@ -213,23 +255,35 @@ namespace LocalAgent
             if (req == null) return Json.Write(Fail("Bad request."));
             if (Str(req, "token") != token) return Json.Write(Fail("Wrong key. Re-read the bridge file."));
             var p = new Pending { req = req };
-            lock (qlock) queue.Enqueue(p);
-            int wait = (int)(Num(req, "timeout", 60) * 1000);
+            lock (qlock)
+            {
+                if (!running) return Json.Write(Retry("Unity is reloading scripts; try again in a few seconds."));
+                queue.Enqueue(p);
+            }
+            int wait = (int)(Math.Max(1, Num(req, "timeout", 60)) * 1000);
             if (!p.done.WaitOne(wait))
             {
                 lock (qlock)
                 {
-                    if (p.resp == null)
+                    if (!p.started)
                     {
-                        p.cancelled = true;   // never run it later, after the agent gave up on it
-                        return Json.Write(Fail("Unity didn't answer in time. It may be busy importing, showing a " +
-                                               "dialog, or slowed down because it's in the background " +
-                                               "(Preferences > General > Interaction Mode > No Throttling fixes that)."));
+                        p.cancelled = true;   // never run it later, after the app gave up on it
+                        return Json.Write(Retry("Unity didn't answer in time. It may be busy importing, showing a " +
+                                                "dialog, or slowed down because it's in the background " +
+                                                "(Preferences > General > Interaction Mode > No Throttling fixes that)."));
                     }
                 }
+                // It is running now: the app waits a few seconds longer than this, so answer before it gives up.
+                if (!p.done.WaitOne(3000))
+                    return Json.Write(Fail("Unity started this late and is still running it, so it may still happen. " +
+                                           "Don't repeat it: look at the result in a moment."));
             }
             return p.resp;
         }
+
+        // Commands that only look don't start an undo step of their own.
+        static readonly HashSet<string> NoUndoGroup = new HashSet<string>
+            { "ping", "hierarchy", "inspect", "find", "assets", "console", "compile", "screenshot", "refresh", "play", "undo" };
 
         static void Pump()
         {
@@ -241,10 +295,35 @@ namespace LocalAgent
                     if (queue.Count == 0) return;
                     p = queue.Dequeue();
                     if (p.cancelled) continue;
+                    p.started = true;
                 }
                 object result;
-                try { result = Execute(p.req); }
+                string cmd = Str(p.req, "cmd") ?? "";
+                bool group = !NoUndoGroup.Contains(cmd);
+                int undoGroup = 0;
+                try
+                {
+                    stage = PStageUtil.GetCurrentPrefabStage();
+                    // one undo step per agent action, so unity_undo(steps=1) takes back exactly one
+                    if (group)
+                    {
+                        Undo.IncrementCurrentGroup();
+                        undoGroup = Undo.GetCurrentGroup();
+                        Undo.SetCurrentGroupName("Local Agent: " + cmd);
+                    }
+                    result = Execute(p.req);
+                }
+                catch (BridgeError e) { result = Fail(e.Message); }
                 catch (Exception e) { result = Fail(e.GetType().Name + ": " + e.Message); }
+                finally
+                {
+                    stage = null;
+                    if (group)
+                    {
+                        Undo.CollapseUndoOperations(undoGroup);
+                        Undo.IncrementCurrentGroup();
+                    }
+                }
                 string text;
                 try { text = Json.Write(result); }
                 catch (Exception e) { text = Json.Write(Fail("Couldn't encode the answer: " + e.Message)); }
@@ -255,6 +334,8 @@ namespace LocalAgent
 
         static D Ok(object result) { return new D { {"ok", true}, {"result", result} }; }
         static D Fail(string error) { return new D { {"ok", false}, {"error", error} }; }
+        // The command never ran: the app may safely send it again.
+        static D Retry(string error) { return new D { {"ok", false}, {"error", error}, {"retry", true} }; }
 
         class BridgeError : Exception { public BridgeError(string m) : base(m) { } }
 
@@ -303,25 +384,51 @@ namespace LocalAgent
                 if (ap != "") sel.Add(ap);
             }
             var rp = GraphicsSettings.currentRenderPipeline;
-            return new D
+            var res = new D
             {
                 {"unity", Application.unityVersion}, {"project", projectRoot}, {"product", PlayerSettings.productName},
                 {"bridge", BridgeVersion}, {"playing", EditorApplication.isPlaying}, {"paused", EditorApplication.isPaused},
+                {"will_play", EditorApplication.isPlayingOrWillChangePlaymode},
                 {"compiling", EditorApplication.isCompiling}, {"updating", EditorApplication.isUpdating},
                 {"compile_count", SessionState.GetInt("LocalAgent.compileCount", 0)},
-                {"compile_errors", compileMsgs.Count(m => (string)m["type"] == "error")},
+                {"compile_errors", ErrorCount()}, {"compile_failed", EditorUtility.scriptCompilationFailed},
+                {"domain_loads", SessionState.GetInt("LocalAgent.domainLoads", 0)},
+                {"frame", Time.frameCount}, {"time", Time.time},
                 {"scenes", scenes}, {"selection", sel},
                 {"render_pipeline", rp == null ? "Built-in" : rp.GetType().Name},
             };
+            if (StageRoot() != null) res["prefab_stage"] = stage.assetPath;
+            return res;
         }
 
         // ------------------------------------------------------------------ finding objects
-        public static string PathOf(GameObject go)
+        static PStage stage;   // the prefab open in Prefab Mode, if any; read once per command
+
+        static GameObject StageRoot()
+        {
+            if (stage == null) return null;
+            try { return stage.prefabContentsRoot; }
+            catch (InvalidOperationException) { return null; }
+        }
+
+        static string RelPath(Transform root, Transform t)
         {
             var parts = new List<string>();
-            for (var t = go.transform; t != null; t = t.parent) parts.Add(t.name);
+            for (; t != null && t != root; t = t.parent) parts.Add(t.name);
             parts.Reverse();
             return string.Join("/", parts.ToArray());
+        }
+
+        /// <summary>Hierarchy path; objects in Prefab Mode are Assets/...prefab/Child, like prefab assets.</summary>
+        public static string PathOf(GameObject go)
+        {
+            var sr = StageRoot();
+            if (sr != null && go.transform.IsChildOf(sr.transform))
+            {
+                string rel = RelPath(sr.transform, go.transform);
+                return rel == "" ? stage.assetPath : stage.assetPath + "/" + rel;
+            }
+            return RelPath(null, go.transform);
         }
 
         static IEnumerable<GameObject> AllObjects()
@@ -334,6 +441,10 @@ namespace LocalAgent
                     foreach (var t in root.GetComponentsInChildren<Transform>(true))
                         yield return t.gameObject;
             }
+            var sr = StageRoot();
+            if (sr != null)
+                foreach (var t in sr.GetComponentsInChildren<Transform>(true))
+                    yield return t.gameObject;
         }
 
         /// <summary>An object to work on: a scene object, or one inside a prefab asset (opened for editing).</summary>
@@ -343,27 +454,29 @@ namespace LocalAgent
             public string prefabPath;
             public GameObject prefabRoot;
             public bool changed;
+            public Target owner;   // set when another Target loaded the prefab contents and will save them
+            public bool fresh;     // just created: its creation is recorded for undo after the changes
 
             public string Path
             {
                 get
                 {
                     if (prefabRoot == null) return PathOf(go);
-                    string rel = PathOf(go);
-                    int cut = rel.IndexOf('/');
-                    return cut < 0 ? prefabPath : prefabPath + rel.Substring(cut);
+                    string rel = RelPath(prefabRoot.transform, go.transform);
+                    return rel == "" ? prefabPath : prefabPath + "/" + rel;
                 }
             }
 
             public void Dirty()
             {
                 changed = true;
+                if (owner != null) owner.changed = true;
                 if (prefabRoot == null && !EditorApplication.isPlaying) EditorSceneManager.MarkSceneDirty(go.scene);
             }
 
             public void Dispose()
             {
-                if (prefabRoot == null) return;
+                if (prefabRoot == null || owner != null) return;
                 if (changed) PrefabUtility.SaveAsPrefabAsset(prefabRoot, prefabPath);
                 PrefabUtility.UnloadPrefabContents(prefabRoot);
                 prefabRoot = null;
@@ -376,7 +489,12 @@ namespace LocalAgent
                    p.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase);
         }
 
-        static Target Resolve(string path)
+        /// <summary>
+        /// Find what a path names. Paths inside a prefab asset load its contents to edit (the prefab
+        /// open in Prefab Mode is edited in place instead). Pass open to share loaded prefabs between
+        /// several targets; the caller then disposes the Targets left in it.
+        /// </summary>
+        static Target Resolve(string path, Dictionary<string, Target> open = null)
         {
             if (string.IsNullOrEmpty(path)) throw new BridgeError("Give the object's path, e.g. 'Player/Camera', or its #id.");
             path = path.Trim();
@@ -385,26 +503,53 @@ namespace LocalAgent
             {
                 string asset = path.Substring(0, pi + 7);
                 string rest = path.Substring(pi + 7).Trim('/');
+                var sr = StageRoot();
+                if (sr != null && string.Equals(stage.assetPath, asset, StringComparison.OrdinalIgnoreCase))
+                    return new Target { go = PrefabChild(sr, rest, asset) };
                 if (AssetDatabase.LoadAssetAtPath<GameObject>(asset) == null) throw new BridgeError("No prefab at " + asset);
-                var root = PrefabUtility.LoadPrefabContents(asset);
-                var t = new Target { prefabPath = asset, prefabRoot = root, go = root };
-                if (rest != "")
+                Target owner;
+                bool loaded = false;
+                if (open == null || !open.TryGetValue(asset, out owner))
                 {
-                    var child = root.transform.Find(rest);
-                    if (child == null)
-                    {
-                        t.Dispose();
-                        throw new BridgeError("The prefab " + asset + " has no child '" + rest + "'.");
-                    }
-                    t.go = child.gameObject;
+                    var root = PrefabUtility.LoadPrefabContents(asset);
+                    owner = new Target { prefabPath = asset, prefabRoot = root, go = root };
+                    loaded = true;
+                    if (open != null) open[asset] = owner;
                 }
-                return t;
+                GameObject go;
+                try { go = PrefabChild(owner.prefabRoot, rest, asset); }
+                catch (BridgeError)
+                {
+                    if (loaded && open == null) owner.Dispose();
+                    throw;
+                }
+                if (open == null)
+                {
+                    owner.go = go;
+                    return owner;
+                }
+                return new Target { go = go, prefabPath = asset, prefabRoot = owner.prefabRoot, owner = owner };
             }
             return new Target { go = FindObject(path) };
         }
 
+        /// <summary>rest is a path below the prefab's root; a leading root name is allowed too.</summary>
+        static GameObject PrefabChild(GameObject root, string rest, string asset)
+        {
+            if (rest == "") return root;
+            var t = root.transform.Find(rest);
+            if (t == null && rest == root.name) return root;
+            if (t == null && rest.StartsWith(root.name + "/")) t = root.transform.Find(rest.Substring(root.name.Length + 1));
+            if (t == null)
+                throw new BridgeError("The prefab " + asset + " has no object '" + rest + "'. See its objects with " +
+                                      "unity_hierarchy(under=\"" + asset + "\").");
+            return t.gameObject;
+        }
+
         static GameObject FindObject(string path)
         {
+            if (string.IsNullOrEmpty(path)) throw new BridgeError("Give the object's path, e.g. 'Player/Camera', or its #id.");
+            path = path.Trim();
             if (path.StartsWith("#"))
             {
                 int id;
@@ -415,7 +560,18 @@ namespace LocalAgent
                 throw new BridgeError("Nothing with id " + path + " (ids change when Unity reloads; look it up again).");
             }
             path = path.Trim('/');
+            var sr = StageRoot();
+            int pi = path.IndexOf(".prefab", StringComparison.OrdinalIgnoreCase);
+            if (sr != null && pi > 0 && string.Equals(path.Substring(0, pi + 7), stage.assetPath, StringComparison.OrdinalIgnoreCase))
+                return PrefabChild(sr, path.Substring(pi + 7).Trim('/'), stage.assetPath);
             var hits = AllObjects().Where(g => PathOf(g) == path).ToList();
+            if (hits.Count == 0 && sr != null)
+            {
+                // in Prefab Mode, "Root/Child" as the prefab shows it in the Hierarchy window
+                var t = path == sr.name ? sr.transform :
+                        path.StartsWith(sr.name + "/") ? sr.transform.Find(path.Substring(sr.name.Length + 1)) : null;
+                if (t != null) hits.Add(t.gameObject);
+            }
             if (hits.Count == 0)
             {
                 // a unique name anywhere is fine too
@@ -433,6 +589,9 @@ namespace LocalAgent
         static Type FindType(string name, Type baseType)
         {
             if (string.IsNullOrEmpty(name)) return null;
+            name = name.Trim();
+            int lb = name.IndexOf('[');
+            if (lb > 0 && name.EndsWith("]")) name = name.Substring(0, lb);   // "BoxCollider[1]" names a type too
             Type loose = null;
             foreach (var t in TypeCache.GetTypesDerivedFrom(baseType).Concat(new[] { baseType }))
             {
@@ -444,20 +603,51 @@ namespace LocalAgent
             return loose;
         }
 
+        /// <summary>A component by type name; "BoxCollider[1]" is the second BoxCollider.</summary>
         static Component FindComponent(GameObject go, string name, bool required = true)
         {
-            var comps = go.GetComponents<Component>().Where(c => c != null).ToArray();
-            var c1 = comps.FirstOrDefault(c => c.GetType().Name == name) ??
-                     comps.FirstOrDefault(c => string.Equals(c.GetType().Name, name, StringComparison.OrdinalIgnoreCase));
-            if (c1 == null)
+            string bare = (name ?? "").Trim();
+            int index = 0;
+            int lb = bare.IndexOf('[');
+            if (lb > 0 && bare.EndsWith("]"))
             {
-                var t = FindType(name, typeof(Component));
-                if (t != null) c1 = comps.FirstOrDefault(c => t.IsAssignableFrom(c.GetType()));
+                if (!int.TryParse(bare.Substring(lb + 1, bare.Length - lb - 2), out index) || index < 0)
+                    throw new BridgeError("Bad component index in '" + name + "'; use e.g. BoxCollider[1] for the second one.");
+                bare = bare.Substring(0, lb).Trim();
             }
-            if (c1 == null && required)
-                throw new BridgeError("'" + go.name + "' has no " + name + ". It has: " +
-                                      string.Join(", ", comps.Select(c => c.GetType().Name).ToArray()));
-            return c1;
+            var comps = go.GetComponents<Component>().Where(c => c != null).ToArray();
+            var hits = comps.Where(c => c.GetType().Name == bare).ToList();
+            if (hits.Count == 0)
+                hits = comps.Where(c => string.Equals(c.GetType().Name, bare, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (hits.Count == 0)
+            {
+                var t = FindType(bare, typeof(Component));
+                if (t != null) hits = comps.Where(c => t.IsAssignableFrom(c.GetType())).ToList();
+            }
+            if (index < hits.Count) return hits[index];
+            if (!required) return null;
+            if (hits.Count > 0)
+                throw new BridgeError("'" + go.name + "' has only " + hits.Count + " " + bare + " (counting from [0]).");
+            throw new BridgeError("'" + go.name + "' has no " + bare + ". It has: " +
+                                  string.Join(", ", comps.Select(c => c.GetType().Name).ToArray()));
+        }
+
+        /// <summary>Component names as the tools take them: "BoxCollider", or "BoxCollider[1]" when there are several.</summary>
+        static string[] ComponentNames(Component[] comps)
+        {
+            var names = new string[comps.Length];
+            var seen = new Dictionary<string, int>();
+            for (int i = 0; i < comps.Length; i++)
+            {
+                if (comps[i] == null) { names[i] = "Missing script"; continue; }
+                string n = comps[i].GetType().Name;
+                int k;
+                seen.TryGetValue(n, out k);
+                seen[n] = k + 1;
+                bool several = comps.Count(c => c != null && c.GetType().Name == n) > 1;
+                names[i] = several ? n + "[" + k + "]" : n;
+            }
+            return names;
         }
 
         // ------------------------------------------------------------------ hierarchy and find
@@ -468,16 +658,17 @@ namespace LocalAgent
             int limit = (int)Num(r, "limit", 400);
             int count = 0;
             bool cut = false;
+            bool ids = true;   // not for prefab asset contents: they're unloaded right after, and their ids die
             Func<GameObject, int, D> node = null;
             node = (go, d) =>
             {
                 count++;
-                var n = new D { {"name", go.name}, {"id", go.GetInstanceID()} };
+                var n = new D { {"name", go.name} };
+                if (ids) n["id"] = go.GetInstanceID();
                 if (!go.activeSelf) n["active"] = false;
                 if (comps)
-                    n["components"] = new L(go.GetComponents<Component>()
-                                              .Select(c => (object)(c == null ? "Missing script" : c.GetType().Name))
-                                              .Where(s => (string)s != "Transform"));
+                    n["components"] = new L(ComponentNames(go.GetComponents<Component>())
+                                              .Where(s => s != "Transform").Cast<object>());
                 int kids = go.transform.childCount;
                 if (kids > 0)
                 {
@@ -505,9 +696,10 @@ namespace LocalAgent
             {
                 using (var t = Resolve(under))
                 {
+                    ids = t.prefabRoot == null;
                     var n = node(t.go, 0);
                     n["path"] = t.Path;
-                    return new D { {"roots", new L { n }}, {"truncated", cut} };
+                    return new D { {"roots", new L { n }}, {"truncated", cut}, {"asset", !ids} };
                 }
             }
             string only = Str(r, "scene");
@@ -525,6 +717,10 @@ namespace LocalAgent
                     }
                 scenes.Add(new D { {"name", s.name}, {"path", s.path}, {"dirty", s.isDirty}, {"roots", roots} });
             }
+            var sr = StageRoot();
+            if (sr != null && (string.IsNullOrEmpty(only) || string.Equals(sr.name, only, StringComparison.OrdinalIgnoreCase)))
+                scenes.Add(new D { {"name", sr.name}, {"path", stage.assetPath}, {"dirty", stage.scene.isDirty},
+                                   {"prefab_mode", true}, {"roots", new L { node(sr, 0) }} });
             return new D { {"scenes", scenes}, {"truncated", cut} };
         }
 
@@ -584,21 +780,28 @@ namespace LocalAgent
             {
                 var go = t.go;
                 var comps = new L();
-                foreach (var c in go.GetComponents<Component>())
+                var all = go.GetComponents<Component>();
+                var names = ComponentNames(all);
+                var want = string.IsNullOrEmpty(only) ? null : FindComponent(go, only);
+                for (int i = 0; i < all.Length; i++)
                 {
+                    var c = all[i];
                     if (c == null)
                     {
-                        comps.Add(new D { {"type", "Missing script"} });
+                        if (want == null) comps.Add(new D { {"type", "Missing script"} });
                         continue;
                     }
-                    if (!string.IsNullOrEmpty(only) && c != FindComponent(go, only, false)) continue;
-                    comps.Add(DescribeComponent(c, max));
+                    if (want != null && c != want) continue;
+                    var d = DescribeComponent(c, max);
+                    d["type"] = names[i];
+                    comps.Add(d);
                 }
                 var res = new D
                 {
-                    {"path", t.Path}, {"id", go.GetInstanceID()}, {"active", go.activeSelf}, {"tag", go.tag},
+                    {"path", t.Path}, {"active", go.activeSelf}, {"tag", go.tag},
                     {"layer", LayerMask.LayerToName(go.layer)}, {"static", go.isStatic}, {"components", comps},
                 };
+                if (t.prefabRoot == null) res["id"] = go.GetInstanceID();   // prefab asset contents are unloaded after this
                 if (t.prefabRoot == null && PrefabUtility.IsPartOfPrefabInstance(go))
                     res["prefab"] = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);
                 return res;
@@ -824,33 +1027,36 @@ namespace LocalAgent
                     if (!TryEnum(prim, out pt2)) throw new BridgeError("Primitive must be empty, cube, sphere, capsule, cylinder, plane or quad.");
                     go = GameObject.CreatePrimitive(pt2);
                 }
+                string scene = Str(r, "scene");
                 if (pt != null) go.transform.SetParent(pt.go.transform, false);
-                else
+                else if (!string.IsNullOrEmpty(scene))
                 {
-                    string scene = Str(r, "scene");
-                    if (!string.IsNullOrEmpty(scene))
-                    {
-                        var s = SceneManager.GetSceneByName(scene);
-                        if (!s.IsValid()) throw new BridgeError("No open scene called " + scene);
-                        SceneManager.MoveGameObjectToScene(go, s);
-                    }
+                    var s = SceneManager.GetSceneByName(scene);
+                    if (!s.IsValid()) throw new BridgeError("No open scene called " + scene);
+                    SceneManager.MoveGameObjectToScene(go, s);
                 }
+                else if (StageRoot() != null)
+                    go.transform.SetParent(StageRoot().transform, false);   // Prefab Mode: into the open prefab
                 if (Str(r, "name") != null) go.name = Str(r, "name");
                 var notes = new L();
                 foreach (var cn in List(r, "components"))
                 {
                     var t = FindType(Convert.ToString(cn, Inv), typeof(Component));
                     if (t == null) notes.Add("No component type '" + cn + "' (if it's your script, run unity_refresh first).");
-                    else if (go.GetComponent(t) == null || t == typeof(Transform)) go.AddComponent(t);
+                    else if (t != typeof(Transform) && go.GetComponent(t) == null && go.AddComponent(t) == null)
+                        notes.Add("Unity couldn't add " + t.Name + ".");
                 }
+                // a new object: its creation is the undo step, so the changes below needn't record their own
                 var target = pt != null && pt.prefabRoot != null
                     ? new Target { go = go, prefabRoot = pt.prefabRoot, prefabPath = pt.prefabPath }
-                    : new Target { go = go };
+                    : new Target { go = go, fresh = true };
                 ApplyChanges(target, r, notes);
                 if (pt == null || pt.prefabRoot == null) Undo.RegisterCreatedObjectUndo(go, "Create " + go.name);
-                if (pt != null) pt.changed = true;
-                else target.Dirty();
-                return new D { {"path", target.Path}, {"id", go.GetInstanceID()}, {"notes", notes} };
+                if (pt != null) pt.Dirty();
+                if (pt == null || pt.prefabRoot == null) target.Dirty();
+                var res = new D { {"path", target.Path}, {"notes", notes} };
+                if (target.prefabRoot == null) res["id"] = go.GetInstanceID();
+                return res;
             }
             finally
             {
@@ -871,14 +1077,16 @@ namespace LocalAgent
                 var notes = new L();
                 ApplyChanges(t, r, notes);
                 t.Dirty();
-                return new D { {"path", t.Path}, {"id", t.go.GetInstanceID()}, {"notes", notes} };
+                var res = new D { {"path", t.Path}, {"notes", notes} };
+                if (t.prefabRoot == null) res["id"] = t.go.GetInstanceID();
+                return res;
             }
         }
 
         static void ApplyChanges(Target t, D r, L notes)
         {
             var go = t.go;
-            bool undo = t.prefabRoot == null;
+            bool undo = t.prefabRoot == null && !t.fresh;
             if (r.ContainsKey("name") && Str(r, "cmd") == "modify")
             {
                 if (undo) Undo.RecordObject(go, "Rename");
@@ -905,18 +1113,42 @@ namespace LocalAgent
             }
             if (r.ContainsKey("parent") && Str(r, "cmd") == "modify")
             {
-                string pp = Str(r, "parent");
-                if (t.prefabRoot != null) notes.Add("Moving objects inside a prefab asset isn't supported; open the scene copy instead.");
-                else if (string.IsNullOrEmpty(pp) || pp == "/")
+                string pp = (Str(r, "parent") ?? "").Trim();
+                var sr = StageRoot();
+                bool inStage = sr != null && go.transform.IsChildOf(sr.transform);
+                try
                 {
-                    if (undo) Undo.SetTransformParent(go.transform, null, "Unparent"); else go.transform.SetParent(null, true);
+                    if (t.prefabRoot != null || inStage)
+                    {
+                        // inside a prefab everything stays under its one root
+                        var root = t.prefabRoot ?? sr;
+                        string asset = t.prefabRoot != null ? t.prefabPath : stage.assetPath;
+                        if (go == root) notes.Add("A prefab's root object can't be moved.");
+                        else if (pp == "" || pp == "/") notes.Add("Objects in a prefab must stay under its root; give a parent inside it.");
+                        else
+                        {
+                            string rest = pp.StartsWith(asset, StringComparison.OrdinalIgnoreCase) ? pp.Substring(asset.Length) : pp;
+                            var p = PrefabChild(root, rest.Trim('/'), asset);
+                            if (p.transform.IsChildOf(go.transform)) notes.Add("Can't put an object inside its own child.");
+                            else if (undo) Undo.SetTransformParent(go.transform, p.transform, "Reparent");
+                            else go.transform.SetParent(p.transform, true);
+                        }
+                    }
+                    else if (pp == "" || pp == "/")
+                    {
+                        if (undo) Undo.SetTransformParent(go.transform, null, "Unparent"); else go.transform.SetParent(null, true);
+                    }
+                    else
+                    {
+                        var p = FindObject(pp);
+                        if (p.transform.IsChildOf(go.transform)) notes.Add("Can't put an object inside its own child.");
+                        else if (sr != null && p.transform.IsChildOf(sr.transform))
+                            notes.Add("Can't move a scene object into the prefab open in Prefab Mode.");
+                        else if (undo) Undo.SetTransformParent(go.transform, p.transform, "Reparent");
+                        else go.transform.SetParent(p.transform, true);
+                    }
                 }
-                else
-                {
-                    var p = FindObject(pp);
-                    if (p.transform.IsChildOf(go.transform)) notes.Add("Can't put an object inside its own child.");
-                    else Undo.SetTransformParent(go.transform, p.transform, "Reparent");
-                }
+                catch (BridgeError e) { notes.Add("parent: " + e.Message); }
             }
             var tr = go.transform;
             bool world = Bool(r, "world", false);
@@ -946,12 +1178,13 @@ namespace LocalAgent
                 {
                     var ty = FindType(Convert.ToString(cn, Inv), typeof(Component));
                     if (ty == null) notes.Add("No component type '" + cn + "' (if it's your script, run unity_refresh and fix compile errors first).");
-                    else if (undo) Undo.AddComponent(go, ty); else go.AddComponent(ty);
+                    else if ((undo ? Undo.AddComponent(go, ty) : go.AddComponent(ty)) == null) notes.Add("Unity couldn't add " + ty.Name + ".");
                 }
                 foreach (var cn in List(r, "remove_components"))
                 {
-                    var c = FindComponent(go, Convert.ToString(cn, Inv), false);
-                    if (c == null || c is Transform) notes.Add("No removable component '" + cn + "'.");
+                    var c = TryComponent(go, Convert.ToString(cn, Inv), notes);
+                    if (c is Transform) notes.Add("The Transform can't be removed.");
+                    else if (c == null) continue;
                     else if (undo) Undo.DestroyObjectImmediate(c); else Object.DestroyImmediate(c);
                 }
             }
@@ -964,8 +1197,8 @@ namespace LocalAgent
                     if (dot <= 0) { notes.Add("'" + key + "': use Component.property, e.g. Rigidbody.mass."); continue; }
                     string cname = key.Substring(0, dot), prop = key.Substring(dot + 1);
                     if (cname == "GameObject") { notes.Add("Use the name, active, tag and layer settings for the GameObject itself."); continue; }
-                    var comp = FindComponent(go, cname, false);
-                    if (comp == null) { notes.Add("'" + go.name + "' has no " + cname + "."); continue; }
+                    var comp = TryComponent(go, cname, notes);
+                    if (comp == null) continue;
                     if (comp is Behaviour && prop == "enabled") { if (undo) Undo.RecordObject(comp, "Enable"); ((Behaviour)comp).enabled = ToBool(kv.Value); continue; }
                     var so = new SerializedObject(comp);
                     var sp = FindProp(so, prop);
@@ -975,6 +1208,12 @@ namespace LocalAgent
                     if (undo) so.ApplyModifiedProperties(); else so.ApplyModifiedPropertiesWithoutUndo();
                     notes.Add(key + " = " + FormatValue(so.FindProperty(sp.propertyPath)));
                 }
+        }
+
+        static Component TryComponent(GameObject go, string name, L notes)
+        {
+            try { return FindComponent(go, name); }
+            catch (BridgeError e) { notes.Add(e.Message); return null; }
         }
 
         static object ModifyAsset(string path, D r)
@@ -1168,7 +1407,10 @@ namespace LocalAgent
                 return null;
             }
             var cands = new List<Object>();
-            if (s.StartsWith("#") || !IsAssetPath(s))
+            // in Prefab Mode, Assets/...prefab/Child names an object of the prefab being edited
+            bool inStage = StageRoot() != null && (string.Equals(s, stage.assetPath, StringComparison.OrdinalIgnoreCase) ||
+                                                   s.StartsWith(stage.assetPath + "/", StringComparison.OrdinalIgnoreCase));
+            if (s.StartsWith("#") || !IsAssetPath(s) || inStage)
             {
                 var go = FindObject(s);
                 cands.Add(go);
@@ -1207,16 +1449,41 @@ namespace LocalAgent
             var paths = r.ContainsKey("paths") ? List(r, "paths").Select(x => Convert.ToString(x, Inv)).ToList()
                                                : new List<string> { Str(r, "path") };
             var gone = new L();
-            foreach (var path in paths)
+            var notes = new L();
+            var open = new Dictionary<string, Target>(StringComparer.OrdinalIgnoreCase);
+            try
             {
-                using (var t = Resolve(path))
+                // find them all first, so one bad path doesn't stop the rest half-way
+                var targets = new List<Target>();
+                foreach (var path in paths)
                 {
-                    string shown = t.Path;
+                    try
+                    {
+                        var t = Resolve(path, open);
+                        if (t.prefabRoot != null && t.go == t.prefabRoot)
+                            notes.Add(path + ": to delete a whole prefab asset, delete its file.");
+                        else if (t.go == StageRoot())
+                            notes.Add(path + ": the root of the prefab open in Prefab Mode can't be deleted.");
+                        else if (!targets.Any(o => o.go == t.go))
+                            targets.Add(t);
+                    }
+                    catch (BridgeError e) { notes.Add(path + ": " + e.Message); }
+                }
+                var doomed = new List<KeyValuePair<Target, string>>();
+                foreach (var t in targets)
+                {
+                    if (targets.Any(o => o != t && t.go.transform.IsChildOf(o.go.transform)))
+                        gone.Add(t.Path + " (with its parent)");
+                    else
+                        doomed.Add(new KeyValuePair<Target, string>(t, t.Path));
+                }
+                foreach (var kv in doomed)
+                {
+                    var t = kv.Key;
                     if (t.prefabRoot != null)
                     {
-                        if (t.go == t.prefabRoot) throw new BridgeError("To delete a whole prefab asset, delete the file.");
                         Object.DestroyImmediate(t.go);
-                        t.changed = true;
+                        t.Dirty();
                     }
                     else
                     {
@@ -1224,10 +1491,14 @@ namespace LocalAgent
                         Undo.DestroyObjectImmediate(t.go);
                         EditorSceneManager.MarkSceneDirty(scene);
                     }
-                    gone.Add(shown);
+                    gone.Add(kv.Value);
                 }
             }
-            return new D { {"deleted", gone} };
+            finally
+            {
+                foreach (var t in open.Values) t.Dispose();   // saves the prefab assets that changed
+            }
+            return new D { {"deleted", gone}, {"notes", notes} };
         }
 
         static object CreateAsset(D r)
@@ -1241,8 +1512,17 @@ namespace LocalAgent
                 EnsureFolder(path);
                 return new D { {"path", path} };
             }
-            EnsureFolder(Path.GetDirectoryName(path).Replace('\\', '/'));
-            if (AssetDatabase.LoadMainAssetAtPath(path) != null) throw new BridgeError(path + " already exists.");
+            // the file name it will really get, before checking it's free: never replace an asset
+            // (that gives it a new id and breaks everything that uses it)
+            string[] exts = kind == "material" ? new[] { ".mat" }
+                : kind == "scriptable_object" || kind == "scriptableobject" ? new[] { ".asset" }
+                : kind == "physics_material" || kind == "physic_material" ? new[] { ".physicMaterial", ".physicsMaterial" }
+                : null;
+            if (exts == null)
+                throw new BridgeError("kind must be material, folder, scriptable_object or physics_material. Write scripts with write_file.");
+            if (!exts.Any(e => path.EndsWith(e, StringComparison.OrdinalIgnoreCase))) path += exts[0];
+            if (Exists(path))
+                throw new BridgeError(path + " already exists. Change it with unity_modify(path=\"" + path + "\"), or pick another name.");
             Object asset;
             if (kind == "material")
             {
@@ -1250,23 +1530,20 @@ namespace LocalAgent
                 Shader sh = !string.IsNullOrEmpty(shader) ? Shader.Find(shader) : DefaultShader();
                 if (sh == null) throw new BridgeError("No shader called '" + shader + "'.");
                 asset = new Material(sh);
-                if (!path.EndsWith(".mat")) path += ".mat";
             }
-            else if (kind == "scriptable_object" || kind == "scriptableobject")
+            else if (exts[0] == ".asset")
             {
                 var t = FindType(Str(r, "type"), typeof(ScriptableObject));
                 if (t == null) throw new BridgeError("No ScriptableObject class called '" + Str(r, "type") + "'.");
                 asset = ScriptableObject.CreateInstance(t);
-                if (!path.EndsWith(".asset")) path += ".asset";
             }
-            else if (kind == "physics_material" || kind == "physic_material")
+            else
             {
                 var t = FindType("PhysicsMaterial", typeof(Object)) ?? FindType("PhysicMaterial", typeof(Object));
                 if (t == null) throw new BridgeError("This Unity has no physics material type.");
                 asset = (Object)Activator.CreateInstance(t);
-                if (!path.EndsWith(".physicMaterial") && !path.EndsWith(".physicsMaterial")) path += ".physicMaterial";
             }
-            else throw new BridgeError("kind must be material, folder, scriptable_object or physics_material. Write scripts with write_file.");
+            EnsureFolder(Path.GetDirectoryName(path).Replace('\\', '/'));
             AssetDatabase.CreateAsset(asset, path);
             var set = r.ContainsKey("set") ? r["set"] as D : null;
             var notes = new L();
@@ -1288,6 +1565,12 @@ namespace LocalAgent
             }
             AssetDatabase.SaveAssets();
             return new D { {"path", path}, {"type", asset.GetType().Name}, {"notes", notes} };
+        }
+
+        static bool Exists(string assetPath)
+        {
+            return AssetDatabase.LoadMainAssetAtPath(assetPath) != null ||
+                   File.Exists(Path.Combine(projectRoot, assetPath)) || Directory.Exists(Path.Combine(projectRoot, assetPath));
         }
 
         static Shader DefaultShader()
@@ -1312,6 +1595,9 @@ namespace LocalAgent
             if (string.IsNullOrEmpty(asset) || !asset.StartsWith("Assets/") || !asset.EndsWith(".prefab"))
                 throw new BridgeError("asset_path must look like Assets/Prefabs/Enemy.prefab");
             var go = FindObject(Str(r, "path"));
+            if (!Bool(r, "overwrite", false) && Exists(asset))
+                throw new BridgeError(asset + " already exists. Pass overwrite=true to replace it with this object " +
+                                      "(everything using that prefab changes too), or pick another path.");
             EnsureFolder(Path.GetDirectoryName(asset).Replace('\\', '/'));
             bool ok;
             PrefabUtility.SaveAsPrefabAssetAndConnect(go, asset, InteractionMode.UserAction, out ok);
@@ -1351,22 +1637,39 @@ namespace LocalAgent
         static void OnCompileStarted(object ctx)
         {
             compileMsgs.Clear();
+            SessionState.SetInt("LocalAgent.compileErrors", 0);
             SaveCompile();
+        }
+
+        const int MaxWarnings = 50, MaxMessages = 400;
+
+        /// <summary>Errors in the last compile, counting any that didn't fit in the stored list.</summary>
+        static int ErrorCount()
+        {
+            return Math.Max(SessionState.GetInt("LocalAgent.compileErrors", 0),
+                            compileMsgs.Count(m => (m["type"] as string) == "error"));
         }
 
         static void OnAssemblyCompiled(string assembly, CompilerMessage[] messages)
         {
+            // Warnings can be many: keep only a few, so they never push out an error.
+            int warnings = compileMsgs.Count(m => (m["type"] as string) != "error");
+            int errors = SessionState.GetInt("LocalAgent.compileErrors", 0);
             foreach (var m in messages)
             {
-                if (compileMsgs.Count >= 200) break;
+                bool error = m.type == CompilerMessageType.Error;
+                if (error) errors++;
+                if (compileMsgs.Count >= MaxMessages || !error && warnings >= MaxWarnings) continue;
+                if (!error) warnings++;
                 string file = (m.file ?? "").Replace('\\', '/');
                 if (file.StartsWith(projectRoot + "/")) file = file.Substring(projectRoot.Length + 1);
                 compileMsgs.Add(new D
                 {
-                    {"type", m.type == CompilerMessageType.Error ? "error" : "warning"}, {"file", file},
+                    {"type", error ? "error" : "warning"}, {"file", file},
                     {"line", m.line}, {"column", m.column}, {"message", m.message},
                 });
             }
+            SessionState.SetInt("LocalAgent.compileErrors", errors);
             SaveCompile();
         }
 
@@ -1379,6 +1682,9 @@ namespace LocalAgent
         static object Refresh()
         {
             AssetDatabase.Refresh(ImportAssetOptions.Default);
+            // Unity says the scripts don't compile but we never saw the errors: compile again to get them.
+            if (EditorUtility.scriptCompilationFailed && ErrorCount() == 0 && !EditorApplication.isCompiling)
+                CompilationPipeline.RequestScriptCompilation();
             return new D
             {
                 {"compiling", EditorApplication.isCompiling}, {"updating", EditorApplication.isUpdating},
@@ -1391,6 +1697,7 @@ namespace LocalAgent
             return new D
             {
                 {"compiling", EditorApplication.isCompiling}, {"compile_count", SessionState.GetInt("LocalAgent.compileCount", 0)},
+                {"compile_failed", EditorUtility.scriptCompilationFailed}, {"error_count", ErrorCount()},
                 {"messages", new L(compileMsgs.Cast<object>())},
             };
         }
@@ -1476,9 +1783,13 @@ namespace LocalAgent
             switch (action)
             {
                 case "play":
-                    if (compileMsgs.Any(m => (string)m["type"] == "error"))
+                    if (ErrorCount() > 0 || EditorUtility.scriptCompilationFailed)
                         throw new BridgeError("There are compile errors; Unity can't enter play mode until they're fixed. See unity_refresh.");
-                    if (!EditorApplication.isPlaying) EditorApplication.isPlaying = true;
+                    if (!EditorApplication.isPlaying)
+                    {
+                        SessionState.SetBool("LocalAgent.agentPlay", true);
+                        EditorApplication.isPlaying = true;
+                    }
                     break;
                 case "stop": EditorApplication.isPlaying = false; break;
                 case "pause": EditorApplication.isPaused = true; break;
@@ -1486,7 +1797,24 @@ namespace LocalAgent
                 case "step": EditorApplication.Step(); break;
                 default: throw new BridgeError("action must be play, stop, pause, resume or step.");
             }
-            return new D { {"playing", EditorApplication.isPlaying}, {"paused", EditorApplication.isPaused}, {"last_log_id", nextLogId - 1} };
+            return new D
+            {
+                {"playing", EditorApplication.isPlaying}, {"paused", EditorApplication.isPaused}, {"last_log_id", nextLogId - 1},
+                {"will_play", EditorApplication.isPlayingOrWillChangePlaymode}, {"compile_failed", EditorUtility.scriptCompilationFailed},
+                {"frame", Time.frameCount}, {"time", Time.time},
+            };
+        }
+
+        static void OnPlayMode(PlayModeStateChange change)
+        {
+            if (change == PlayModeStateChange.EnteredPlayMode && SessionState.GetBool("LocalAgent.agentPlay", false))
+            {
+                // The agent is testing the game: keep it running while Unity isn't the focused window.
+                // This only lasts for this play session.
+                Application.runInBackground = true;
+            }
+            if (change == PlayModeStateChange.EnteredPlayMode || change == PlayModeStateChange.EnteredEditMode)
+                SessionState.EraseBool("LocalAgent.agentPlay");
         }
 
         static void CheckSaved(D r)
@@ -1588,7 +1916,9 @@ namespace LocalAgent
             GameObject temp = null;
             if (view == "game")
             {
-                cams = Camera.allCameras.Where(c => c.targetTexture == null).OrderBy(c => c.depth).ToList();
+                var sr = StageRoot();
+                cams = Camera.allCameras.Where(c => c.targetTexture == null && (sr == null || c.gameObject.scene != sr.scene))
+                                        .OrderBy(c => c.depth).ToList();
                 if (cams.Count == 0) throw new BridgeError("There is no active camera in the scene.");
                 note = "Rendered from " + string.Join(", ", cams.Select(c => c.name).ToArray()) +
                        ". Screen-space overlay UI isn't included.";
@@ -1629,6 +1959,7 @@ namespace LocalAgent
                 cam.CopyFrom(sv.camera);
                 cam.cameraType = CameraType.Game;
                 cam.enabled = false;
+                if (StageRoot() != null) cam.scene = stage.scene;   // Prefab Mode: show the prefab being edited
                 if (!string.IsNullOrEmpty(look) || angle != "")
                 {
                     float dist = sv.orthographic ? size * 2f : size / Mathf.Sin(sv.camera.fieldOfView * 0.5f * Mathf.Deg2Rad);
@@ -1645,6 +1976,9 @@ namespace LocalAgent
             var rt = RenderTexture.GetTemporary(w, h, 24, RenderTextureFormat.ARGB32);
             var prevActive = RenderTexture.active;
             var tex = new Texture2D(w, h, TextureFormat.RGB24, false);
+            // compile shaders now, or materials whose shaders aren't ready yet render as cyan placeholders
+            bool asyncShaders = ShaderUtil.allowAsyncCompilation;
+            ShaderUtil.allowAsyncCompilation = false;
             try
             {
                 foreach (var c in cams)
@@ -1665,6 +1999,7 @@ namespace LocalAgent
             }
             finally
             {
+                ShaderUtil.allowAsyncCompilation = asyncShaders;
                 RenderTexture.active = prevActive;
                 RenderTexture.ReleaseTemporary(rt);
                 Object.DestroyImmediate(tex);
@@ -1786,7 +2121,7 @@ namespace LocalAgent
         public static object Parse(string s)
         {
             int i = 0;
-            object v = Value(s, ref i);
+            object v = Value(s, ref i, 0);
             Skip(s, ref i);
             if (i != s.Length) throw new FormatException("Extra text after JSON at " + i);
             return v;
@@ -1797,8 +2132,11 @@ namespace LocalAgent
             while (i < s.Length && char.IsWhiteSpace(s[i])) i++;
         }
 
-        static object Value(string s, ref int i)
+        const int MaxDepth = 64;   // requests are parsed before the key is checked: no deep nesting
+
+        static object Value(string s, ref int i, int depth)
         {
+            if (depth > MaxDepth) throw new FormatException("JSON nested too deeply");
             Skip(s, ref i);
             if (i >= s.Length) throw new FormatException("Unexpected end of JSON");
             char c = s[i];
@@ -1816,7 +2154,7 @@ namespace LocalAgent
                     Skip(s, ref i);
                     if (i >= s.Length || s[i] != ':') throw new FormatException("Expected ':' at " + i);
                     i++;
-                    d[k] = Value(s, ref i);
+                    d[k] = Value(s, ref i, depth + 1);
                     Skip(s, ref i);
                     if (i < s.Length && s[i] == ',') { i++; continue; }
                     if (i < s.Length && s[i] == '}') { i++; return d; }
@@ -1831,7 +2169,7 @@ namespace LocalAgent
                 if (i < s.Length && s[i] == ']') { i++; return l; }
                 while (true)
                 {
-                    l.Add(Value(s, ref i));
+                    l.Add(Value(s, ref i, depth + 1));
                     Skip(s, ref i);
                     if (i < s.Length && s[i] == ',') { i++; continue; }
                     if (i < s.Length && s[i] == ']') { i++; return l; }

@@ -177,13 +177,13 @@ class AgentLoopTest(Base):
 
 class ContextTest(Base):
     def test_images_pruned_in_batches(self):
-        agent, _ = self.make([], keep_images=2)
+        agent, _ = self.make([], keep_images=2, max_images=4)
         for i in range(4):
             agent._record_results([(type("C", (), {"id": f"i{i}", "name": "screenshot"})(),
                                     ToolResult("shot", images=[b"png"]))])
         count = lambda: sum(1 for m in agent.messages if isinstance(m.get("content"), list)
                             for p in m["content"] if p.get("type") == "image_url")
-        self.assertEqual(count(), 4)       # 4 <= keep + 2: nothing rewritten yet
+        self.assertEqual(count(), 4)       # 4 <= max_images: nothing rewritten yet
         agent._record_results([(type("C", (), {"id": "i5", "name": "screenshot"})(),
                                 ToolResult("shot", images=[b"png"]))])
         self.assertEqual(count(), 2)
@@ -192,6 +192,8 @@ class ContextTest(Base):
         big = "x" * 4000
         replies = [calls(("write_file", {"path": f"f{i}.txt", "content": big})) for i in range(6)] + [text("done")]
         agent, ui = self.make(replies, n_ctx=8000, approval_mode="auto")
+        # no room for a summary inside the conversation at this size: a transcript is summarized
+        self.srv.complete_reply = "SUMMARY: earlier work - the user wants files written; the first ones are done."
         out = agent.run("write many files")
         self.assertEqual(out, "done")
         self.assertTrue(any("Summarized" in n for n in ui.notices))
@@ -217,12 +219,15 @@ class MemoryTest(Base):
         self.assertNotIn("router", sent.lower())
         self.assertEqual(agent.messages[0]["_shown"], "what is my dog called")
 
-    def test_pinned_notes_are_in_the_system_prompt(self):
+    def test_pinned_notes_are_in_the_chats_context_note(self):
         from localagent.memory import get_memory
 
         get_memory().add("Always answer in British English", "Spelling", pinned=True)
         agent, _ = self.make([text("ok")])
-        self.assertIn("Always answer in British English", agent.system_prompt())
+        agent.run("hi")
+        # not in the system prompt, which stays the same across chats so the server's cache holds
+        self.assertNotIn("British English", agent.system_prompt())
+        self.assertIn("Always answer in British English", self.srv.requests[0]["messages"][1]["content"])
 
     def test_saves_memories_after_a_bigger_task(self):
         from localagent.memory import get_memory
