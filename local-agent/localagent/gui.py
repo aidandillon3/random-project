@@ -7,16 +7,16 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QImage, QKeySequence, QPalette, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
+    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QSizePolicy, QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import catalog, launcher, strata
+from . import catalog, launcher, mcp, plugins, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import gpu_info, model_info
@@ -33,6 +33,9 @@ BAD = "#e5534b"
 
 THINKING_LEVELS = [("auto", "Model default"), ("off", "Off (fastest)"), ("low", "Low"), ("medium", "Medium"),
                    ("high", "High (smartest)")]
+# the chat bar's short names for the approval modes (the long ones are the tooltips)
+PERMISSION_SHORT = {"read_only": "Read only", "ask": "Ask first", "auto_edit": "Auto-edit files",
+                    "auto": "Full auto"}
 
 STYLE = f"""
 QWidget {{ font-size: 10pt; }}
@@ -56,16 +59,66 @@ QPushButton:disabled {{ color: #6b717c; }}
 QPushButton#primary {{ background: {ACCENT}; border: none; color: white; font-weight: 600; }}
 QPushButton#primary:hover {{ background: #6a9dff; }}
 QPushButton#danger {{ background: {BAD}; border: none; color: white; font-weight: 600; }}
+QPushButton#primary:disabled, QPushButton#danger:disabled {{ background: #2a2f3a; color: #6b717c; }}
 QToolButton {{ color: #9aa1ad; border: none; background: transparent; }}
+QToolButton:hover {{ color: #e6e8ee; }}
+QToolButton#menu {{ background: #2a2f3a; color: #e6e8ee; border: 1px solid #3a404d; border-radius: 6px; padding: 5px 10px; }}
+QToolButton#menu::menu-indicator {{ image: none; }}
+QDialog, QMessageBox, QInputDialog {{ background: #16181d; color: #e6e8ee; }}
+QMenu {{ background: #1e2128; color: #e6e8ee; border: 1px solid #3a404d; }}
+QMenu::item {{ padding: 6px 22px; }}
+QMenu::item:selected {{ background: #2b3550; }}
+QMenu::item:disabled {{ color: #6b717c; }}
+QToolTip {{ background: #23262e; color: #e6e8ee; border: 1px solid #3a404d; }}
 QGroupBox {{ border: 1px solid #2c303a; border-radius: 8px; margin-top: 14px; padding: 10px; color: #c9ced8; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; }}
 QTextBrowser, QPlainTextEdit {{ background: #1e2128; border: 1px solid #2c303a; border-radius: 8px; color: #e6e8ee; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: #23262e; color: #e6e8ee; border: 1px solid #3a404d;
     border-radius: 4px; padding: 3px 6px; }}
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{ background: #1b1d23;
+    color: #6b717c; border-color: #2c303a; }}
+QComboBox QAbstractItemView {{ background: #1e2128; color: #e6e8ee; selection-background-color: #2b3550; }}
 QProgressBar {{ background: #23262e; border: 1px solid #3a404d; border-radius: 4px; text-align: center; color: white; height: 14px; }}
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 4px; }}
 QScrollArea {{ border: none; background: transparent; }}
 """
+
+
+def in_background(fn, done, poll_ms: int = 50) -> threading.Thread:
+    """Run fn() on a worker thread, then done(result, error) on the GUI thread: network calls and
+    folder walks must never freeze the window."""
+    box: dict = {}
+
+    def work():
+        try:
+            box["result"] = fn()
+        except Exception as e:  # noqa: BLE001
+            box["error"] = e
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+
+    def check():
+        if t.is_alive():
+            QTimer.singleShot(poll_ms, check)
+        else:
+            done(box.get("result"), box.get("error"))
+
+    QTimer.singleShot(poll_ms, check)
+    return t
+
+
+def _stop_background(agent) -> None:
+    """End the commands a chat left running in the background (servers, watchers)."""
+    if agent is None:
+        return
+    from .tools import shell
+    fn = getattr(shell, "stop_background", None)
+    if fn:
+        try:
+            fn(agent.ctx)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def png_bytes(img: QImage, max_side: int = 1600) -> bytes:
@@ -85,7 +138,14 @@ def thumb(png: bytes, width: int = 320) -> QLabel:
     lab.setPixmap(pm.scaledToWidth(min(width, pm.width() or width), Qt.SmoothTransformation))
     lab.setCursor(Qt.PointingHandCursor)
     lab.setToolTip("Click to view full size")
-    lab.mousePressEvent = lambda e, p=pm: ImageDialog(p, lab.window()).exec()
+    del pm         # keep only the small copy and the PNG bytes; decode full size on click
+
+    def show(_e, data=png):
+        full = QPixmap()
+        full.loadFromData(data)
+        ImageDialog(full, lab.window()).exec()
+
+    lab.mousePressEvent = show
     return lab
 
 
@@ -94,6 +154,32 @@ def muted(text: str) -> QLabel:
     lab.setProperty("muted", True)
     lab.setWordWrap(True)
     return lab
+
+
+class ElidedLabel(QLabel):
+    """One line of plain text that shortens itself with "..." instead of widening the window."""
+
+    def __init__(self, text: str = ""):
+        super().__init__()
+        self._full = text
+        self.setTextFormat(Qt.PlainText)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(40)
+        super().setText(text)
+
+    def setText(self, text: str):
+        self._full = text
+        self._elide()
+
+    def fullText(self) -> str:
+        return self._full
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._elide()
+
+    def _elide(self):
+        super().setText(self.fontMetrics().elidedText(self._full, Qt.ElideRight, max(40, self.width())))
 
 
 class ImageDialog(QDialog):
@@ -116,6 +202,7 @@ class UserBubble(QFrame):
         self.setObjectName("user")
         lay = QVBoxLayout(self)
         lab = QLabel(text)
+        lab.setTextFormat(Qt.PlainText)      # what you typed, never rendered as HTML
         lab.setWordWrap(True)
         lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lay.addWidget(lab)
@@ -129,12 +216,20 @@ class AssistantBlock(QFrame):
         self.setObjectName("assistant")
         self.text, self.reasoning = "", ""
         self._dirty = False
+        self._next = 0.0               # when the next re-render may happen (long replies render slower)
+        self._think_start = None
+        self._think_secs = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 2, 4, 2)
         self.think_btn = QToolButton(text="▸ Thinking")
         self.think_btn.setVisible(False)
         self.think_btn.clicked.connect(self._toggle)
+        self.preview = muted("")       # the latest line of thinking while it's collapsed, so it doesn't look stuck
+        self.preview.setTextFormat(Qt.PlainText)
+        self.preview.setWordWrap(False)
+        self.preview.setVisible(False)
         self.think = muted("")
+        self.think.setTextFormat(Qt.PlainText)
         self.think.setVisible(False)
         self.think.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.body = QLabel()
@@ -143,32 +238,65 @@ class AssistantBlock(QFrame):
         self.body.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
         self.body.setOpenExternalLinks(True)
         self.body.setVisible(False)
-        for w in (self.think_btn, self.think, self.body):
+        for w in (self.think_btn, self.preview, self.think, self.body):
             lay.addWidget(w)
 
+    def _label(self) -> str:
+        arrow = "▾" if self.think.isVisible() else "▸"
+        if self._think_secs is not None:
+            secs = self._think_secs
+            return f"{arrow} Thought for " + (f"{secs:.0f} s" if secs >= 1 else "a moment")
+        if self._think_start is not None:
+            return f"{arrow} Thinking... {time.time() - self._think_start:.0f} s"
+        return f"{arrow} Thinking"
+
     def _toggle(self):
-        show = not self.think.isVisible()
-        self.think.setVisible(show)
-        self.think_btn.setText(("▾" if show else "▸") + " Thinking")
+        self.think.setVisible(not self.think.isVisible())
+        self.think_btn.setText(self._label())
+        self._dirty = True
+        self._next = 0.0
+        self.refresh()
 
     def add_text(self, s):
+        if self._think_start is not None and self._think_secs is None and s.strip():
+            self._think_secs = time.time() - self._think_start
         self.text += s
         self._dirty = True
 
     def add_reasoning(self, s):
+        if self._think_start is None:
+            self._think_start = time.time()
         self.reasoning += s
         self._dirty = True
 
+    def finish(self):
+        if self._think_start is not None and self._think_secs is None:
+            self._think_secs = time.time() - self._think_start
+        self._dirty = True
+        self._next = 0.0
+        self.refresh()
+
     def refresh(self):
-        if not self._dirty:
+        if self.reasoning and self._think_secs is None:
+            self.think_btn.setText(self._label())      # the seconds keep ticking while it thinks
+        if not self._dirty or time.time() < self._next:
             return
+        t0 = time.time()
         self._dirty = False
         if self.reasoning:
             self.think_btn.setVisible(True)
-            self.think.setText(self.reasoning[-20000:])
+            self.think_btn.setText(self._label())
+            thinking = self._think_secs is None and not self.text.strip()
+            last = self.reasoning.strip().rsplit("\n", 1)[-1]
+            self.preview.setText(last[-160:])
+            self.preview.setVisible(thinking and not self.think.isVisible())
+            if self.think.isVisible():
+                self.think.setText(self.reasoning[-20000:])
         if self.text.strip():
             self.body.setVisible(True)
             self.body.setText(self.text)
+        # rendering a long Markdown reply takes a while; leave the window free in between
+        self._next = time.time() + 3 * (time.time() - t0)
 
     def is_empty(self):
         return not self.text.strip() and not self.reasoning.strip()
@@ -327,38 +455,47 @@ class ApprovalDialog(QDialog):
         self.setMinimumWidth(560)
         self.decision = Decision(False)
         lay = QVBoxLayout(self)
-        head = QLabel(f"<b>The AI wants to {risk_text(req.risk)}.</b>")
+        head = QLabel(f"The AI wants to {risk_text(req.risk)}.")
+        head.setStyleSheet("font-size: 12pt; font-weight: 600;")
+        head.setTextFormat(Qt.PlainText)
         head.setWordWrap(True)
         lay.addWidget(head)
+        what = muted(req.summary)
+        what.setTextFormat(Qt.PlainText)
+        lay.addWidget(what)
         if req.dangerous:
             warn = QLabel("⚠️ This looks like a command that can delete data or change your system. "
                           "Read it carefully.")
             warn.setStyleSheet(f"color: {BAD}; font-weight: 600;")
             warn.setWordWrap(True)
             lay.addWidget(warn)
-        box = QPlainTextEdit(req.summary + "\n\n" + req.pretty_args())
+        box = QPlainTextEdit(req.pretty_args())
         box.setReadOnly(True)
         box.setFont(QFont("Consolas", 9))
-        box.setMinimumHeight(160)
+        box.setMinimumHeight(140)
         lay.addWidget(box)
         self.note = QLineEdit()
-        self.note.setPlaceholderText("Optional: if you deny, tell it what to do instead")
+        self.note.setPlaceholderText("Optional: if you deny, tell it what to do instead (Enter denies)")
+        self.note.returnPressed.connect(lambda: self._done(False, False))
         lay.addWidget(self.note)
         row = QHBoxLayout()
         allow = QPushButton("Allow")
         allow.setObjectName("primary")
-        allow.setDefault(True)
+        allow.setAutoDefault(False)          # a stray Enter must never allow anything
         allow.clicked.connect(lambda: self._done(True, False))
         row.addWidget(allow)
         if not req.dangerous:
             always = QPushButton(f"Allow all '{RISK_LABELS.get(req.risk, req.risk)}' for this chat")
+            always.setAutoDefault(False)
             always.clicked.connect(lambda: self._done(True, True))
             row.addWidget(always)
         row.addStretch(1)
         deny = QPushButton("Deny")
+        deny.setDefault(True)
         deny.clicked.connect(lambda: self._done(False, False))
         row.addWidget(deny)
         lay.addLayout(row)
+        deny.setFocus()
 
     def _done(self, allow, always):
         self.decision = Decision(allow, always, self.note.text().strip())
@@ -399,34 +536,48 @@ class ChatPage(QWidget):
         main.setContentsMargins(16, 10, 16, 10)
 
         top = QHBoxLayout()
-        self.conn = QLabel("●  not connected")
+        self.dot = QLabel("●")
+        self.dot.setStyleSheet(f"color: {BAD};")
+        top.addWidget(self.dot)
+        self.conn = ElidedLabel("not connected")
         top.addWidget(self.conn, 1)
-        top.addSpacing(12)
-        top.addWidget(QLabel("Permissions:"))
+        self.model_btn = QToolButton(text="Model ▾")
+        self.model_btn.setObjectName("menu")
+        self.model_btn.setToolTip("Switch model, or start / stop it")
+        self.model_btn.setPopupMode(QToolButton.InstantPopup)
+        self.model_menu = QMenu(self.model_btn)
+        self.model_menu.aboutToShow.connect(self._fill_model_menu)
+        self.model_btn.setMenu(self.model_menu)
+        top.addWidget(self.model_btn)
+        top.addSpacing(8)
         self.mode = QComboBox()
-        for k, v in APPROVAL_MODES.items():
+        for k, v in PERMISSION_SHORT.items():
             self.mode.addItem(v, k)
-        self.mode.setCurrentIndex(list(APPROVAL_MODES).index(self.s.approval_mode))
+            self.mode.setItemData(self.mode.count() - 1, APPROVAL_MODES[k], Qt.ToolTipRole)
+        self.mode.setToolTip("What it may do without asking you first")
+        self.mode.setCurrentIndex(max(0, self.mode.findData(self.s.approval_mode)))
         self.mode.currentIndexChanged.connect(self._mode_changed)
         top.addWidget(self.mode)
-        top.addWidget(QLabel("Thinking:"))
         self.think = QComboBox()
         for k, v in THINKING_LEVELS:
-            self.think.addItem(v, k)
+            self.think.addItem(f"Thinking: {v}", k)
         self.think.setToolTip("How long it thinks before answering. Applies from your next message. "
                               "High is best for hard tasks, Off or Low for quick clicks.")
         self.sync_thinking()
         self.think.currentIndexChanged.connect(self._thinking_changed)
         top.addWidget(self.think)
-        self.ws_btn = QPushButton()
-        self.ws_btn.clicked.connect(self._pick_workspace)
-        top.addWidget(self.ws_btn)
-        b = QPushButton("Old chats")
-        b.clicked.connect(self._open_chat)
-        top.addWidget(b)
         b = QPushButton("New chat")
         b.clicked.connect(self.new_chat)
         top.addWidget(b)
+        more = QToolButton(text="⋯")
+        more.setObjectName("menu")
+        more.setToolTip("Old chats, work folder")
+        more.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(more)
+        m.addAction("Open an old chat...", self._open_chat)
+        m.addAction("Change the work folder...", self._pick_workspace)
+        more.setMenu(m)
+        top.addWidget(more)
         main.addLayout(top)
 
         self.scroll = QScrollArea()
@@ -440,11 +591,29 @@ class ChatPage(QWidget):
         self.scroll.verticalScrollBar().rangeChanged.connect(self._autoscroll)
         main.addWidget(self.scroll, 1)
 
-        self.welcome = muted("Ask for anything: \"tidy up my Downloads folder\", \"what's on my screen?\", "
-                             "\"write a script that renames these photos by date\", \"open Notepad and write a "
-                             "poem\". It asks before changing anything (you can loosen that at the top).\n\n"
-                             "Emergency stop while it uses the mouse: press Stop, or slam the mouse into a "
-                             "screen corner.")
+        self.welcome = QWidget()
+        wl = QVBoxLayout(self.welcome)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.addWidget(muted("Ask for anything: \"tidy up my Downloads folder\", \"what's on my screen?\", "
+                           "\"write a script that renames these photos by date\", \"open Notepad and write a "
+                           "poem\". It asks before changing anything (you can loosen that at the top).\n\n"
+                           "Emergency stop while it uses the mouse: press Stop (or Esc), or slam the mouse into "
+                           "a screen corner."))
+        # first run: one click to a working model
+        self.setup_card = QGroupBox("No model running yet. Pick one to get started:")
+        sc = QVBoxLayout(self.setup_card)
+        for p in catalog.PRESETS:
+            gb = p.total_bytes() / catalog.GB
+            b = QPushButton(f"{p.title}  ({gb:.0f} GB download if you don't have it)")
+            b.setStyleSheet("text-align: left; padding: 8px 14px;")
+            b.clicked.connect(lambda _=False, k=p.key: self.win.server.switch_to(k))
+            sc.addWidget(b)
+        b = QPushButton("I already run LM Studio or Ollama")
+        b.setStyleSheet("text-align: left; padding: 8px 14px;")
+        b.clicked.connect(lambda: self.win.nav.setCurrentRow(2))
+        sc.addWidget(b)
+        self.setup_card.setVisible(False)
+        wl.addWidget(self.setup_card)
         self.feed.insertWidget(0, self.welcome)
 
         self.chips = QHBoxLayout()
@@ -488,13 +657,22 @@ class ChatPage(QWidget):
         sl.addSpacing(12)
         sl.addWidget(QLabel("<b>Context used</b>"))
         self.ctx_bar = QProgressBar()
-        self.ctx_bar.setFormat("%v / %m")
+        self.ctx_bar.setFormat("%p%  (%v / %m tokens)")
         sl.addWidget(self.ctx_bar)
+        self.ctx_hint = muted("")
+        sl.addWidget(self.ctx_hint)
         self.speed = muted("")
         sl.addWidget(self.speed)
         sl.addSpacing(12)
-        self.side_mode = muted("")
-        sl.addWidget(self.side_mode)
+        sl.addWidget(QLabel("<b>Work folder</b>"))
+        row = QHBoxLayout()
+        self.ws_label = ElidedLabel("")
+        self.ws_label.setProperty("muted", True)
+        row.addWidget(self.ws_label, 1)
+        self.ws_btn = QToolButton(text="Change")
+        self.ws_btn.clicked.connect(self._pick_workspace)
+        row.addWidget(self.ws_btn)
+        sl.addLayout(row)
         sl.addStretch(1)
         outer.addWidget(side)
         self._update_ws_btn()
@@ -537,9 +715,24 @@ class ChatPage(QWidget):
             self.current.refresh()
 
     def _update_ws_btn(self):
-        self.ws_btn.setText(f"Work folder: {self.s.workspace_path().name}")
-        self.ws_btn.setToolTip(str(self.s.workspace_path()))
-        self.side_mode.setText(f"Model server: {self.s.base_url}")
+        self.ws_label.setText(str(self.s.workspace_path()))
+        self.ws_label.setToolTip(str(self.s.workspace_path()))
+
+    def _fill_model_menu(self):
+        """Switch between the ready-made modes, or start / stop the model, without leaving the chat."""
+        m, srv = self.model_menu, self.win.server
+        m.clear()
+        current = catalog.matching(self.s.model_path)
+        for p in catalog.PRESETS:
+            a = m.addAction(p.title, lambda k=p.key: srv.switch_to(k))
+            a.setCheckable(True)
+            a.setChecked(p is current)
+        m.addSeparator()
+        if srv.proc.running:
+            m.addAction("Stop the model", srv.stop)
+        elif self.s.model_path:
+            m.addAction(f"Start {Path(self.s.model_path).name}", srv.start)
+        m.addAction("Model server page...", lambda: self.win.nav.setCurrentRow(1))
 
     def sync_thinking(self):
         self.think.blockSignals(True)
@@ -549,6 +742,9 @@ class ChatPage(QWidget):
     def _thinking_changed(self):
         self.s.thinking = self.think.currentData()
         self.s.save()
+        if self.agent and self.agent.messages:
+            # the level sits at the very start of the prompt, so the server can't reuse what it already read
+            self.status.setText("Thinking changed: the next reply re-reads this chat once, so it starts slower.")
 
     def _mode_changed(self):
         self.s.approval_mode = self.mode.currentData()
@@ -557,12 +753,15 @@ class ChatPage(QWidget):
             self.agent.policy.mode = self.s.approval_mode
 
     def _pick_workspace(self):
+        if self.busy():
+            QMessageBox.information(self, "Work folder", "Wait for the current task to finish (or press Stop) "
+                                    "before changing the work folder.")
+            return
         d = QFileDialog.getExistingDirectory(self, "Folder the AI works in", str(self.s.workspace_path()))
         if d:
-            self.s.workspace = d
+            self.s.workspace = str(Path(d))
             self.s.save()
             self._update_ws_btn()
-            self._agent_sig = None
 
     def _attach(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "Images", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp *.gif)")
@@ -662,6 +861,7 @@ class ChatPage(QWidget):
         if self.busy():
             return
         if self.agent:
+            _stop_background(self.agent)
             self.agent.reset()
         self.chat_file = None
         while self.feed.count() > 1:
@@ -692,9 +892,14 @@ class ChatPage(QWidget):
         if not ok:
             return
         f = files[labels.index(label)]
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:     # leave the open chat alone
+            QMessageBox.warning(self, "Old chats", f"Couldn't open that chat: {e}")
+            return
         self.new_chat()
         self._ensure_agent()
-        self.agent.load_json(json.loads(f.read_text(encoding="utf-8")))
+        self.agent.load_json(data)
         self.chat_file = f
         self._render_history()
 
@@ -712,7 +917,7 @@ class ChatPage(QWidget):
                 blk.add_text(text)
                 blk.refresh()
                 self._add(blk)
-            elif m["role"] == "tool":
+            elif m["role"] == "tool" and m.get("name") != "todo_write":
                 card = ToolCard(m.get("name", "tool"), "", {})
                 card.done(ToolResult(text))
                 self._add(card)
@@ -726,12 +931,14 @@ class ChatPage(QWidget):
 
     def _on_assistant_end(self, turn):
         if self.current:
-            self.current.refresh()
+            self.current.finish()
             if self.current.is_empty():
                 self.current.setVisible(False)
         self.current = None
 
     def _on_tool_start(self, call_id, name, args, summary):
+        if name == "todo_write":       # the plan already shows on the right
+            return
         card = ToolCard(name, summary, args)
         self.cards[call_id] = card
         self._add(card)
@@ -752,8 +959,11 @@ class ChatPage(QWidget):
     def _on_usage(self, used, limit, tps):
         self.ctx_bar.setMaximum(max(1, limit))
         self.ctx_bar.setValue(min(used, limit))
+        self.ctx_hint.setText("Nearly full: older steps get summarized soon. For a new task, press New chat."
+                              if limit and used / limit > 0.8 else "")
         if tps:
             self.speed.setText(f"{tps:.1f} tokens/second")
+            self.win.last_tps = tps
 
     def _on_hide(self, w: Waiter):
         if self.win.isMinimized():
@@ -810,9 +1020,12 @@ class ChatPage(QWidget):
         self._add(lab)
         self.win.refresh_connection()
 
-    def set_connection(self, ok: bool, text: str):
-        color = OK if ok else BAD
-        self.conn.setText(f"<span style='color:{color}'>●</span>  {_esc(text)}")
+    def set_connection(self, state: str, text: str, first_run: bool = False, tip: str = ""):
+        """state: "ok" (a model answers), "busy" (ours is loading) or "off"."""
+        self.dot.setStyleSheet(f"color: {dict(ok=OK, busy=WARN).get(state, BAD)};")
+        self.conn.setText(text)
+        self.conn.setToolTip(tip or text)
+        self.setup_card.setVisible(first_run)
         self._update_ws_btn()
 
 
@@ -836,6 +1049,13 @@ class ServerPage(QWidget):
         self.vram = 16.0
         self._was_ready = False
         self._phase = None             # what a Strata start is doing, set from its worker thread
+        self._strata_job: threading.Thread | None = None
+        self._located: dict = {}       # preset key -> catalog.model_path(), from the last folder scan
+        self._last_model = self.s.model_path    # what autostart may start: the model used last time
+        self._scanning: threading.Thread | None = None
+        self._ready_job = None         # (thread, result) of the /health check in flight
+        self._startable = False
+        self._log_sig = None
         self._build()
         self.timer = QTimer(self, interval=500, timeout=self._poll)
         self.timer.start()
@@ -851,43 +1071,27 @@ class ServerPage(QWidget):
         h = QLabel("Model server")
         h.setObjectName("h1")
         lay.addWidget(h)
-        lay.addWidget(muted("Runs llama.cpp on your GPU with fast settings worked out for your card. Already use "
-                            "LM Studio or Ollama? Skip this page and pick it under Settings > Connection."))
+        lay.addWidget(muted("Pick a mode and press the button: it downloads what's missing and starts the model with "
+                            "settings worked out for your card. Already use LM Studio or Ollama? Pick it under "
+                            "Settings > Connection instead."))
         self.gpu = muted("")
         lay.addWidget(self.gpu)
 
-        g = QGroupBox("1. llama.cpp")
-        f = QFormLayout(g)
-        self.exe_label = QLabel()
-        self.exe_label.setWordWrap(True)
-        f.addRow("Program:", self.exe_label)
-        row = QHBoxLayout()
-        self.dl_btn = QPushButton("Download / update llama.cpp")
-        self.dl_btn.clicked.connect(self._download)
-        row.addWidget(self.dl_btn)
-        b = QPushButton("Browse...")
-        b.clicked.connect(self._browse_exe)
-        row.addWidget(b)
-        row.addStretch(1)
-        f.addRow(row)
-        self.dl_bar = QProgressBar()
-        self.dl_bar.setVisible(False)
-        f.addRow(self.dl_bar)
-        lay.addWidget(g)
-
-        g = QGroupBox("2. Model")
+        # ---- the mode: what most people need
+        g = QGroupBox("Mode")
         f = QFormLayout(g)
         row = QHBoxLayout()
         self.preset_box = QComboBox()
-        self.preset_box.addItem("Pick a ready-made mode, or choose a file below", "")
         for p in catalog.PRESETS:
             self.preset_box.addItem(p.title, p.key)
+        self.preset_box.addItem("Another model file (pick it below)", "")
         self.preset_box.currentIndexChanged.connect(self._preset_picked)
         row.addWidget(self.preset_box, 1)
         self.preset_btn = QPushButton("Use it")
+        self.preset_btn.setObjectName("primary")
         self.preset_btn.clicked.connect(self._use_preset)
         row.addWidget(self.preset_btn)
-        f.addRow("Mode:", row)
+        f.addRow(row)
         self.preset_info = muted("")
         f.addRow(self.preset_info)
         self.strata_box = QCheckBox("Run it with Strata, an engine made for this model (recommended: about 2-4x "
@@ -903,7 +1107,49 @@ class ServerPage(QWidget):
         f.addRow(self.preset_bar)
         self._dl_state = None
         row = QHBoxLayout()
-        self.dir_label = QLabel()
+        self.ctx = QComboBox()
+        for n in CTX_CHOICES:
+            self.ctx.addItem(f"{n // 1024}K tokens", n)
+        self.ctx.setToolTip("How much text the model can see at once. More needs more memory.")
+        row.addWidget(QLabel("Context:"))
+        row.addWidget(self.ctx)
+        row.addSpacing(16)
+        self.vision = QCheckBox("Let it see images and the screen")
+        self.vision.setToolTip("Loads the model's vision file (mmproj)")
+        row.addWidget(self.vision)
+        row.addStretch(1)
+        f.addRow(row)
+        lay.addWidget(g)
+
+        # ---- start / stop and what's happening
+        row = QHBoxLayout()
+        self.start_btn = QPushButton("Start model")
+        self.start_btn.setObjectName("primary")
+        self.start_btn.setMinimumWidth(130)
+        self.start_btn.clicked.connect(self._start_stop)
+        row.addWidget(self.start_btn)
+        self.state = QLabel("Stopped")
+        self.state.setWordWrap(True)
+        row.addWidget(self.state, 1)
+        self.log_btn = QToolButton(text="▸ Show log")
+        self.log_btn.clicked.connect(lambda: self._show_log(not self.log.isVisible()))
+        row.addWidget(self.log_btn)
+        lay.addLayout(row)
+        self.plan_label = QLabel()
+        self.plan_label.setWordWrap(True)
+        lay.addWidget(self.plan_label)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setFont(QFont("Consolas", 8))
+        self.log.setMinimumHeight(220)
+        self.log.setVisible(False)
+        lay.addWidget(self.log)
+
+        # ---- a model file of your own (shown when no ready-made mode is picked)
+        self.file_group = g = QGroupBox("Model file")
+        f = QFormLayout(g)
+        row = QHBoxLayout()
+        self.dir_label = ElidedLabel()
         row.addWidget(self.dir_label, 1)
         b = QPushButton("Models folder...")
         b.clicked.connect(self._browse_dir)
@@ -931,18 +1177,38 @@ class ServerPage(QWidget):
         f.addRow(row)
         lay.addWidget(g)
 
-        g = QGroupBox("3. Settings (the defaults are tuned for an RTX 5080 16 GB)")
+        # ---- everything else, folded away
+        self.adv_btn = QToolButton(text="▸ Advanced: llama.cpp program, memory split, speed-up, port")
+        self.adv_btn.clicked.connect(lambda: self._show_advanced(not self.adv.isVisible()))
+        lay.addWidget(self.adv_btn)
+        self.adv = QWidget()
+        al = QVBoxLayout(self.adv)
+        al.setContentsMargins(0, 0, 0, 0)
+        g = QGroupBox("llama.cpp")
         f = QFormLayout(g)
-        self.ctx = QComboBox()
-        for n in CTX_CHOICES:
-            self.ctx.addItem(f"{n // 1024}K tokens", n)
-        f.addRow("Context length:", self.ctx)
+        self.exe_label = QLabel()
+        self.exe_label.setWordWrap(True)
+        f.addRow("Program:", self.exe_label)
+        row = QHBoxLayout()
+        self.dl_btn = QPushButton("Download / update llama.cpp")
+        self.dl_btn.clicked.connect(self._download)
+        row.addWidget(self.dl_btn)
+        b = QPushButton("Browse...")
+        b.clicked.connect(self._browse_exe)
+        row.addWidget(b)
+        row.addStretch(1)
+        f.addRow(row)
+        self.dl_bar = QProgressBar()
+        self.dl_bar.setVisible(False)
+        f.addRow(self.dl_bar)
+        al.addWidget(g)
+
+        g = QGroupBox("Settings (the defaults are tuned for an RTX 5080 16 GB)")
+        f = QFormLayout(g)
         self.kv = QComboBox()
         for k, label in [("f16", "f16 (most memory)"), ("q8_0", "q8_0 (recommended)"), ("q4_0", "q4_0 (least memory, a bit worse)")]:
             self.kv.addItem(label, k)
         f.addRow("Context memory (KV cache):", self.kv)
-        self.vision = QCheckBox("Let it see images and the screen (loads the mmproj file)")
-        f.addRow(self.vision)
         self.placement = QComboBox()
         self.placement.addItem("Automatic (recommended)", "auto")
         self.placement.addItem("Manual", "manual")
@@ -972,33 +1238,18 @@ class ServerPage(QWidget):
         self.extra = QLineEdit()
         self.extra.setPlaceholderText("Extra llama-server options (optional)")
         f.addRow("Extra:", self.extra)
-        lay.addWidget(g)
-
-        self.plan_label = QLabel()
-        self.plan_label.setWordWrap(True)
-        lay.addWidget(self.plan_label)
+        self.autostart = QCheckBox("Start the last model when the app opens")
+        f.addRow(self.autostart)
+        al.addWidget(g)
+        al.addWidget(muted("The command it runs:"))
         self.cmd = QPlainTextEdit()
         self.cmd.setReadOnly(True)
         self.cmd.setFixedHeight(70)
         self.cmd.setFont(QFont("Consolas", 9))
-        lay.addWidget(self.cmd)
-        row = QHBoxLayout()
-        self.start_btn = QPushButton("Start model")
-        self.start_btn.setObjectName("primary")
-        self.start_btn.clicked.connect(self.start)
-        self.stop_btn = QPushButton("Stop model")
-        self.stop_btn.clicked.connect(self.stop)
-        self.state = QLabel("Stopped")
-        row.addWidget(self.start_btn)
-        row.addWidget(self.stop_btn)
-        row.addWidget(self.state)
-        row.addStretch(1)
-        lay.addLayout(row)
-        self.log = QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setFont(QFont("Consolas", 8))
-        self.log.setMinimumHeight(220)
-        lay.addWidget(self.log)
+        al.addWidget(self.cmd)
+        self.adv.setVisible(False)
+        lay.addWidget(self.adv)
+        lay.addStretch(1)
         area.setWidget(body)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1006,54 +1257,123 @@ class ServerPage(QWidget):
 
         # load settings into the controls, then react to changes
         s = self.s
-        self.ctx.setCurrentIndex(max(0, self.ctx.findData(s.ctx_size)))
-        self.kv.setCurrentIndex(max(0, self.kv.findData(s.kv_type)))
-        self.vision.setChecked(s.use_vision)
-        self.placement.setCurrentIndex(max(0, self.placement.findData(s.placement)))
+        self._sync_controls()
         self.ngl.setValue(s.gpu_layers)
         self.ncm.setValue(s.n_cpu_moe)
-        self.speed.setCurrentIndex(max(0, self.speed.findData(s.speedup)))
         self.port.setValue(s.port)
         self.extra.setText(s.extra_args)
+        self.autostart.setChecked(s.extra.get("autostart_model", True))
         for w in (self.ctx, self.kv, self.placement, self.speed):
             w.currentIndexChanged.connect(self._changed)
         for w in (self.ngl, self.ncm, self.port):
             w.valueChanged.connect(self._changed)
         self.vision.toggled.connect(self._changed)
+        self.autostart.toggled.connect(self._changed)
         self.extra.editingFinished.connect(self._changed)
+
+    def _sync_controls(self):
+        """Settings -> the combo boxes, without firing their change handlers."""
+        s = self.s
+        boxes = (self.ctx, self.kv, self.placement, self.speed, self.vision)
+        for w in boxes:
+            w.blockSignals(True)
+        if self.ctx.findData(s.ctx_size) < 0:     # a size from settings.json that isn't in the list
+            self.ctx.addItem(f"{s.ctx_size // 1024}K tokens", s.ctx_size)
+        self.ctx.setCurrentIndex(self.ctx.findData(s.ctx_size))
+        self.kv.setCurrentIndex(max(0, self.kv.findData(s.kv_type)))
+        self.placement.setCurrentIndex(max(0, self.placement.findData(s.placement)))
+        self.speed.setCurrentIndex(max(0, self.speed.findData(s.speedup)))
+        self.vision.setChecked(s.use_vision)
+        for w in boxes:
+            w.blockSignals(False)
+
+    def _show_advanced(self, on: bool):
+        self.adv.setVisible(on)
+        self.adv_btn.setText(("▾" if on else "▸") + self.adv_btn.text()[1:])
+
+    def _show_log(self, on: bool):
+        self.log.setVisible(on)
+        self.log_btn.setText(("▾ Hide log" if on else "▸ Show log"))
+
+    def _start_stop(self):
+        if self.proc.running or self._phase is not None:
+            self.stop()
+        else:
+            self.start()
+
+    def switch_to(self, key: str):
+        """From the chat: pick a ready-made mode and use it (downloading what's missing)."""
+        self.win.nav.setCurrentRow(1)
+        self.preset_box.setCurrentIndex(max(0, self.preset_box.findData(key)))
+        self._use_preset()
 
     # ---------------------------------------------------------------- scanning
     def _initial_scan(self):
-        g = gpu_info()
-        if g:
-            self.vram = g[1]
-            self.gpu.setText(f"GPU: {g[0]}, {g[1]:.1f} GB ({g[2]:.1f} GB in use right now)")
-        else:
-            self.gpu.setText("No NVIDIA GPU found by nvidia-smi; planning for 16 GB.")
-        self._refresh_exe()
-        self._scan()
+        self._scan(first=True)
 
     def _refresh_exe(self):
-        exe = launcher.find_server(self.s)
+        self._show_exe(launcher.find_server(self.s))
+
+    def _show_exe(self, exe):
         self.exe = exe
-        self.exe_label.setText(str(exe) if exe else "<span style='color:#e0a43a'>Not found. Press Download.</span>")
+        self.exe_label.setText(str(exe) if exe else "<span style='color:#e0a43a'>Not found. Press Download (or "
+                               "just Start: it offers to download it).</span>")
 
     def _dirs(self) -> list[Path]:
         dirs = [Path(self.s.models_dir)] if self.s.models_dir else []
         return dirs + launcher.default_model_dirs()
 
-    def _scan(self):
+    def _scan(self, first: bool = False):
+        """Look for model files (and, the first time, the GPU and llama.cpp) on a worker thread: walking
+        Downloads or asking nvidia-smi can take seconds, and the window must stay responsive."""
         dirs = self._dirs()
         self.dir_label.setText(", ".join(str(d) for d in dirs[:3]) or "(no folders yet: pick your models folder)")
-        models = launcher.find_models(dirs)
-        if self.s.model_path and Path(self.s.model_path).exists() and Path(self.s.model_path) not in models:
-            models.insert(0, Path(self.s.model_path))
+        s, root = self.s, self._models_root()
+        out = {}
+
+        def work():
+            if first:
+                out["gpu"] = gpu_info()
+                exe = launcher.find_server(s)
+                if exe:
+                    launcher.server_help(exe)        # cached for the first plan
+                out["exe"] = exe
+            out["models"] = launcher.find_models(dirs)
+            out["located"] = {p.key: catalog.model_path(p, dirs + [root]) for p in catalog.PRESETS}
+
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        self._scanning = t
+
+        def done():
+            if t.is_alive():
+                QTimer.singleShot(50, done)
+                return
+            if self._scanning is t:
+                self._apply_scan(out, first)
+
+        done()
+
+    def _apply_scan(self, out: dict, first: bool):
+        if first:
+            g = out.get("gpu")
+            if g:
+                self.vram = g[1]
+                self.gpu.setText(f"GPU: {g[0]}, {g[1]:.1f} GB ({g[2]:.1f} GB in use right now)")
+            else:
+                self.gpu.setText("No NVIDIA GPU found by nvidia-smi; planning for 16 GB.")
+            self._show_exe(out.get("exe"))
+        self._located = out.get("located") or {}
+        models = list(out.get("models") or [])
+        saved = Path(self.s.model_path) if self.s.model_path else None
+        if saved and saved not in models:
+            models.insert(0, saved)      # kept even when its drive is unplugged: never swap it for another
         self.model_box.blockSignals(True)
         self.model_box.clear()
         for m in models:
-            self.model_box.addItem(m.name, str(m))
-        idx = self.model_box.findData(self.s.model_path)
-        self.model_box.setCurrentIndex(idx if idx >= 0 else 0)
+            self.model_box.addItem(m.name + ("" if m.exists() else "  (not found)"), str(m))
+        idx = next((i for i, m in enumerate(models) if saved and m == saved), 0)
+        self.model_box.setCurrentIndex(idx)
         self.model_box.blockSignals(False)
         if not models:
             self.info_label.setText("No .gguf models found. Pick your models folder, or a file, or a mode above.")
@@ -1064,18 +1384,45 @@ class ServerPage(QWidget):
             self.preset_box.setCurrentIndex(max(0, self.preset_box.findData(p.key if p else "")))
             self.preset_box.blockSignals(False)
             self._preset_picked()
+        if first:
+            self._autostart()
+
+    def _autostart(self):
+        """Start the model used last time, unless something already serves that port."""
+        s = self.s
+        p = catalog.matching(s.model_path)
+        if not (s.extra.get("autostart_model", True) and s.model_path and Path(s.model_path).exists()) \
+                or self.proc.running or s.model_path != self._last_model:
+            return      # (a model the folder scan just picked on a first run isn't started unasked)
+        if strata.active(s, p):
+            if strata.needs_setup(p, Path(s.model_path), s):
+                return              # the first Strata setup asks first; it isn't started unasked
+        elif not self.exe:
+            return
+        port = s.port
+        result = {}
+        t = threading.Thread(target=lambda: result.update(busy=launcher.ServerProcess().ready(port)), daemon=True)
+        t.start()
+
+        def go():
+            if t.is_alive():
+                QTimer.singleShot(100, go)
+            elif not result.get("busy") and not self.proc.running:
+                self.start()
+
+        go()
 
     def _browse_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Folder with your .gguf models", self.s.models_dir or str(Path.home()))
         if d:
-            self.s.models_dir = d
+            self.s.models_dir = str(Path(d))
             self.s.save()
             self._scan()
 
     def _browse_model(self):
         f, _ = QFileDialog.getOpenFileName(self, "Model file", self.s.models_dir or str(Path.home()), "GGUF models (*.gguf)")
         if f:
-            self.s.model_path = f
+            self.s.model_path = str(Path(f))     # the dialog says C:/..., the folder scan C:\...
             self.s.mmproj_path = ""
             self.s.save()
             self._scan()
@@ -1083,7 +1430,7 @@ class ServerPage(QWidget):
     def _browse_exe(self):
         f, _ = QFileDialog.getOpenFileName(self, "llama-server program", str(Path.home()), "llama-server (llama-server*)")
         if f:
-            self.s.server_exe = f
+            self.s.server_exe = str(Path(f))
             self.s.save()
             self._refresh_exe()
             self._changed()
@@ -1092,7 +1439,7 @@ class ServerPage(QWidget):
         f, _ = QFileDialog.getOpenFileName(self, "Small draft model (same family)", self.s.models_dir or str(Path.home()),
                                            "GGUF models (*.gguf)")
         if f:
-            self.s.draft_path = f
+            self.s.draft_path = str(Path(f))
             self.s.save()
             self._changed()
 
@@ -1103,30 +1450,40 @@ class ServerPage(QWidget):
     def _preset(self):
         return catalog.BY_KEY.get(self.preset_box.currentData() or "")
 
+    def _locate(self, p):
+        """(model, vision file, missing names) for a mode: from the last folder scan while its files are
+        still there (searching the folders again can take seconds), else searched now."""
+        got = self._located.get(p.key)
+        if got is not None:
+            model, mm, _missing = got
+            if all(f is None or f.is_file() for f in (model, mm)):
+                return got
+        got = self._located[p.key] = catalog.model_path(p, self._dirs() + [self._models_root()])
+        return got
+
     def _preset_picked(self):
         p = self._preset()
         if self._dl_state is not None:
             return
         active = p is not None and catalog.matching(self.s.model_path) is p
+        self.file_group.setVisible(p is None)
         self.strata_box.setVisible(strata.supports(p))
         if strata.supports(p):
             self.strata_box.blockSignals(True)
             self.strata_box.setChecked(strata.active(self.s, p) if active else p.launch.get("engine") == "strata")
             self.strata_box.blockSignals(False)
         if not p:
-            self.preset_info.setText("")
-            self.preset_btn.setEnabled(False)
-            self.preset_btn.setText("Use it")
+            self.preset_info.setText("Pick the model file below, then press Start model.")
+            self.preset_btn.setVisible(False)
             return
-        self.preset_btn.setEnabled(True)
-        model, mm, missing = catalog.model_path(p, self._dirs() + [self._models_root()])
+        model, mm, missing = self._locate(p)
+        self.preset_btn.setVisible(bool(missing) or not active)    # else Start model below does it
         if not missing:
             where = f"On this PC in {model.parent}."
-            self.preset_btn.setText("Restart with it" if active and self.proc.running else
-                                    "Start it" if active else "Use it")
+            self.preset_btn.setText("Switch to it")
         else:
             gb = sum(p.sizes.get(f, 0) for f in missing) / catalog.GB
-            dest = catalog.download_folder(p, self._models_root(), self._dirs() + [self._models_root()])
+            dest = model.parent if model else self._models_root() / p.folder
             where = f"Needs a {gb:.1f} GB download into {dest}."
             self.preset_btn.setText(f"Download ({gb:.0f} GB) and use it" if gb >= 1 else "Download and use it")
         self.preset_info.setText(f"{p.blurb} {where}")
@@ -1139,12 +1496,11 @@ class ServerPage(QWidget):
         p = self._preset()
         if not p:
             return
-        dirs = self._dirs() + [self._models_root()]
-        model, mm, missing = catalog.model_path(p, dirs)
+        model, mm, missing = self._locate(p)
         if not missing:
             self._activate(p, model, mm)
             return
-        dest = catalog.download_folder(p, self._models_root(), dirs)
+        dest = model.parent if model else self._models_root() / p.folder
         gb = sum(p.sizes.get(f, 0) for f in missing) / catalog.GB
         if QMessageBox.question(self, "Download model",
                                 f"Download {gb:.1f} GB from Hugging Face ({p.repo}) into\n{dest}?\n\n"
@@ -1171,6 +1527,7 @@ class ServerPage(QWidget):
                 QTimer.singleShot(300, tick)
                 return
             self._dl_state = None
+            self._located.pop(p.key, None)      # files changed: look again
             self.preset_bar.setVisible(False)
             self.preset_box.setEnabled(True)
             if st["error"] is not None:
@@ -1198,26 +1555,18 @@ class ServerPage(QWidget):
         if strata.supports(p):
             s.engine = "strata" if self.strata_box.isChecked() else "llama.cpp"
             s.save()
-        for w in (self.ctx, self.kv, self.placement, self.speed):
-            w.blockSignals(True)
-        self.ctx.setCurrentIndex(max(0, self.ctx.findData(s.ctx_size)))
-        self.kv.setCurrentIndex(max(0, self.kv.findData(s.kv_type)))
-        self.placement.setCurrentIndex(max(0, self.placement.findData(s.placement)))
-        self.speed.setCurrentIndex(max(0, self.speed.findData(s.speedup)))
-        for w in (self.ctx, self.kv, self.placement, self.speed):
-            w.blockSignals(False)
-        self.vision.blockSignals(True)
-        self.vision.setChecked(s.use_vision)
-        self.vision.blockSignals(False)
+        self._sync_controls()
+        try:
+            self.info = model_info(str(model))    # the plan needs it now, not when the folder scan is back
+        except Exception:  # noqa: BLE001
+            self.info = None
         self._scan()
-        if not self.exe and not strata.active(s, p):
-            self.preset_info.setText(self.preset_info.text() + " Download llama.cpp above, then press Start model.")
-            return
-        if self.proc.running:
+        if self.proc.running or self._phase is not None:
             self.stop()
         self.start()
-        self.preset_info.setText(f"Switched to {p.title}. Loading it now; the chat uses it as soon as it's ready. "
-                                 "Sampling and thinking levels follow the model automatically.")
+        if self.proc.running or self._phase is not None:
+            self.preset_info.setText(f"Switched to {p.title}. Loading it now; the chat uses it as soon as it's "
+                                     "ready. Sampling and thinking levels follow the model automatically.")
 
     def _model_changed(self):
         path = self.model_box.currentData()
@@ -1249,6 +1598,7 @@ class ServerPage(QWidget):
         s.speedup = self.speed.currentData()
         s.port = self.port.value()
         s.extra_args = self.extra.text()
+        s.extra["autostart_model"] = self.autostart.isChecked()
         s.save()
         manual = s.placement == "manual"
         self.ngl.setEnabled(manual)
@@ -1262,7 +1612,7 @@ class ServerPage(QWidget):
             self.ngl.setEnabled(False)
             self.ncm.setEnabled(False)
             self.launch = None
-            self.start_btn.setEnabled(True)
+            self._startable = True
             model = Path(s.model_path)
             args = strata.setup_args(p, model, s) if strata.needs_setup(p, model, s) else strata.serve_args(p, s)
             self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
@@ -1276,12 +1626,14 @@ class ServerPage(QWidget):
                    "needed and fetches its engine and a ~6 GB draft layer. Later starts take 30-90 seconds."
                    if first else ""))
             return
+        self._startable = bool(s.model_path)     # without llama.cpp, Start offers to download it
         if not (self.exe and s.model_path):
+            self.launch = None
             self.cmd.setPlainText("")
-            self.plan_label.setText("")
-            self.start_btn.setEnabled(False)
+            self.plan_label.setText("llama.cpp, the program that runs the model, isn't on this PC yet. Start model "
+                                    "offers to download it first." if s.model_path else "")
+            self._sync_start_btn()
             return
-        self.start_btn.setEnabled(True)
         lp = launcher.build_launch(s, self.exe, launcher.server_help(self.exe), self.info, self.vram)
         self.launch = lp
         self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in lp.args))
@@ -1310,6 +1662,12 @@ class ServerPage(QWidget):
         if strata.active(self.s, p):
             self._start_strata(p)
             return
+        if self.s.model_path and not self.exe:
+            if QMessageBox.question(self, "llama.cpp", "The model runs in llama.cpp's server program, which isn't on "
+                                    "this PC yet. Download the newest build for your graphics card from GitHub now, "
+                                    "then start the model?") == QMessageBox.Yes:
+                self._download(then_start=True)
+            return
         if not self.launch:
             return
         try:
@@ -1318,17 +1676,38 @@ class ServerPage(QWidget):
             QMessageBox.warning(self, "Model server", f"Couldn't start llama-server: {e}")
             return
         self._was_ready = False
+        self._ready_job = None
         self.state.setText("Loading the model...")
+        self._sync_start_btn()
+        self.win.refresh_connection()
 
     def stop(self):
         self.proc.stop()
         self._phase = None
+        self._was_ready = False
+        self._ready_job = None
         self.state.setText("Stopped")
+        self._sync_start_btn()
         self.win.refresh_connection()
+
+    def _sync_start_btn(self):
+        if self._phase is not None:
+            text = "Cancel setup"
+        elif self.proc.running:
+            text = "Stop model"
+        else:
+            text = "Start model"
+        if self.start_btn.text() != text:
+            self.start_btn.setText(text)
+        self.start_btn.setEnabled(text != "Start model" or self._startable)
 
     def _start_strata(self, p):
         s = self.s
         model = Path(s.model_path)
+        if self._strata_job is not None and self._strata_job.is_alive():
+            # a stopped start can still be unpacking its download; two at once would trip over each other
+            self.state.setText("Still stopping the last start. Press Start model again in a few seconds.")
+            return
         if not strata.installed():
             if QMessageBox.question(
                     self, "Strata",
@@ -1374,32 +1753,65 @@ class ServerPage(QWidget):
             except Exception as e:  # noqa: BLE001
                 say(f"error: {e}")
 
-        threading.Thread(target=work, daemon=True).start()
+        self._strata_job = threading.Thread(target=work, daemon=True)
+        self._strata_job.start()
+        self._sync_start_btn()
+        self.win.refresh_connection()
 
     def _poll(self):
         phase = self._phase
         if phase is not None:          # a Strata start in progress
             if phase.startswith("error: "):
-                self.state.setText(f"<span style='color:{BAD}'>{phase[7:]}</span>")
+                self.state.setText(f"<span style='color:{BAD}'>{_esc(phase[7:])}</span>")
                 self._phase = None
+                self._show_log(True)
             else:
-                self.state.setText(phase)
+                self.state.setText(_esc(phase))
                 if phase.startswith("Loading"):       # from here on, as for llama.cpp
                     self._phase = None
-        if self.proc.lines:
-            text = "\n".join(list(self.proc.lines)[-400:])
-            if text != self.log.toPlainText():
-                self.log.setPlainText(text)
-                self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
-        if self.proc.running and not self._was_ready and self.proc.ready(self.s.port):
-            self._was_ready = True
-            self.state.setText(f"<span style='color:{OK}'>Ready</span>")
-            self.s.base_url = f"http://127.0.0.1:{self.s.port}/v1"
-            self.s.model = ""
-            self.s.save()
+        lines = self.proc.lines
+        sig = (len(lines), lines[-1] if lines else None)
+        if sig != self._log_sig:
+            self._log_sig = sig
+            self.log.setPlainText("\n".join(list(lines)[-400:]))
+            self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
+        running = self.proc.running
+        if running and self._phase is None and not self._was_ready:
+            if self._ready_check() and self.proc.running:
+                self._was_ready = True
+                self.state.setText(f"<span style='color:{OK}'>Ready</span>")
+                self.s.base_url = f"http://127.0.0.1:{self.s.port}/v1"
+                self.s.model = ""
+                self.s.save()
+                self.win.chat._agent_sig = None     # a new model: the chat re-reads what it can do
+                self.win.refresh_connection()
+        elif not running and self._was_ready:
+            self._was_ready = False
+            self.state.setText(f"<span style='color:{BAD}'>The model server stopped. The log says why; press "
+                               "Start model to run it again.</span>")
+            self._show_log(True)
             self.win.refresh_connection()
-        elif not self.proc.running and self.state.text().startswith("Loading"):
-            self.state.setText(f"<span style='color:{BAD}'>The server stopped. See the log below.</span>")
+        elif not running and self._phase is None and self.state.text().startswith("Loading"):
+            self.state.setText(f"<span style='color:{BAD}'>The server stopped while loading. The log says why.</span>")
+            self._show_log(True)
+        self._sync_start_btn()
+
+    def _ready_check(self) -> bool:
+        """Ask /health on a worker thread (a slow answer mustn't freeze the window): True once a check
+        that already finished said ready. One check at a time."""
+        job = self._ready_job
+        if job is not None:
+            t, res = job
+            if t.is_alive():
+                return False
+            self._ready_job = None
+            if res.get("ok"):
+                return True
+        port, res = self.s.port, {}
+        t = threading.Thread(target=lambda: res.update(ok=launcher.ServerProcess().ready(port)), daemon=True)
+        t.start()
+        self._ready_job = (t, res)
+        return False
 
     def _find_vision(self):
         from . import vision
@@ -1473,7 +1885,7 @@ class ServerPage(QWidget):
 
         tick()
 
-    def _download(self):
+    def _download(self, then_start: bool = False):
         self.dl_btn.setEnabled(False)
         self.dl_bar.setVisible(True)
         self.dl_bar.setRange(0, 100)
@@ -1490,11 +1902,15 @@ class ServerPage(QWidget):
         def tick():
             self.dl_bar.setValue(int(state["frac"] * 100))
             self.dl_bar.setFormat(state["msg"][:80] + "  %p%")
+            if then_start:
+                self.state.setText(f"Downloading llama.cpp: {state['msg'][:80]} {state['frac'] * 100:.0f}%")
             if state["done"] is None:
                 QTimer.singleShot(200, tick)
                 return
             self.dl_btn.setEnabled(True)
             self.dl_bar.setVisible(False)
+            if then_start:
+                self.state.setText("Stopped")
             if isinstance(state["done"], Exception):
                 QMessageBox.warning(self, "Download", f"Download failed: {state['done']}")
             else:
@@ -1502,6 +1918,8 @@ class ServerPage(QWidget):
                 self.s.save()
                 self._refresh_exe()
                 self._changed()
+                if then_start and not self.proc.running:
+                    self.start()
 
         tick()
 
@@ -1522,62 +1940,8 @@ class SettingsPage(QWidget):
         h = QLabel("Settings")
         h.setObjectName("h1")
         lay.addWidget(h)
-        lay.addWidget(muted("Changes save straight away and apply to the next message."))
-
-        g = QGroupBox("Connection")
-        f = QFormLayout(g)
-        self.preset = QComboBox()
-        self.preset.addItem("Custom", "")
-        for k, v in SERVER_PRESETS.items():
-            self.preset.addItem(k, v)
-        self.preset.currentIndexChanged.connect(self._preset)
-        f.addRow("Server:", self.preset)
-        self.url = QLineEdit(s.base_url)
-        self.url.editingFinished.connect(self._save)
-        f.addRow("Address:", self.url)
-        row = QHBoxLayout()
-        self.model = QComboBox()
-        self.model.setEditable(True)
-        self.model.setEditText(s.model)
-        self.model.lineEdit().setPlaceholderText("(whatever the server has loaded)")
-        self.model.currentTextChanged.connect(lambda _t: self._save())
-        row.addWidget(self.model, 1)
-        b = QPushButton("Test connection")
-        b.clicked.connect(self._test)
-        row.addWidget(b)
-        f.addRow("Model:", row)
-        self.tool_mode = self._combo([("auto", "Automatic"), ("native", "Standard (server tool calling)"),
-                                      ("prompt", "In the prompt (for servers without tool support)")], s.tool_mode)
-        f.addRow("Tool calling:", self.tool_mode)
-        lay.addWidget(g)
-
-        g = QGroupBox("Answers")
-        f = QFormLayout(g)
-        self.thinking = self._combo(THINKING_LEVELS, "high" if s.thinking == "on" else s.thinking)
-        self.thinking.setToolTip("How long the model thinks before answering. Models with levels (Qwen3.8: "
-                                 "low / medium / xhigh, gpt-oss: low / medium / high) get the closest one; "
-                                 "High means the model's highest. Models with only on/off treat every "
-                                 "level as on.")
-        f.addRow("Thinking:", self.thinking)
-        self.auto_sampling = QCheckBox("Use the model maker's recommended sampling, switched automatically "
-                                       "when thinking goes on or off")
-        self.auto_sampling.setChecked(s.auto_sampling)
-        self.auto_sampling.toggled.connect(self._save)
-        f.addRow(self.auto_sampling)
-        self.temp = self._dspin(s.temperature, 0, 2, 0.05)
-        self.top_p = self._dspin(s.top_p, 0, 1, 0.05)
-        self.top_k = self._spin(s.top_k, 0, 200)
-        self.min_p = self._dspin(s.min_p, 0, 1, 0.01)
-        self.max_tokens = self._spin(s.max_tokens, 256, 131072)
-        f.addRow("Temperature:", self.temp)
-        f.addRow("Top P:", self.top_p)
-        f.addRow("Top K:", self.top_k)
-        f.addRow("Min P:", self.min_p)
-        f.addRow("Max reply tokens:", self.max_tokens)
-        b = QPushButton("Use the model maker's recommended values")
-        b.clicked.connect(self._recommended)
-        f.addRow(b)
-        lay.addWidget(g)
+        lay.addWidget(muted("Changes save straight away and apply to the next message. Thinking and what it may "
+                            "do without asking are picked in the chat bar."))
 
         g = QGroupBox("What it may use")
         f = QFormLayout(g)
@@ -1617,9 +1981,9 @@ class SettingsPage(QWidget):
         self.gh_token.setPlaceholderText("Personal access token (optional if you use the GitHub CLI)")
         self.gh_token.editingFinished.connect(self._save)
         row.addWidget(self.gh_token, 1)
-        b = QPushButton("Check sign-in")
-        b.clicked.connect(self._check_github)
-        row.addWidget(b)
+        self.gh_check = QPushButton("Check sign-in")
+        self.gh_check.clicked.connect(self._check_github)
+        row.addWidget(self.gh_check)
         b = QPushButton("Make a token...")
         b.clicked.connect(lambda: __import__("webbrowser").open(
             "https://github.com/settings/personal-access-tokens/new"))
@@ -1630,6 +1994,88 @@ class SettingsPage(QWidget):
         self.publish.toggled.connect(self._save)
         f.addRow(self.publish)
         lay.addWidget(g)
+
+        g = QGroupBox("Add-on tools")
+        f = QFormLayout(g)
+        f.addRow(muted("Connect MCP servers (the format Claude Desktop uses) for browsers, databases, Blender and "
+                       "more, or drop Python files with your own tools into the plugins folder. New tools show up "
+                       "in the next new chat."))
+        row = QHBoxLayout()
+        b = QPushButton("Edit MCP servers...")
+        b.clicked.connect(self._edit_mcp)
+        row.addWidget(b)
+        b = QPushButton("Open plugins folder")
+        b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(plugins.plugins_dir()))))
+        row.addWidget(b)
+        b = QPushButton("Reload")
+        b.setToolTip("Restart the MCP servers and load the plugin files again")
+        b.clicked.connect(self._reload_addons)
+        row.addWidget(b)
+        row.addStretch(1)
+        f.addRow(row)
+        self.addons_status = muted("")
+        self.addons_status.setTextFormat(Qt.PlainText)
+        f.addRow(self.addons_status)
+        lay.addWidget(g)
+
+        g = QGroupBox("Connection")
+        f = QFormLayout(g)
+        f.addRow(muted("The Model server page fills this in when it starts a model. Change it only to use LM "
+                       "Studio, Ollama or another server."))
+        self.preset = QComboBox()
+        self.preset.addItem("Custom", "")
+        for k, v in SERVER_PRESETS.items():
+            self.preset.addItem(k, v)
+        self.preset.currentIndexChanged.connect(self._preset)
+        f.addRow("Server:", self.preset)
+        self.url = QLineEdit(s.base_url)
+        self.url.editingFinished.connect(self._save_connection)
+        f.addRow("Address:", self.url)
+        row = QHBoxLayout()
+        self.model = QComboBox()
+        self.model.setEditable(True)
+        self.model.setEditText(s.model)
+        self.model.lineEdit().setPlaceholderText("(whatever the server has loaded)")
+        self.model.lineEdit().editingFinished.connect(self._save_connection)
+        self.model.activated.connect(lambda _i: self._save_connection())
+        row.addWidget(self.model, 1)
+        self.test_btn = QPushButton("Test connection")
+        self.test_btn.clicked.connect(self._test)
+        row.addWidget(self.test_btn)
+        f.addRow("Model:", row)
+        lay.addWidget(g)
+
+        self.adv_btn = QToolButton(text="▸ Advanced: tool calling, sampling, screen, limits")
+        self.adv_btn.clicked.connect(lambda: self._show_advanced(not self.adv.isVisible()))
+        lay.addWidget(self.adv_btn)
+        self.adv = QWidget()
+        al = QVBoxLayout(self.adv)
+        al.setContentsMargins(0, 0, 0, 0)
+
+        g = QGroupBox("Answers")
+        f = QFormLayout(g)
+        self.tool_mode = self._combo([("auto", "Automatic"), ("native", "Standard (server tool calling)"),
+                                      ("prompt", "In the prompt (for servers without tool support)")], s.tool_mode)
+        f.addRow("Tool calling:", self.tool_mode)
+        self.auto_sampling = QCheckBox("Use the model maker's recommended sampling, switched automatically "
+                                       "when thinking goes on or off")
+        self.auto_sampling.setChecked(s.auto_sampling)
+        self.auto_sampling.toggled.connect(self._save)
+        f.addRow(self.auto_sampling)
+        self.temp = self._dspin(s.temperature, 0, 2, 0.05)
+        self.top_p = self._dspin(s.top_p, 0, 1, 0.05)
+        self.top_k = self._spin(s.top_k, 0, 200)
+        self.min_p = self._dspin(s.min_p, 0, 1, 0.01)
+        self.max_tokens = self._spin(s.max_tokens, 256, 131072)
+        f.addRow("Temperature:", self.temp)
+        f.addRow("Top P:", self.top_p)
+        f.addRow("Top K:", self.top_k)
+        f.addRow("Min P:", self.min_p)
+        f.addRow("Max reply tokens:", self.max_tokens)
+        b = QPushButton("Use the model maker's recommended values")
+        b.clicked.connect(self._recommended)
+        f.addRow(b)
+        al.addWidget(g)
 
         g = QGroupBox("Screen")
         f = QFormLayout(g)
@@ -1649,7 +2095,7 @@ class SettingsPage(QWidget):
         for w in (self.after, self.grid, self.minimize):
             w.toggled.connect(self._save)
             f.addRow(w)
-        lay.addWidget(g)
+        al.addWidget(g)
 
         g = QGroupBox("Limits")
         f = QFormLayout(g)
@@ -1662,7 +2108,9 @@ class SettingsPage(QWidget):
         f.addRow("Steps before it checks in:", self.max_steps)
         self.max_out = self._spin(s.max_tool_output, 2000, 200000)
         f.addRow("Longest tool result (characters):", self.max_out)
-        lay.addWidget(g)
+        al.addWidget(g)
+        self.adv.setVisible(False)
+        lay.addWidget(self.adv)
         lay.addStretch(1)
         area.setWidget(body)
         outer = QVBoxLayout(self)
@@ -1671,6 +2119,10 @@ class SettingsPage(QWidget):
         self._sync_preset()
         for w in (self.temp, self.top_p, self.top_k, self.min_p):
             w.setEnabled(not s.auto_sampling)
+
+    def _show_advanced(self, on: bool):
+        self.adv.setVisible(on)
+        self.adv_btn.setText(("▾" if on else "▸") + self.adv_btn.text()[1:])
 
     def _combo(self, items, current):
         c = QComboBox()
@@ -1682,13 +2134,13 @@ class SettingsPage(QWidget):
 
     def _spin(self, v, lo, hi):
         w = QSpinBox(minimum=lo, maximum=hi)
-        w.setValue(int(v))
+        w.setValue(min(hi, max(lo, int(v))))
         w.valueChanged.connect(self._save)
         return w
 
     def _dspin(self, v, lo, hi, step):
         w = QDoubleSpinBox(minimum=lo, maximum=hi, singleStep=step, decimals=2)
-        w.setValue(float(v))
+        w.setValue(min(hi, max(lo, float(v))))
         w.valueChanged.connect(self._save)
         return w
 
@@ -1702,23 +2154,80 @@ class SettingsPage(QWidget):
         url = self.preset.currentData()
         if url:
             self.url.setText(url)
-            self._save()
+            self._save_connection()
 
     def reload(self):
-        self.thinking.blockSignals(True)
-        self.thinking.setCurrentIndex(max(0, self.thinking.findData(
-            "high" if self.s.thinking == "on" else self.s.thinking)))
-        self.thinking.blockSignals(False)
+        """The Model server page changes the address and model when it starts one: show what's saved."""
         self.url.setText(self.s.base_url)
         self.model.setEditText(self.s.model)
         self._sync_preset()
+        self._show_addons()
+
+    def _show_addons(self):
+        m = mcp.manager()
+        self.addons_status.setText(f"MCP: {m.summary()}\nPlugins: {plugins.summary()}")
+        if m.starting:
+            QTimer.singleShot(500, self._show_addons)
+
+    def _reload_addons(self):
+        plugins.load()
+        mcp.manager().start_background(cwd=self.s.workspace_path())
+        QTimer.singleShot(100, self._show_addons)
+
+    def _edit_mcp(self):
+        path = mcp.config_path()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            text = '{\n  "mcpServers": {\n  }\n}\n'
+        dlg = QDialog(self)
+        dlg.setWindowTitle("MCP servers")
+        dlg.resize(720, 480)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(muted('One entry per server: a name, the program to run and its arguments. Example:\n'
+                            '"browser": {"command": "npx", "args": ["-y", "@playwright/mcp@latest"]}\n'
+                            'Their tools ask before running; add "risk": "safe" for a server you trust to only '
+                            'read, or "hints" to trust what the server marks as read-only.'))
+        box = QPlainTextEdit(text)
+        box.setFont(QFont("Consolas", 10))
+        lay.addWidget(box, 1)
+        btns = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        lay.addWidget(btns)
+        btns.rejected.connect(dlg.reject)
+
+        def save():
+            new = box.toPlainText()
+            tmp = path.with_name(path.name + ".check")
+            try:
+                tmp.parent.mkdir(parents=True, exist_ok=True)
+                tmp.write_text(new, encoding="utf-8")
+                mcp.load_config(tmp)
+                tmp.replace(path)
+            except (OSError, ValueError) as e:
+                tmp.unlink(missing_ok=True)
+                QMessageBox.warning(dlg, "MCP servers", str(e))
+                return
+            dlg.accept()
+            self._reload_addons()
+
+        btns.accepted.connect(save)
+        dlg.exec()
+
+    def _save_connection(self):
+        """Only the address and model, and only from their own boxes: saving them along with every other
+        switch would write back an address the Model server page has since changed."""
+        s = self.s
+        url, model = self.url.text().strip() or s.base_url, self.model.currentText().strip()
+        if (url, model) == (s.base_url, s.model):
+            return
+        s.base_url, s.model = url, model
+        s.save()
+        self._sync_preset()
+        self.win.refresh_connection()
 
     def _save(self, *_):
         s = self.s
-        s.base_url = self.url.text().strip() or s.base_url
-        s.model = self.model.currentText().strip()
         s.tool_mode = self.tool_mode.currentData()
-        s.thinking = self.thinking.currentData()
         s.auto_sampling = self.auto_sampling.isChecked()
         for w in (self.temp, self.top_p, self.top_k, self.min_p):
             w.setEnabled(not s.auto_sampling)   # the recommended values win while that box is ticked
@@ -1738,45 +2247,62 @@ class SettingsPage(QWidget):
         s.context_limit, s.keep_images = self.ctx_limit.value(), self.keep_images.value()
         s.max_steps, s.max_tool_output = self.max_steps.value(), self.max_out.value()
         s.save()
-        self._sync_preset()
 
     def _check_github(self):
         self._save()
-        from .tools import ToolContext, ToolError
+        from .tools import ToolContext
         from .tools import github as gh
 
         gh._cache.clear()
         ctx = ToolContext(settings=self.s, workspace=self.s.workspace_path())
-        if not gh.token(ctx):
-            QMessageBox.information(self, "GitHub", "Not signed in: paste a token, or run `gh auth login` in a "
-                                    "terminal and press Check again.")
-            return
-        try:
-            me = gh.api(ctx, "GET", "/user")
-        except ToolError as e:
-            QMessageBox.warning(self, "GitHub", str(e))
-            return
-        git = "found" if __import__("shutil").which("git") else "NOT installed (get it from git-scm.com)"
-        QMessageBox.information(self, "GitHub", f"Signed in as {me.get('login')}. Git is {git}.")
+        self.gh_check.setEnabled(False)
+        self.gh_check.setText("Checking...")
+
+        def work():
+            if not gh.token(ctx):
+                return None
+            return gh.api(ctx, "GET", "/user"), bool(__import__("shutil").which("git"))
+
+        def done(res, err):
+            self.gh_check.setEnabled(True)
+            self.gh_check.setText("Check sign-in")
+            if err is not None:
+                QMessageBox.warning(self, "GitHub", str(err))
+            elif res is None:
+                QMessageBox.information(self, "GitHub", "Not signed in: paste a token, or run `gh auth login` in a "
+                                        "terminal and press Check again.")
+            else:
+                me, git = res
+                QMessageBox.information(self, "GitHub", f"Signed in as {me.get('login')}. Git is "
+                                        + ("found." if git else "NOT installed (get it from git-scm.com)."))
+
+        in_background(work, done)
 
     def _test(self):
-        self._save()
-        client = LLMClient(self.s.base_url, self.s.api_key, self.s.model)
-        try:
-            ids = client.models()
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "Connection", f"Couldn't reach {self.s.base_url}:\n{e}")
-            return
-        current = self.model.currentText()
-        self.model.blockSignals(True)
-        self.model.clear()
-        self.model.addItems(ids)
-        self.model.setEditText(current)
-        self.model.blockSignals(False)
-        ctx = client.context_size()
-        QMessageBox.information(self, "Connection", f"Connected. Models: {', '.join(ids) or '(none listed)'}"
-                                + (f"\nContext size: {ctx:,} tokens" if ctx else ""))
-        self.win.refresh_connection()
+        self._save_connection()
+        url = self.s.base_url
+        client = LLMClient(url, self.s.api_key, self.s.model)
+        self.test_btn.setEnabled(False)
+        self.test_btn.setText("Testing...")
+
+        def done(res, err):
+            self.test_btn.setEnabled(True)
+            self.test_btn.setText("Test connection")
+            if err is not None:
+                QMessageBox.warning(self, "Connection", f"Couldn't reach {url}:\n{err}")
+                return
+            ids, ctx = res
+            current = self.model.currentText()
+            self.model.blockSignals(True)
+            self.model.clear()
+            self.model.addItems(ids)
+            self.model.setEditText(current)
+            self.model.blockSignals(False)
+            QMessageBox.information(self, "Connection", f"Connected. Models: {', '.join(ids) or '(none listed)'}"
+                                    + (f"\nContext size: {ctx:,} tokens" if ctx else ""))
+            self.win.refresh_connection()
+
+        in_background(lambda: (client.models(), client.context_size()), done)
 
     def _recommended(self):
         name = self.s.model or self.win.connected_model or Path(self.s.model_path).name
@@ -1974,6 +2500,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = settings or Settings.load()
         self.connected_model = ""
+        self.last_tps = 0.0
         self.setWindowTitle("Local Agent")
         self.resize(1280, 860)
         central = QWidget()
@@ -2002,6 +2529,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.nav.setCurrentRow(0)
         QTimer.singleShot(300, self.refresh_connection)
+        plugins.load()
+        mcp.manager().start_background(cwd=self.settings.workspace_path())
         if self.settings.index_files:
             memory_mod.start_indexer(self.settings)
 
@@ -2035,11 +2564,18 @@ class MainWindow(QMainWindow):
                 return
             name = result.get("ok")
             self.connected_model = name or ""
+            srv = self.server
+            mode = catalog.matching(s.model_path)
+            ours = srv.proc.running and s.base_url.startswith(f"http://127.0.0.1:{s.port}/")
             if name:
-                self.chat.set_connection(True, f"{name}")
+                self.chat.set_connection("ok", mode.title.split(" (")[0] if mode and ours else name)
+            elif srv.proc.running or srv._phase is not None:
+                self.chat.set_connection("busy", "Loading the model. The chat can use it as soon as it's ready.")
             else:
-                self.chat.set_connection(False, "No model server. Start one on the Model server page, "
-                                                "or point Settings at LM Studio / Ollama.")
+                self.chat.set_connection("off", "No model running",
+                                         first_run=not s.model_path,
+                                         tip="Start one from the Model menu, or point Settings > Connection at "
+                                             "LM Studio or Ollama.")
 
         check()
 
@@ -2053,12 +2589,30 @@ class MainWindow(QMainWindow):
             if r == QMessageBox.Yes:
                 self.server.proc.stop()
         self.chat.stop.set()
+        _stop_background(self.chat.agent)
+        mcp.manager().stop()
         super().closeEvent(e)
+
+
+def dark_palette() -> QPalette:
+    """For what the style sheet doesn't reach (message boxes, file dialogs, disabled text)."""
+    pal = QPalette()
+    for role, col in [(QPalette.Window, "#16181d"), (QPalette.WindowText, "#e6e8ee"), (QPalette.Base, "#1e2128"),
+                      (QPalette.AlternateBase, "#23262e"), (QPalette.Text, "#e6e8ee"), (QPalette.Button, "#2a2f3a"),
+                      (QPalette.ButtonText, "#e6e8ee"), (QPalette.ToolTipBase, "#23262e"),
+                      (QPalette.ToolTipText, "#e6e8ee"), (QPalette.Highlight, ACCENT),
+                      (QPalette.HighlightedText, "#ffffff"), (QPalette.PlaceholderText, "#6b717c"),
+                      (QPalette.Link, ACCENT)]:
+        pal.setColor(role, QColor(col))
+    for role in (QPalette.Text, QPalette.ButtonText, QPalette.WindowText):
+        pal.setColor(QPalette.Disabled, role, QColor("#6b717c"))
+    return pal
 
 
 def main(argv=None):
     app = QApplication.instance() or QApplication([])
     app.setStyle("Fusion")
+    app.setPalette(dark_palette())
     app.setStyleSheet(STYLE)
     w = MainWindow()
     w.show()

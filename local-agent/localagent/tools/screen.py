@@ -13,7 +13,7 @@ import io
 import sys
 import time
 
-from .base import CONTROL, ToolContext, ToolError, ToolResult, tool
+from .base import CONTROL, RUN, ToolContext, ToolError, ToolResult, tool
 
 WINDOWS = sys.platform == "win32"
 
@@ -53,8 +53,10 @@ def to_screen(ctx: ToolContext, x: float, y: float) -> tuple[int, int]:
         fx, fy = float(x) / 1000.0, float(y) / 1000.0
     else:
         fx, fy = float(x) / s["img_w"], float(y) / s["img_h"]
-    fx, fy = min(max(fx, 0.0), 0.9999), min(max(fy, 0.0), 0.9999)
-    return int(s["left"] + fx * s["width"]), int(s["top"] + fy * s["height"])
+    px, py = int(s["left"] + fx * s["width"]), int(s["top"] + fy * s["height"])
+    # Stay 1 pixel off the edges: a corner is pyautogui's emergency stop, and x=0 / x=1000 would land on one.
+    return (min(max(px, s["left"] + 1), s["left"] + s["width"] - 2),
+            min(max(py, s["top"] + 1), s["top"] + s["height"] - 2))
 
 
 def from_screen(ctx: ToolContext, px: int, py: int) -> tuple[int, int]:
@@ -146,11 +148,13 @@ def _geometry_note(ctx: ToolContext) -> str:
 
 
 def after_action(ctx: ToolContext, text: str) -> ToolResult:
-    if not ctx.settings.screenshot_after_action:
+    # capture_after is False for all but the last control action of a step: one fresh screenshot
+    # at the end instead of several stale ones.
+    if not ctx.settings.screenshot_after_action or not getattr(ctx, "capture_after", True):
         return ToolResult(text)
     time.sleep(0.6)
     try:
-        png = _shot(ctx)
+        png = _shot(ctx, ctx.screen.get("monitor"))   # the screen the model is working on
     except Exception as e:  # never fail the action because the follow-up shot failed
         return ToolResult(f"{text}\n(could not take a follow-up screenshot: {e})")
     return ToolResult(f"{text}\nScreenshot after the action is attached.", images=[png])
@@ -257,10 +261,12 @@ def scroll(ctx: ToolContext, a: dict):
 @tool("type_text", "Type text with the keyboard into whatever has focus. Set enter=true to press Enter after.",
       {"text": {"type": "string"}, "enter": {"type": "boolean"}},
       required=["text"], risk=CONTROL, group="control",
-      describe=lambda a: f"Type: {a.get('text', '')[:200]}")
+      describe=lambda a: f"Type: {str(a.get('text') or '')[:200]}")
 def type_text(ctx: ToolContext, a: dict):
     g = _gui()
-    text = a["text"]
+    if a["text"] is None:
+        raise ToolError("text is empty.")
+    text = str(a["text"])
     if text.isascii():
         g.write(text, interval=0.004)
     else:  # pyautogui only types ASCII, so paste anything else
@@ -363,22 +369,38 @@ def focus_window(ctx: ToolContext, a: dict):
     return after_action(ctx, f"Focused '{w.title}'.")
 
 
+# Opening one of these runs it, so it asks like run_command instead of like a click.
+RUN_EXT = {".exe", ".com", ".bat", ".cmd", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh",
+           ".msi", ".msp", ".msc", ".scr", ".cpl", ".hta", ".lnk", ".reg", ".jar", ".py", ".pyw", ".sh", ".appref-ms"}
+
+
+def _open_risk(ctx: ToolContext, a: dict) -> str:
+    import os
+    from urllib.parse import urlparse
+
+    target = str(a.get("target") or "").strip().strip('"')
+    if "://" in target:   # https://example.com is a web page, https://x/setup.exe or file:///C:/a.bat not
+        target = urlparse(target).path
+    return RUN if os.path.splitext(target.rstrip("/\\. "))[1].lower() in RUN_EXT else CONTROL
+
+
 @tool("open", """
 Open a program, file, folder or web address the way double-clicking would, e.g. "notepad",
 "C:/Users/me/Documents/report.docx", "https://example.com", "ms-settings:display".""",
       {"target": {"type": "string"}}, required=["target"], risk=CONTROL, group="control",
-      describe=lambda a: f"Open {a.get('target')}")
+      risk_for=_open_risk, describe=lambda a: f"Open {a.get('target')}")
 def open_target(ctx: ToolContext, a: dict):
     import os
     import subprocess
 
-    target = a["target"].strip()
+    target = str(a["target"]).strip()
     p = ctx.resolve(target)
     if WINDOWS:
+        # Only startfile: a "cmd /c start" fallback would run anything after an & in the target.
         try:
             os.startfile(str(p) if p.exists() else target)
-        except OSError:
-            subprocess.Popen(["cmd", "/c", "start", "", target], creationflags=subprocess.CREATE_NO_WINDOW)
+        except OSError as e:
+            raise ToolError(f"Windows couldn't open {target}: {e}")
     else:
         subprocess.Popen(["xdg-open", str(p) if p.exists() else target])
     time.sleep(1.5)

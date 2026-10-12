@@ -64,6 +64,8 @@ class GuiTest(unittest.TestCase):
 
         cls.gui = gui
         cls.app = QApplication.instance() or QApplication([])
+        cls.app.setStyle("Fusion")
+        cls.app.setPalette(gui.dark_palette())
         cls.app.setStyleSheet(gui.STYLE)
 
     def wait_until(self, cond, timeout=15):
@@ -102,8 +104,9 @@ class GuiTest(unittest.TestCase):
         # the thinking picker in the chat bar changes the setting straight away
         chat.think.setCurrentIndex(chat.think.findData("low"))
         self.assertEqual(s.thinking, "low")
+        s.thinking = "medium"           # changed elsewhere: the chat bar shows it when the chat comes back
         w.nav.setCurrentRow(2)
-        w.settings_page.thinking.setCurrentIndex(w.settings_page.thinking.findData("medium"))
+        self.assertFalse(hasattr(w.settings_page, "thinking"))    # one place to pick it: the chat bar
         w.nav.setCurrentRow(0)
         self.assertEqual(chat.think.currentData(), "medium")
         chat.input.setPlainText("write hello.txt")
@@ -263,6 +266,150 @@ class GuiTest(unittest.TestCase):
         self.assertFalse(page.strata_box.isVisibleTo(page))
         page.stop()
         w.close()
+
+    def test_enter_in_approval_dialog_denies(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        from localagent.permissions import ApprovalRequest
+
+        req = ApprovalRequest("run_command", "run", "Run: rm -rf build", {"command": "rm -rf build"}, dangerous=True)
+        dlg = self.gui.ApprovalDialog(req)
+        dlg.show()
+        self.app.processEvents()
+        QTest.keyClick(dlg, Qt.Key_Return)
+        self.assertFalse(dlg.decision.allow)
+        dlg = self.gui.ApprovalDialog(req)
+        dlg.show()
+        dlg.note.setText("use git clean instead")
+        QTest.keyClick(dlg.note, Qt.Key_Return)
+        self.assertFalse(dlg.decision.allow)
+        self.assertEqual(dlg.decision.note, "use git clean instead")
+
+    def test_long_names_dont_widen_the_window(self):
+        lab = self.gui.ElidedLabel("C:/Users/someone/" + "very-long-folder-name/" * 30)
+        lab.resize(200, 20)
+        lab.show()
+        self.app.processEvents()
+        self.assertLess(lab.sizeHint().width(), 400)
+        self.assertTrue(lab.text().endswith("…") or "…" in lab.text())
+        self.assertTrue(lab.fullText().startswith("C:/Users/someone/"))
+
+    def test_server_ready_then_dies(self):
+        from localagent.config import Settings
+
+        port = free_port()
+        script = Path(tempfile.mkdtemp()) / "server.py"
+        script.write_text(FAKE_SERVER)
+        s = Settings(base_url="http://127.0.0.1:9/v1", port=port)
+        w = self.gui.MainWindow(s)
+        page = w.server
+        page.proc.start([sys.executable, str(script), "--port", str(port)], cwd=script.parent)
+        page.state.setText("Loading the model...")
+        self.assertTrue(self.wait_until(lambda: "Ready" in page.state.text(), 20), page.state.text())
+        self.assertEqual(s.base_url, f"http://127.0.0.1:{port}/v1")
+        self.assertEqual(page.start_btn.text(), "Stop model")
+        self.assertIsNone(w.chat._agent_sig)          # the chat re-reads what the new model can do
+        page.proc.proc.kill()
+        self.assertTrue(self.wait_until(lambda: "stopped" in page.state.text(), 10), page.state.text())
+        self.assertTrue(page.log.isVisibleTo(page))
+        self.assertEqual(page.start_btn.text(), "Start model")
+        w.close()
+
+    def test_settings_page_keeps_the_model_servers_address(self):
+        from localagent.config import Settings
+
+        s = Settings(base_url="http://127.0.0.1:9/v1")
+        w = self.gui.MainWindow(s)
+        page = w.settings_page
+        s.base_url, s.model = "http://127.0.0.1:8081/v1", ""     # what the Model server page does on Ready
+        page.web.setChecked(not page.web.isChecked())             # any other switch on the Settings page
+        self.assertEqual(s.base_url, "http://127.0.0.1:8081/v1")
+        w.nav.setCurrentRow(2)
+        self.assertEqual(page.url.text(), "http://127.0.0.1:8081/v1")
+        self.assertFalse(page.adv.isVisibleTo(page))              # the rarely used settings start folded
+        page.url.setText("http://localhost:1234/v1")
+        page._save_connection()
+        self.assertEqual(s.base_url, "http://localhost:1234/v1")
+        w.close()
+
+    def test_start_without_llamacpp_offers_the_download(self):
+        from localagent.config import Settings
+
+        d = Path(tempfile.mkdtemp())
+        model = d / "Qwen3.8-27B-Q4_K_M.gguf"
+        moe_model(model)
+        s = Settings(models_dir=str(d), model_path=str(model), base_url="http://127.0.0.1:9/v1",
+                     server_exe=str(d / "missing-llama-server"))
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        page = w.server
+        self.assertTrue(self.wait_until(lambda: page.info is not None, 10))
+        page.exe = None
+        page._changed()
+        page._sync_start_btn()
+        self.assertTrue(page.start_btn.isEnabled())
+        self.assertIn("isn't on this PC yet", page.plan_label.text())
+        asked = []
+        orig = self.gui.QMessageBox.question
+        self.gui.QMessageBox.question = staticmethod(lambda *a, **k: asked.append(a[2]) or self.gui.QMessageBox.No)
+        try:
+            page.start()
+        finally:
+            self.gui.QMessageBox.question = orig
+        self.assertTrue(asked and "llama.cpp" in asked[0])
+        self.assertFalse(page.proc.running)
+        w.close()
+
+    def test_model_menu_switches_mode_and_first_run_card(self):
+        from localagent.config import Settings
+
+        s = Settings(base_url="http://127.0.0.1:9/v1")
+        w = self.gui.MainWindow(s)
+        w.show()
+        chat = w.chat
+        self.assertTrue(self.wait_until(lambda: chat.setup_card.isVisibleTo(chat), 10))   # nothing set up yet
+        picked = []
+        w.server._use_preset = lambda: picked.append(w.server.preset_box.currentData())
+        chat._fill_model_menu()
+        acts = [a for a in chat.model_menu.actions() if a.text().startswith("Swift 1.5 Qwen3.8 27B")]
+        acts[0].trigger()
+        self.assertEqual(picked, ["swift-27b"])
+        self.assertEqual(w.nav.currentRow(), 1)
+        out = os.environ.get("GUI_SHOT")
+        if out:
+            w.nav.setCurrentRow(0)
+            w.resize(1280, 860)
+            self.app.processEvents()
+            w.grab().save(out.replace(".png", "_firstrun.png"))
+            w.nav.setCurrentRow(2)
+            self.app.processEvents()
+            w.grab().save(out.replace(".png", "_settings.png"))
+        w.close()
+
+    def test_addon_tools_from_settings(self):
+        import json
+
+        from localagent import mcp
+        from localagent.config import Settings
+        from localagent.tools import REGISTRY
+        from tests.test_mcp import FAKE
+
+        d = Path(tempfile.mkdtemp())
+        (d / "fake.py").write_text(FAKE)
+        mcp.config_path().parent.mkdir(parents=True, exist_ok=True)
+        mcp.config_path().write_text(json.dumps({"mcpServers": {"fake": {"command": sys.executable,
+                                                                         "args": [str(d / "fake.py")]}}}))
+        self.addCleanup(mcp.config_path().unlink)
+        self.addCleanup(mcp.manager().stop)
+        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1"))
+        w.nav.setCurrentRow(2)
+        page = w.settings_page
+        self.assertTrue(self.wait_until(lambda: "fake: 6 tools" in page.addons_status.text(), 20),
+                        page.addons_status.text())
+        self.assertIn("fake__echo", REGISTRY)
+        w.close()
+        self.assertNotIn("fake__echo", REGISTRY)        # closing the app stops the servers
 
     def test_memory_page(self):
         from localagent import memory
