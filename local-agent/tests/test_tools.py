@@ -104,7 +104,9 @@ class ScreenMathTest(unittest.TestCase):
     def test_normalized(self):
         c = self.ctx("normalized")
         self.assertEqual(screen.to_screen(c, 500, 500), (1920 + 1280, 720))
-        self.assertEqual(screen.to_screen(c, 1000, 1000), (1920 + 2559, 1439))  # clamped on screen
+        # clamped on screen, 1 pixel off the edges: a corner is pyautogui's emergency stop
+        self.assertEqual(screen.to_screen(c, 1000, 1000), (1920 + 2558, 1438))
+        self.assertEqual(screen.to_screen(c, 0, 0), (1920 + 1, 1))
 
     def test_auto_by_model(self):
         self.assertEqual(screen.coord_mode(self.ctx("auto", "Qwen3.6-27B-Q4_K_M")), "normalized")

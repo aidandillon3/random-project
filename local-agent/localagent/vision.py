@@ -15,14 +15,15 @@ from pathlib import Path
 
 import requests
 
-from .gguf import GGUFError, ModelInfo, read_meta_bytes
+from .gguf import GGUFError, ModelInfo, projection_dim, read_meta_bytes
 
 HF = "https://huggingface.co"
 # Uploaders whose mmproj files are made with llama.cpp's own converter, best first.
 TRUSTED = ["ggml-org", "unsloth", "bartowski", "lmstudio-community", "Qwen", "google", "mistralai"]
 FAMILY = re.compile(
     r"((?:qwen|gemma|llama|mistral|ministral|magistral|devstral|pixtral|glm|internvl|minicpm|phi|kimi|smolvlm)"
-    r"[\w.]*?(?:-\d+(?:\.\d+)?)?-\d+(?:\.\d+)?[bB](?:-A\d+(?:\.\d+)?[bB])?)(?![a-zA-Z0-9])", re.I)
+    r"[\w.]*?(?:-(?:vl|omni|small|medium|large|\d+(?:\.\d+)?))*-\d+(?:\.\d+)?[bB](?:-A\d+(?:\.\d+)?[bB])?)"
+    r"(?![a-zA-Z0-9])", re.I)
 
 
 @dataclass
@@ -122,8 +123,7 @@ def check(c: Candidate, info: ModelInfo | None, session=None) -> tuple[bool, str
         return False, f"couldn't read it ({e})"
     if meta.get("clip.has_vision_encoder") is False:
         return False, "it has no vision part (audio only)"
-    proj = meta.get("clip.vision.projection_dim") or next(
-        (v for k, v in meta.items() if k.endswith("projection_dim") and isinstance(v, int)), None)
+    proj = projection_dim(meta)
     emb = info.embedding_length if info else 0
     if proj and emb and proj % emb != 0:
         return False, f"it's made for a different model size ({proj} vs {emb})"
@@ -141,8 +141,17 @@ def find(info: ModelInfo | None, model_path: Path, base: str = HF, progress=lamb
     return None
 
 
+def local_name(c: Candidate) -> str:
+    """The file name to save it as. Generic names such as unsloth's mmproj-F16.gguf get the base model's
+    name, so they don't overwrite another model's vision file in the same folder."""
+    name = Path(c.file).name
+    if c.base_name and c.base_name.lower() not in name.lower():
+        name = f"mmproj-{c.base_name}-{re.sub(r'^mmproj[-_.]?', '', name, flags=re.I)}"
+    return name
+
+
 def download(c: Candidate, folder: Path, progress=lambda msg, frac: None) -> Path:
-    dest = folder / Path(c.file).name
+    dest = folder / local_name(c)
     tmp = dest.with_suffix(".part")
     with requests.get(c.url, stream=True, timeout=60) as r:
         r.raise_for_status()

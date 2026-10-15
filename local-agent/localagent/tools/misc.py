@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from .base import ToolContext, ToolError, tool
+from .base import EDIT, SAFE, ToolContext, ToolError, tool
 
 STATUSES = ("pending", "in_progress", "done")
 
@@ -38,6 +38,19 @@ def _mem():
     return get_memory()
 
 
+def _remember_risk(ctx: ToolContext, a: dict) -> str:
+    """Pinned notes go into the start of every future chat, so pinning or changing one asks like an edit
+    (a web page the model read could otherwise plant instructions there)."""
+    if a.get("pinned"):
+        return EDIT
+    mem = _mem()
+    if a.get("replaces"):
+        note = mem.get(int(a["replaces"]))
+        return EDIT if note and note.pinned else SAFE
+    title = str(a.get("title") or "").strip().lower()   # a note with the same title is updated
+    return EDIT if title and any(n.title.lower() == title for n in mem.pinned()) else SAFE
+
+
 @tool("remember", """
 Save a note to long-term memory so you still know it in future chats: the user's preferences,
 where their projects are, how their setup works, fixes that worked. One fact per note, short
@@ -47,7 +60,9 @@ only for things needed in nearly every chat (it is then always shown to you)."""
        "title": {"type": "string", "description": "A few words, e.g. 'Python projects folder'"},
        "pinned": {"type": "boolean"},
        "replaces": {"type": "integer", "description": "Id of a note this one corrects or updates"}},
-      required=["note"])
+      required=["note"], risk_for=_remember_risk,
+      describe=lambda a: f"Save a note{' (pinned, shown in every chat)' if a.get('pinned') else ''}: "
+                         f"{str(a.get('note') or '')[:200]}")
 def remember(ctx: ToolContext, a: dict):
     mem = _mem()
     if a.get("replaces"):

@@ -4,17 +4,48 @@ from __future__ import annotations
 
 import itertools
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 
-from .base import RUN, SAFE, ToolContext, ToolError, tool, truncate
+from .base import PUBLISH, RUN, SAFE, ToolContext, ToolError, tool, truncate
 
 WINDOWS = sys.platform == "win32"
 _ids = itertools.count(1)
+
+# Nobody sits at the console of what the agent starts, so tools must fail instead of waiting for
+# a typed answer (git credentials, ssh host keys, pip, test runners in watch mode).
+QUIET_ENV = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "PIP_NO_INPUT": "1", "CI": "1"}
+
+# git, maybe with -C <folder>, -c key=value or --options before the subcommand
+GIT_CMD = r"""\bgit(?:\.exe)?(?:\s+(?:-[Cc]\s*(?:"[^"]*"|'[^']*'|\S+)|--\S+))*\s+"""
+# Commands that post to GitHub (or a package registry) under the user's name. They ask like
+# git_push does, even in full auto.
+PUBLISH_COMMAND = re.compile(
+    GIT_CMD + r"push\b"
+    r"|\bgh(?:\.exe)?\s+(?:pr|issue|release|repo|gist)\s+"
+    r"(?:create|merge|delete|edit|comment|close|reopen|review|upload|rename|archive|fork)\b"
+    r"|\bgh(?:\.exe)?\s+api\b[^|;&\n]*\s(?:-X\s*|--method[\s=]*)(?:POST|PUT|PATCH|DELETE)\b"
+    r"|\bgh(?:\.exe)?\s+api\b[^|;&\n]*\s(?:-f|--field|--raw-field|--input)\b"
+    r"|\b(?:npm|pnpm|yarn)\s+publish\b|\btwine\s+upload\b|\bcargo\s+publish\b|\bdotnet\s+nuget\s+push\b",
+    re.IGNORECASE)
+
+
+def command_risk(ctx: ToolContext, a: dict) -> str:
+    return PUBLISH if PUBLISH_COMMAND.search(str(a.get("command") or "")) else RUN
+
+
+def quiet_env(**extra) -> dict:
+    env = dict(os.environ, **QUIET_ENV)
+    if "GIT_SSH_COMMAND" not in env and "GIT_SSH" not in env:  # keep the user's own ssh setup
+        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+    env.update(extra)
+    return env
 
 
 def shell_kind(ctx: ToolContext) -> str:
@@ -30,7 +61,9 @@ def _argv(kind: str, command: str) -> list[str]:
         prefix = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $ProgressPreference='SilentlyContinue'; "
         return [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", prefix + command]
     if kind == "cmd":
-        return ["cmd", "/d", "/s", "/c", command]
+        # cmd.exe has its own quoting: with /s it drops the outer quotes and runs the rest as typed.
+        # A list would be re-quoted with \" escapes, which cmd doesn't understand.
+        return f'cmd /d /s /c "{command}"' if WINDOWS else ["cmd", "/d", "/s", "/c", command]
     return [shutil.which("bash") or "/bin/sh", "-c", command]
 
 
@@ -38,58 +71,95 @@ def _flags():
     return subprocess.CREATE_NO_WINDOW if WINDOWS else 0
 
 
+def run_process(argv, cwd, env, timeout: float, stop=None) -> tuple[int | None, str, str]:
+    """Run a program until it ends, times out or Stop is pressed. Returns (exit code, output, why it
+    was stopped or ''). Output is read on a thread and kept when the program is stopped, and a
+    grandchild still holding the pipe (a server the command started) can't make this hang."""
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, creationflags=_flags(), start_new_session=not WINDOWS)
+    out: list[bytes] = []
+
+    def pump():
+        for chunk in iter(lambda: proc.stdout.read1(65536), b""):
+            out.append(chunk)
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    start, why = time.time(), ""
+    while proc.poll() is None:
+        if stop is not None and stop.is_set():
+            why = "stopped by you"
+        elif time.time() - start > timeout:
+            why = f"timed out after {timeout}s"
+        else:
+            time.sleep(0.05)
+            continue
+        _kill(proc)
+        break
+    reader.join(2 if why else 5)
+    if not reader.is_alive():
+        proc.stdout.close()
+    return (None if why else proc.returncode), b"".join(out).decode("utf-8", "replace"), why
+
+
 @tool("run_command", """
 Run a shell command and get its output (PowerShell on Windows). Runs in the work folder unless
 cwd is given. Set background=true for things that keep running (servers, watchers); then read
-them with check_process. Long silent commands are stopped after timeout seconds (default 120).""",
+them with check_process. Commands still running after timeout seconds (default 120) are stopped.""",
       {"command": {"type": "string"},
        "cwd": {"type": "string"},
        "timeout": {"type": "integer", "description": "Seconds, default 120, max 1800"},
        "background": {"type": "boolean"}},
-      required=["command"], risk=RUN, group="shell",
-      describe=lambda a: a.get("command", ""))
+      required=["command"], risk=RUN, group="shell", risk_for=command_risk,
+      describe=lambda a: str(a.get("command") or ""))
 def run_command(ctx: ToolContext, a: dict):
     cwd = ctx.resolve(a.get("cwd") or ".")
     if not cwd.is_dir():
         raise ToolError(f"cwd is not a folder: {cwd}")
-    argv = _argv(shell_kind(ctx), a["command"])
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", **(a.get("_env") or {}))
+    command = str(a["command"])
+    argv = _argv(shell_kind(ctx), command)
+    env = quiet_env(PYTHONIOENCODING="utf-8", **(a.get("_env") or {}))
     if a.get("background"):
-        return _start_background(ctx, argv, cwd, env, a["command"])
+        return _start_background(ctx, argv, cwd, env, command)
     timeout = min(1800, max(1, int(a.get("timeout") or 120)))
-    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            stdin=subprocess.DEVNULL, creationflags=_flags())
-    out: list[bytes] = []
-    reader = threading.Thread(target=lambda: out.extend(iter(lambda: proc.stdout.read(4096), b"")), daemon=True)
-    reader.start()
-    start = time.time()
-    while proc.poll() is None:
-        if ctx.stop.is_set() or time.time() - start > timeout:
-            _kill(proc)
-            reader.join(2)
-            why = "stopped by you" if ctx.stop.is_set() else f"timed out after {timeout}s"
-            text = b"".join(out).decode("utf-8", "replace")
-            return f"[command {why}]\n" + truncate(text, ctx.settings.max_tool_output)
-        time.sleep(0.05)
-    reader.join(5)
-    text = b"".join(out).decode("utf-8", "replace").strip()
-    return f"[exit code {proc.returncode}]\n" + (truncate(text, ctx.settings.max_tool_output) or "(no output)")
+    code, text, why = run_process(argv, cwd, env, timeout, ctx.stop)
+    if why:
+        return f"[command {why}]\n" + truncate(text, ctx.settings.max_tool_output)
+    return f"[exit code {code}]\n" + (truncate(text.strip(), ctx.settings.max_tool_output) or "(no output)")
 
 
 def _kill(proc: subprocess.Popen):
+    """Stop a program and everything it started."""
     try:
         if WINDOWS:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True,
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=15,
                            creationflags=_flags())
         else:
-            proc.kill()
-    except OSError:
+            os.killpg(proc.pid, signal.SIGKILL)   # its own process group (start_new_session)
+    except (OSError, subprocess.SubprocessError):
         pass
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def stop_background(ctx: ToolContext) -> int:
+    """Stop every background command of this chat, so servers and watchers don't keep running unseen
+    after the chat is reset or the app closes. Returns how many were still running."""
+    running = 0
+    for buf in list(ctx.processes.values()):
+        if buf["proc"].poll() is None:
+            _kill(buf["proc"])
+            running += 1
+    ctx.processes.clear()
+    return running
 
 
 def _start_background(ctx, argv, cwd, env, command):
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            stdin=subprocess.DEVNULL, creationflags=_flags())
+                            stdin=subprocess.DEVNULL, creationflags=_flags(), start_new_session=not WINDOWS)
     pid = f"p{next(_ids)}"
     buf = {"proc": proc, "out": bytearray(), "read": 0, "command": command}
 
@@ -140,18 +210,19 @@ Run a Python script and get its output. Good for calculations, data processing a
 automation. The script runs with the same Python as this app, in the work folder.""",
       {"code": {"type": "string"}, "timeout": {"type": "integer"}},
       required=["code"], risk=RUN, group="shell",
-      describe=lambda a: "Run Python:\n" + a.get("code", ""))
+      describe=lambda a: "Run Python:\n" + str(a.get("code") or ""))
 def run_python(ctx: ToolContext, a: dict):
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
-        f.write(a["code"])
+        f.write(str(a["code"]))
         script = f.name
     try:
-        proc = subprocess.run([sys.executable, script], cwd=ctx.workspace, capture_output=True,
-                              timeout=min(1800, int(a.get("timeout") or 120)), creationflags=_flags(),
-                              env=dict(os.environ, PYTHONIOENCODING="utf-8"))
-    except subprocess.TimeoutExpired:
-        return "[script timed out]"
+        code, text, why = run_process([sys.executable, script], ctx.workspace, quiet_env(PYTHONIOENCODING="utf-8"),
+                                      min(1800, max(1, int(a.get("timeout") or 120))), ctx.stop)
     finally:
-        os.unlink(script)
-    text = (proc.stdout + proc.stderr).decode("utf-8", "replace").strip()
-    return f"[exit code {proc.returncode}]\n" + (truncate(text, ctx.settings.max_tool_output) or "(no output)")
+        try:
+            os.unlink(script)
+        except OSError:
+            pass
+    if why:
+        return f"[script {why}]\n" + truncate(text, ctx.settings.max_tool_output)
+    return f"[exit code {code}]\n" + (truncate(text.strip(), ctx.settings.max_tool_output) or "(no output)")

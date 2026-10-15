@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from .base import EDIT, RUN, ToolContext, ToolError, tool, truncate
+from .shell import command_risk
 
 WINDOWS = sys.platform == "win32"
 CODE_EXT = {".py", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".go", ".rs", ".java", ".kt", ".cs", ".c", ".h",
@@ -32,8 +33,20 @@ def _slug(text: str) -> str:
     return "-".join(words) or "task"
 
 
-def _repo_name(src: str) -> str:
-    return re.sub(r"\.git$", "", src.rstrip("/\\").replace("\\", "/").split("/")[-1]) or "repo"
+def _clone_name(src: str) -> str:
+    """owner__name for owner/name or a clone URL, so alice/utils and bob/utils get their own folders."""
+    parts = re.sub(r"\.git$", "", src.strip().rstrip("/\\")).replace("\\", "/").replace(":", "/").split("/")
+    return "__".join(p for p in parts[-2:] if p) or "repo"
+
+
+def _task_risk(ctx: ToolContext, a: dict) -> str:
+    """EDIT for a repository in the work folder (or cloned into it), RUN for one elsewhere on the PC."""
+    home = Path(ctx.coding.get("home") or ctx.workspace).resolve()
+    src = str(a.get("repo") or "").strip()
+    if re.match(r"^(https?://|git@)", src):
+        return EDIT
+    local = (home / Path(src).expanduser()).resolve()
+    return EDIT if local.is_relative_to(home) or ctx.inside_workspace(local) else RUN
 
 
 # ---------------------------------------------------------------------- test commands
@@ -113,29 +126,42 @@ Tells you how to run the tests.""",
       {"repo": {"type": "string", "description": "Folder of a git repository, or owner/name"},
        "task": {"type": "string", "description": "A few words about the change, used for the branch name"},
        "base": {"type": "string", "description": "Branch to start from. Default: the repository's main branch"}},
-      required=["repo", "task"], risk=EDIT, group="code",
+      required=["repo", "task"], risk=EDIT, group="code", risk_for=_task_risk,
       describe=lambda a: f"Make a private copy of {a.get('repo')} on a new branch for: {a.get('task')}")
 def start_coding_task(ctx: ToolContext, a: dict):
     home = Path(ctx.coding.get("home") or ctx.workspace)
-    src_txt = a["repo"].strip()
+    src_txt = str(a["repo"]).strip()
     local = Path(src_txt).expanduser()
     if not local.is_absolute():
         local = home / local
     if (local / ".git").exists():
         source = local.resolve()
     elif re.match(r"^(https?://|git@)|^[\w.-]+/[\w.-]+$", src_txt):
-        source = (home / "repos" / _repo_name(src_txt)).resolve()
-        if not (source / ".git").exists():
+        source = (home / "repos" / _clone_name(src_txt)).resolve()
+        if (source / ".git").exists():
+            origin = _git(ctx, ["remote", "get-url", "origin"], cwd=source, check=False)
+            if _clone_name(origin).lower() != _clone_name(src_txt).lower():
+                raise ToolError(f"{source} is a copy of {origin or 'another repository'}, not {src_txt}. "
+                                "Move it away, or pass that folder as repo if it is the right one.")
+        else:
             url = src_txt if re.match(r"^(https?://|git@)", src_txt) else f"https://github.com/{src_txt}.git"
             source.parent.mkdir(parents=True, exist_ok=True)
-            _git(ctx, ["clone", url, str(source)], cwd=source.parent, auth=True, timeout=900)
+            _git(ctx, ["clone", "--", url, str(source)], cwd=source.parent, auth=True, timeout=900)
     else:
         raise ToolError(f"{local} isn't a git repository, and '{src_txt}' doesn't look like owner/name.")
 
     _git(ctx, ["fetch", "--quiet", "origin"], cwd=source, auth=True, check=False, timeout=300)
-    base = (a.get("base") or "").strip()
+    base = str(a.get("base") or "").strip()
+    if base.startswith("-"):
+        raise ToolError("base must be a branch or commit.")
+    if base and not base.startswith("origin/") and \
+            _git(ctx, ["rev-parse", "--verify", "--quiet", f"origin/{base}^{{commit}}"], cwd=source, check=False):
+        base = f"origin/{base}"   # the fetched branch, not a local one that may be behind
     if not base:
         head = _git(ctx, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd=source, check=False)
+        if not head.startswith("origin/"):   # a clone that never learned the remote's main branch
+            _git(ctx, ["remote", "set-head", "origin", "-a"], cwd=source, auth=True, check=False, timeout=60)
+            head = _git(ctx, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd=source, check=False)
         base = head if head.startswith("origin/") and "\n" not in head else "HEAD"
     slug = _slug(a["task"])
     branch, n = f"agent/{slug}", 1
@@ -144,6 +170,7 @@ def start_coding_task(ctx: ToolContext, a: dict):
         branch = f"agent/{slug}-{n}"
     folder = home / ".worktrees" / f"{source.name}-{branch.split('/', 1)[1]}"
     folder.parent.mkdir(parents=True, exist_ok=True)
+    _hide_worktrees(ctx, source, folder.parent)
     _git(ctx, ["worktree", "add", "-b", branch, str(folder), base], cwd=source)
 
     ctx.coding.update(home=str(home), source=str(source), folder=str(folder), branch=branch, fails=0,
@@ -165,6 +192,22 @@ def start_coding_task(ctx: ToolContext, a: dict):
     return "\n".join(lines)
 
 
+def _hide_worktrees(ctx: ToolContext, source: Path, worktrees: Path):
+    """When the copies land inside the repository itself (repo "."), keep them out of its git status
+    and git add -A, via the repository's own ignore list (.git/info/exclude, never committed)."""
+    try:
+        rel = worktrees.resolve().relative_to(source)
+    except ValueError:
+        return
+    common = Path(_git(ctx, ["rev-parse", "--git-common-dir"], cwd=source))
+    exclude = (common if common.is_absolute() else source / common) / "info" / "exclude"
+    line, text = f"/{rel.as_posix()}/", _read(exclude)
+    if line not in text.splitlines():
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with open(exclude, "a", encoding="utf-8") as f:
+            f.write(("\n" if text and not text.endswith("\n") else "") + line + "\n")
+
+
 @tool("run_tests", """
 Run the project's tests in the work folder and get back a short result: passed, or the
 failures. With no command it uses the project's usual test command (pytest, npm test, cargo
@@ -173,7 +216,7 @@ run them again until they pass.""",
       {"command": {"type": "string", "description": "Only if the automatic choice is wrong, e.g. 'pytest tests/test_api.py -q'"},
        "path": {"type": "string", "description": "Folder to run in. Default: the work folder"},
        "timeout": {"type": "integer", "description": "Seconds. Default 600"}},
-      risk=RUN, group="code",
+      risk=RUN, group="code", risk_for=command_risk,
       describe=lambda a: f"Run tests: {a.get('command') or 'the project test command'}")
 def run_tests(ctx: ToolContext, a: dict):
     from .shell import run_command

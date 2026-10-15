@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import sys
+import threading
 
 from .agent import Agent, AgentUI
 from .config import Settings
-from .llm import ServerError
+from .llm import LOADING, STARTING, ServerError
 from .permissions import Decision, risk_text
 
 DIM, RESET, CYAN, YELLOW, RED = "\033[2m", "\033[0m", "\033[36m", "\033[33m", "\033[31m"
@@ -15,6 +16,7 @@ DIM, RESET, CYAN, YELLOW, RED = "\033[2m", "\033[0m", "\033[36m", "\033[33m", "\
 class TerminalUI(AgentUI):
     def __init__(self):
         self._thinking = False
+        self._status = ""
 
     def text(self, s):
         if self._thinking:
@@ -47,6 +49,11 @@ class TerminalUI(AgentUI):
     def notice(self, s):
         print(f"{YELLOW}{s}{RESET}")
 
+    def status(self, s):
+        if s in (LOADING, STARTING) and s != self._status:   # the rest ("Thinking...") is just clutter
+            print(f"{DIM}{s}{RESET}")
+        self._status = s
+
     def todos(self, todos):
         marks = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]"}
         for t in todos:
@@ -55,12 +62,18 @@ class TerminalUI(AgentUI):
     def approve(self, req):
         color = RED if req.dangerous else YELLOW
         print(f"{color}Allow it to {risk_text(req.risk)}?{RESET}\n  {req.summary}")
-        ans = input("  [y]es / [a]lways this chat / [n]o (or type what to do instead): ").strip()
-        if ans.lower() in ("y", "yes", ""):
-            return Decision(True)
-        if ans.lower() in ("a", "always"):
-            return Decision(True, always=True)
-        return Decision(False, note="" if ans.lower() in ("n", "no") else ans)
+        _drop_typed_ahead()     # an Enter pressed earlier must not answer this
+        if req.dangerous:       # never with a single key: it can delete data or change the system
+            ans = input(f"  {RED}Type yes to allow it{RESET}, no to deny (or type what to do instead): ").strip()
+            if ans.lower() == "yes":
+                return Decision(True)
+        else:
+            ans = input("  [y]es / [a]lways this chat / [n]o (or type what to do instead): ").strip()
+            if ans.lower() in ("y", "yes"):
+                return Decision(True)
+            if ans.lower() in ("a", "always"):
+                return Decision(True, always=True)
+        return Decision(False, note="" if ans.lower() in ("", "n", "no") else ans)
 
     def ask(self, question, options):
         print(f"{YELLOW}{question}{RESET}")
@@ -70,6 +83,40 @@ class TerminalUI(AgentUI):
         if ans.isdigit() and 1 <= int(ans) <= len(options):
             return options[int(ans) - 1]
         return ans
+
+
+def _drop_typed_ahead():
+    """Throw away keys typed while the agent was working (Windows console only)."""
+    try:
+        import msvcrt
+    except ImportError:
+        return
+    while msvcrt.kbhit():
+        msvcrt.getwch()
+
+
+def _run(agent: Agent, text: str):
+    """Run one request on a worker thread: Ctrl+C then only sets Stop, which also cuts a request the
+    server is still busy with (on Windows, Ctrl+C can't interrupt the main thread while it waits)."""
+    errors = []
+
+    def work():
+        try:
+            agent.run(text)
+        except Exception as e:  # noqa: BLE001 - shown, and the next message can carry on
+            errors.append(e)
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    while t.is_alive():
+        try:
+            t.join(0.2)        # short waits: on Windows Ctrl+C is only seen between them
+        except KeyboardInterrupt:
+            if not agent.stop.is_set():
+                agent.stop.set()
+                print(f"\n{YELLOW}Stopping...{RESET}")
+    for e in errors:
+        print(f"{RED}{e if isinstance(e, ServerError) else f'{type(e).__name__}: {e}'}{RESET}")
 
 
 def main(argv: list[str]) -> int:
@@ -96,13 +143,7 @@ def main(argv: list[str]) -> int:
         if text == "/new":
             agent.reset()
             continue
-        try:
-            agent.run(text)
-        except KeyboardInterrupt:
-            agent.stop.set()
-            print(f"\n{YELLOW}Stopped.{RESET}")
-        except ServerError as e:
-            print(f"{RED}{e}{RESET}")
+        _run(agent, text)
 
 
 if __name__ == "__main__":

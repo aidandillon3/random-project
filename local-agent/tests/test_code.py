@@ -107,6 +107,55 @@ class CodingModeTest(unittest.TestCase):
         with self.assertRaises(ToolError):
             run(self.ctx, "start_coding_task", repo="plain", task="x")
 
+    def test_clones_are_kept_per_owner(self):
+        from localagent.tools.code import _clone_name
+
+        self.assertEqual(_clone_name("alice/utils"), "alice__utils")
+        self.assertEqual(_clone_name("https://github.com/alice/utils.git"), "alice__utils")
+        self.assertEqual(_clone_name("git@github.com:alice/utils.git"), "alice__utils")
+        # a folder for bob/utils that is really alice's copy is not used for bob's task
+        other = self.home / "repos" / "bob__utils"
+        other.mkdir(parents=True)
+        git(other, "init", "-q")
+        git(other, "remote", "add", "origin", "https://github.com/alice/utils.git")
+        with self.assertRaises(ToolError) as e:
+            run(self.ctx, "start_coding_task", repo="bob/utils", task="x")
+        self.assertIn("alice/utils", str(e.exception))
+
+    def test_starts_from_the_remote_branch(self):
+        remote = Path(tempfile.mkdtemp()) / "proj.git"
+        git(self.repo, "clone", "-q", "--bare", str(self.repo), str(remote))
+        git(self.repo, "remote", "add", "origin", str(remote))
+        git(self.repo, "fetch", "-q", "origin")
+        # someone pushed a newer commit; the user's local main is behind
+        other = Path(tempfile.mkdtemp()) / "o"
+        git(other.parent, "clone", "-q", str(remote), str(other))
+        (other / "new.txt").write_text("new")
+        git(other, "add", "-A")
+        git(other, "commit", "-qm", "newer")
+        git(other, "push", "-q", "origin", "main")
+        out = run(self.ctx, "start_coding_task", repo="proj", task="a", base="main")
+        self.assertIn("started from origin/main", out)
+        self.assertTrue((self.ctx.workspace / "new.txt").exists())
+        run(self.ctx, "finish_coding_task")
+        # no origin/HEAD yet: asks the remote instead of starting from whatever is checked out
+        subprocess.run(["git", "remote", "set-head", "origin", "-d"], cwd=self.repo, capture_output=True)
+        git(self.repo, "checkout", "-q", "-b", "elsewhere")
+        out = run(self.ctx, "start_coding_task", repo="proj", task="b")
+        self.assertIn("started from origin/main", out)
+
+    def test_copies_inside_the_repository_stay_out_of_git(self):
+        ctx = ToolContext(settings=Settings(), workspace=self.repo)
+        run(ctx, "start_coding_task", repo=".", task="x")
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=self.repo, capture_output=True,
+                                text=True).stdout
+        self.assertNotIn(".worktrees", status)
+        run(ctx, "start_coding_task", repo=str(self.repo), task="y")   # no second exclude line
+        exclude = (self.repo / ".git" / "info" / "exclude").read_text()
+        self.assertEqual(exclude.count("/.worktrees/"), 1)
+        hits = run(ToolContext(settings=Settings(), workspace=self.repo), "find_files", pattern="calc.py")
+        self.assertEqual(hits.splitlines()[1:], ["calc.py"])   # not again from inside the copies
+
 
 class CodingAgentTest(CodingModeTest):
     """A whole coding task driven through the agent loop, with a scripted model."""
@@ -154,7 +203,8 @@ class CodingAgentTest(CodingModeTest):
 
     # the inherited tests already ran in CodingModeTest
     test_private_copy_test_loop_and_finish = test_many_failures_suggest_reporting = test_not_a_repo = None
-    test_powershell_runs_quoted_python_with_ampersand = None
+    test_powershell_runs_quoted_python_with_ampersand = test_clones_are_kept_per_owner = None
+    test_starts_from_the_remote_branch = test_copies_inside_the_repository_stay_out_of_git = None
 
 
 class CodeToolsTest(unittest.TestCase):

@@ -9,6 +9,7 @@ _QWEN38_FAST = dict(temperature=0.7, top_p=0.8, top_k=20, min_p=0.0, presence_pe
 SAMPLING = [
     # Qwen3.8 model page, October 2026
     ("qwen3.8", _QWEN38_THINK, _QWEN38_FAST),
+    ("swift-1.5", _QWEN38_THINK, _QWEN38_FAST),      # Strata calls the Swift Flash Next model "swift-1.5-iq2_xs"
     # Qwen3 family (model cards): thinking vs. non-thinking
     ("qwen", dict(temperature=0.6, top_p=0.95, top_k=20, min_p=0.0),
              dict(temperature=0.7, top_p=0.8, top_k=20, min_p=0.0)),
@@ -63,7 +64,7 @@ any model that supports tool calling will work here.
 | **MTP speculative decoding** (`--spec-type draft-mtp`) | Models with built-in "multi-token prediction" layers guess several tokens and check them at once: about 1.3-2x faster text | Speed-up option. Works with vision |
 | **Draft-model speculation** (`-md`) | A tiny model of the same family guesses tokens for the big one | Speed-up option |
 | **N-gram speculation** (`--spec-type ngram-mod`) | Reuses text already in the conversation; great when editing code, which repeats a lot | Speed-up option, no extra memory |
-| **Prompt caching** (`--cache-reuse`, one slot `-np 1`) | The server keeps the conversation it already read, so each new step only reads the new part. The app only rewrites old messages occasionally so the cache stays valid | Always on |
+| **Prompt caching** (one slot `-np 1`, `--cache-ram`) | The server keeps the conversation it already read, so each new step only reads the part after the first change. The app only rewrites old messages occasionally so the cache stays valid. Models with linear-attention layers (Qwen3.5 and later) resume from saved snapshots of the context instead. Earlier prompts are kept in RAM too (`--cache-ram`: 24 GB when the model fits on the GPU, else llama.cpp's 8 GB). (`--cache-reuse` isn't used: llama.cpp turns it off with a vision file and for those hybrid models.) | Always on |
 | **Quantization choice** | Q4_K_M is the sweet spot; IQ4_XS is ~10% smaller with similar quality; below Q3 models get noticeably dumber | Pick when downloading |
 
 What doesn't help much: running two models at once on 16 GB, very long contexts (each token of
