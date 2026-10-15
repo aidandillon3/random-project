@@ -19,3 +19,8 @@ A Claude-style AI helper that runs on your own PC with local models: it can edit
 commands, see the screen and use the mouse and keyboard, with an approval step for risky actions.
 It also starts llama.cpp with fast settings for a 16 GB card.
 See [`local-agent/README.md`](local-agent/README.md).
+
+## qwen 3.8 flash next
+
+The home for all projects made by the Agent - each project gets its own subfolder.
+See [`qwen 3.8 flash next/README.md`](qwen 3.8 flash next/README.md).
