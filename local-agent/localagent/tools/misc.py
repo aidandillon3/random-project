@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import time
 
-from .base import ToolContext, ToolError, tool
+from .base import EDIT, SAFE, ToolContext, ToolError, tool
 
 STATUSES = ("pending", "in_progress", "done")
 
@@ -33,18 +32,100 @@ def todo_write(ctx: ToolContext, a: dict):
     return "To-do list updated:\n" + "\n".join(f"{marks[t['status']]} {t['content']}" for t in todos)
 
 
-@tool("remember", """
-Save a fact to long-term memory so you still know it in future chats (the user's preferences,
-where their projects are, things that worked). Keep notes short.""",
-      {"note": {"type": "string"}}, required=["note"])
-def remember(ctx: ToolContext, a: dict):
-    from ..prompts import memory_path
+def _mem():
+    from ..memory import get_memory
 
-    path = memory_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(f"- {a['note'].strip()} ({dt.date.today().isoformat()})\n")
-    return f"Saved to memory ({path})."
+    return get_memory()
+
+
+def _remember_risk(ctx: ToolContext, a: dict) -> str:
+    """Pinned notes go into the start of every future chat, so pinning or changing one asks like an edit
+    (a web page the model read could otherwise plant instructions there)."""
+    if a.get("pinned"):
+        return EDIT
+    mem = _mem()
+    if a.get("replaces"):
+        note = mem.get(int(a["replaces"]))
+        return EDIT if note and note.pinned else SAFE
+    title = str(a.get("title") or "").strip().lower()   # a note with the same title is updated
+    return EDIT if title and any(n.title.lower() == title for n in mem.pinned()) else SAFE
+
+
+@tool("remember", """
+Save a note to long-term memory so you still know it in future chats: the user's preferences,
+where their projects are, how their setup works, fixes that worked. One fact per note, short
+and specific. Give it a short title. To change a note, pass its id as replaces. pinned=true
+only for things needed in nearly every chat (it is then always shown to you).""",
+      {"note": {"type": "string"},
+       "title": {"type": "string", "description": "A few words, e.g. 'Python projects folder'"},
+       "pinned": {"type": "boolean"},
+       "replaces": {"type": "integer", "description": "Id of a note this one corrects or updates"}},
+      required=["note"], risk_for=_remember_risk,
+      describe=lambda a: f"Save a note{' (pinned, shown in every chat)' if a.get('pinned') else ''}: "
+                         f"{str(a.get('note') or '')[:200]}")
+def remember(ctx: ToolContext, a: dict):
+    mem = _mem()
+    if a.get("replaces"):
+        try:
+            n = mem.update(int(a["replaces"]), body=a["note"], title=a.get("title"), pinned=a.get("pinned"))
+        except KeyError as e:
+            raise ToolError(str(e))
+        return f"Updated note #{n.id}."
+    n = mem.add(a["note"], a.get("title") or "", bool(a.get("pinned")))
+    return f"Saved as note #{n.id}."
+
+
+@tool("recall", """
+Search long-term memory: your saved notes, and an index of the user's files (the work folder
+and any folders they added). Use it when the user refers to something from before, or to find
+a file or project by what's in it. Returns only the best matches.""",
+      {"query": {"type": "string", "description": "A few key words"},
+       "where": {"type": "string", "enum": ["notes", "files", "both"], "description": "Default both"},
+       "limit": {"type": "integer", "description": "Default 8"}},
+      required=["query"])
+def recall(ctx: ToolContext, a: dict):
+    mem = _mem()
+    where = a.get("where") or "both"
+    limit = max(1, min(30, int(a.get("limit") or 8)))
+    out = []
+    if where in ("notes", "both"):
+        notes = mem.search_notes(a["query"], limit)
+        out.append("Notes:\n" + ("\n".join("- " + n.line() for n in notes) if notes else "(none match)"))
+    if where in ("files", "both"):
+        files = mem.search_files(a["query"], limit)
+        lines = [f"- {f.path}:{f.line}  {f.snippet[:200]}" for f in files]
+        if not mem.file_count():
+            lines = ["(the file index is empty or still being built)"]
+        out.append("Files:\n" + ("\n".join(lines) if lines else "(none match)"))
+    return "\n\n".join(out)
+
+
+@tool("forget", "Delete a note from long-term memory by its id (when it is wrong or out of date).",
+      {"id": {"type": "integer"}}, required=["id"])
+def forget(ctx: ToolContext, a: dict):
+    if not _mem().delete(int(a["id"])):
+        raise ToolError(f"There is no note #{a['id']}.")
+    return f"Deleted note #{a['id']}."
+
+
+@tool("index_folder", """
+Add a folder to the file index so recall can search it from now on (for example a projects or
+documents folder the user mentions). Indexing runs now; big folders can take a minute.""",
+      {"path": {"type": "string"}}, required=["path"])
+def index_folder(ctx: ToolContext, a: dict):
+    p = ctx.resolve(a["path"])
+    if not p.is_dir():
+        raise ToolError(f"Not a folder: {p}")
+    folders = list(ctx.settings.index_folders or [])
+    if str(p) not in folders:
+        folders.append(str(p))
+        ctx.settings.index_folders = folders
+        try:
+            ctx.settings.save()
+        except OSError:
+            pass
+    st = _mem().index_folder(p, ctx.stop)
+    return f"Indexed {p}: {st['seen']} files ({st['updated']} new or changed). recall can search it now."
 
 
 @tool("ask_user", """

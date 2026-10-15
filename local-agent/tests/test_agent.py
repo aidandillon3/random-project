@@ -177,13 +177,14 @@ class AgentLoopTest(Base):
 
 class ContextTest(Base):
     def test_images_pruned_in_batches(self):
-        agent, _ = self.make([], keep_images=2)
-        for i in range(4):
+        # max_images 4 is raised to keep + 4: clearing rewrites history, so never on every screenshot
+        agent, _ = self.make([], keep_images=2, max_images=4)
+        for i in range(6):
             agent._record_results([(type("C", (), {"id": f"i{i}", "name": "screenshot"})(),
                                     ToolResult("shot", images=[b"png"]))])
         count = lambda: sum(1 for m in agent.messages if isinstance(m.get("content"), list)
                             for p in m["content"] if p.get("type") == "image_url")
-        self.assertEqual(count(), 4)       # 4 <= keep + 2: nothing rewritten yet
+        self.assertEqual(count(), 6)       # 6 <= keep + 4: nothing rewritten yet
         agent._record_results([(type("C", (), {"id": "i5", "name": "screenshot"})(),
                                 ToolResult("shot", images=[b"png"]))])
         self.assertEqual(count(), 2)
@@ -192,6 +193,8 @@ class ContextTest(Base):
         big = "x" * 4000
         replies = [calls(("write_file", {"path": f"f{i}.txt", "content": big})) for i in range(6)] + [text("done")]
         agent, ui = self.make(replies, n_ctx=8000, approval_mode="auto")
+        # no room for a summary inside the conversation at this size: a transcript is summarized
+        self.srv.complete_reply = "SUMMARY: earlier work - the user wants files written; the first ones are done."
         out = agent.run("write many files")
         self.assertEqual(out, "done")
         self.assertTrue(any("Summarized" in n for n in ui.notices))
@@ -202,6 +205,119 @@ class ContextTest(Base):
         wire = agent.wire_messages()
         ids = {c["id"] for m in wire if m.get("tool_calls") for c in m["tool_calls"]}
         self.assertTrue(all(m["tool_call_id"] in ids for m in wire if m["role"] == "tool"))
+
+
+class MemoryTest(Base):
+    def test_matching_notes_are_attached_to_the_request(self):
+        from localagent.memory import get_memory
+
+        get_memory().add("Aidan's dog is called Biscuit", "Dog name")
+        get_memory().add("The router password is on the fridge", "Router")
+        agent, ui = self.make([text("Biscuit!")])
+        agent.run("what is my dog called")
+        sent = self.srv.requests[0]["messages"][1]["content"]
+        self.assertIn("Biscuit", sent)
+        self.assertNotIn("router", sent.lower())
+        self.assertEqual(agent.messages[0]["_shown"], "what is my dog called")
+
+    def test_pinned_notes_are_in_the_chats_context_note(self):
+        from localagent.memory import get_memory
+
+        get_memory().add("Always answer in British English", "Spelling", pinned=True)
+        agent, _ = self.make([text("ok")])
+        agent.run("hi")
+        # not in the system prompt, which stays the same across chats so the server's cache holds
+        self.assertNotIn("British English", agent.system_prompt())
+        self.assertIn("Always answer in British English", self.srv.requests[0]["messages"][1]["content"])
+
+    def test_saves_memories_after_a_bigger_task(self):
+        from localagent.memory import get_memory
+
+        todo = ("todo_write", {"todos": [{"content": "a", "status": "in_progress"}]})
+        agent, ui = self.make([calls(todo), calls(todo), calls(todo), text("All done."),
+                               text('Sure:\n```json\n[{"title": "Code editor", "note": "Aidan edits code in '
+                                    'VS Code", "replaces": null}]\n```')])
+        self.assertEqual(agent.run("set up my editor config"), "All done.")
+        self.assertEqual(len(self.srv.requests), 5)
+        ask = self.srv.requests[-1]
+        self.assertIn("Memory check", ask["messages"][-1]["content"])
+        # same tools and same conversation prefix as the last real step, so the prompt cache is reused
+        self.assertEqual(ask["tools"], self.srv.requests[-2]["tools"])
+        self.assertEqual(ask["messages"][:len(self.srv.requests[-2]["messages"])], self.srv.requests[-2]["messages"])
+        self.assertEqual(get_memory().search_notes("code editor")[0].body, "Aidan edits code in VS Code")
+        self.assertTrue(any(n.startswith("Remembered: Code editor") for n in ui.notices))
+        # the extra question isn't part of the conversation
+        self.assertNotIn("Memory check", json.dumps(agent.messages))
+
+    def test_no_memory_check_for_small_tasks_or_when_off(self):
+        agent, _ = self.make([calls(("todo_write", {"todos": []})), text("ok")])
+        agent.run("hi")
+        self.assertEqual(len(self.srv.requests), 2)
+        todo = ("todo_write", {"todos": []})
+        agent, _ = self.make([calls(todo), calls(todo), calls(todo), text("ok")], auto_memory=False)
+        agent.run("hi")
+        self.assertEqual(len(self.srv.requests), 4)
+
+
+class ThinkingTest(Base):
+    QWEN38 = "{%- if reasoning_effort == 'xhigh' %}..{%- elif reasoning_effort == 'medium' %}..{%- elif reasoning_effort == 'low' %}"
+    GPT_OSS = "Reasoning: {{ reasoning_effort | default('medium') }} {# low, 'medium' or \"high\" #} 'low' 'high'"
+
+    def test_levels_from_template(self):
+        from localagent.agent import effort_levels, pick_effort
+
+        self.assertEqual(effort_levels(self.QWEN38), ["low", "medium", "xhigh"])
+        self.assertEqual(effort_levels(self.GPT_OSS), ["low", "medium", "high"])
+        self.assertEqual(effort_levels("{% if enable_thinking %}"), [])
+        self.assertEqual(pick_effort("high", ["low", "medium", "xhigh"]), "xhigh")
+        self.assertEqual(pick_effort("medium", ["low", "high"]), "low")
+        self.assertEqual(pick_effort("low", ["medium", "xhigh"]), "medium")
+        self.assertIsNone(pick_effort("low", []))
+
+    def test_params_sent_to_the_server(self):
+        agent, _ = self.make([text("ok")], thinking="high")
+        agent.client._template = self.QWEN38
+        p = agent._params()
+        self.assertEqual(p["reasoning_effort"], "xhigh")
+        self.assertEqual(p["chat_template_kwargs"], {"enable_thinking": True, "reasoning_effort": "xhigh"})
+        agent.settings.thinking = "medium"
+        self.assertEqual(agent._params()["reasoning_effort"], "medium")
+        agent.settings.thinking = "off"
+        self.assertEqual(agent._params()["chat_template_kwargs"]["enable_thinking"], False)
+        agent.settings.thinking = "on"          # older settings files
+        self.assertEqual(agent._params()["reasoning_effort"], "xhigh")
+        agent.settings.thinking = "auto"
+        self.assertNotIn("chat_template_kwargs", agent._params())
+        # a model with only on/off: no level is sent
+        agent2, _ = self.make([text("ok")], thinking="low")
+        agent2.client._template = "{% if enable_thinking %}"
+        p = agent2._params()
+        self.assertNotIn("reasoning_effort", p)
+        self.assertTrue(p["chat_template_kwargs"]["enable_thinking"])
+
+
+class SamplingTest(Base):
+    def test_recommended_values_follow_thinking(self):
+        from localagent.guide import sampling_for
+
+        name = "Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
+        self.assertEqual(sampling_for(name)["temperature"], 1.0)
+        self.assertEqual(sampling_for(name, thinking=False)["presence_penalty"], 1.5)
+        self.assertEqual(sampling_for("Qwen3-8B-Q4_K_M.gguf", thinking=False)["top_p"], 0.8)
+        self.assertEqual(sampling_for("gpt-oss-20b", thinking=False)["temperature"], 1.0)
+        self.assertIsNone(sampling_for("mystery-model"))
+
+        agent, _ = self.make([text("ok")], temperature=0.3, thinking="high")
+        agent.client.model = name
+        agent.client._template = ""
+        p = agent._params()
+        self.assertEqual((p["temperature"], p["top_p"], p["presence_penalty"]), (1.0, 0.95, 0.0))
+        agent.settings.thinking = "off"
+        p = agent._params()
+        self.assertEqual((p["temperature"], p["top_p"], p["presence_penalty"]), (0.7, 0.8, 1.5))
+        agent.settings.auto_sampling = False      # manual values win when switched off
+        self.assertEqual(agent._params()["temperature"], 0.3)
+        self.assertNotIn("presence_penalty", agent._params())
 
 
 class ParsingTest(unittest.TestCase):
@@ -243,6 +359,18 @@ class ParsingTest(unittest.TestCase):
         self.assertFalse(p.needs_approval("edit", False))
         self.assertTrue(p.needs_approval("edit", True))
         self.assertIsNone(Policy("read_only").needs_approval("run", False))
+
+
+class SettingsTest(unittest.TestCase):
+    def test_old_reply_limit_moves_up_but_a_chosen_one_stays(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "old.json").write_text(json.dumps({"max_tokens": 8192}))
+        self.assertEqual(Settings.load(d / "old.json").max_tokens, 32768)
+        (d / "mine.json").write_text(json.dumps({"max_tokens": 4096}))
+        self.assertEqual(Settings.load(d / "mine.json").max_tokens, 4096)
+        s = Settings(max_tokens=8192)
+        s.save(d / "new.json")     # chosen again after the update: kept
+        self.assertEqual(Settings.load(d / "new.json").max_tokens, 8192)
 
 
 if __name__ == "__main__":

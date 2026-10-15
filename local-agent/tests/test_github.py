@@ -58,6 +58,22 @@ class FakeGitHub:
                     return self._send(200, [{"number": 12, "title": "Fix", "draft": True, "html_url": "u",
                                              "head": {"ref": "fix"}, "base": {"ref": "main"},
                                              "user": {"login": "aidan"}}])
+                if p == "/repos/aidan/proj/pulls/12":
+                    return self._send(200, {"number": 12, "title": "Fix", "html_url": "u", "state": "open",
+                                            "head": {"ref": "fix"}, "base": {"ref": "main"},
+                                            "user": {"login": "aidan"}, "body": "b", "comments": 130,
+                                            "review_comments": 1})
+                if p == "/repos/aidan/proj/pulls/12/files":
+                    return self._send(200, [{"status": "modified", "filename": "a.py", "additions": 1, "deletions": 0}])
+                if p == "/repos/aidan/proj/pulls/12/reviews":
+                    return self._send(200, [{"user": {"login": "rev"}, "state": "COMMENTED", "body": ""}])
+                if p == "/repos/aidan/proj/pulls/12/comments":
+                    return self._send(200, [{"user": {"login": "rev"}, "path": "a.py", "line": 3,
+                                             "body": "off by one here"}])
+                if p == "/repos/aidan/proj/issues/12/comments":
+                    page = int(dict(q.split("=") for q in self.path.split("?")[1].split("&")).get("page", 1))
+                    items = [{"user": {"login": "x"}, "body": f"c{i}"} for i in range(1, 131)]
+                    return self._send(200, items[(page - 1) * 100:page * 100])
                 if p == "/repos/aidan/proj/issues":
                     return self._send(200, [{"number": 3, "title": "Bug", "html_url": "u", "user": {"login": "x"}},
                                             {"number": 12, "title": "PR", "html_url": "u", "user": {"login": "x"},
@@ -149,6 +165,73 @@ class GitHubToolsTest(unittest.TestCase):
 
     def test_token_never_in_output(self):
         self.assertEqual(gh._redact(self.ctx, f"fatal: {TOKEN} oops"), "fatal: *** oops")
+        # without a ToolContext too, for every tool result: known tokens, their git header form, and
+        # anything shaped like a GitHub token
+        import base64
+
+        header = base64.b64encode(f"x-access-token:{TOKEN}".encode()).decode()
+        other = "ghp_" + "A1b2" * 9
+        out = gh.redact_all(f"{TOKEN} / {header} / {other} / github_pat_{'x' * 50}", self.ctx.settings)
+        self.assertEqual(out, "*** / *** / *** / ***")
+
+    def test_reads_dont_run_programs_from_the_repo_config(self):
+        repo = self.ws / "r"
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        marker = Path(tempfile.mkdtemp()) / "PWNED"
+        cfg = repo / ".git" / "config"
+        cfg.write_text(cfg.read_text().replace("[core]", f'[core]\n\tfsmonitor = "touch {marker}; false"'))
+        run(self.ctx, "git_status", path="r")
+        self.assertFalse(marker.exists())
+        target = Path(tempfile.mkdtemp()) / "planted"
+        with self.assertRaises(ToolError):
+            run(self.ctx, "git_diff", path="r", against=f"--output={target}")
+        self.assertEqual(list(target.parent.iterdir()), [])
+
+    @unittest.skipIf(sys.platform == "win32", "shell hook")
+    def test_no_hooks_run_while_the_token_is_passed(self):
+        run(self.ctx, "git_clone", repo=str(self.remote), folder="proj")
+        repo = self.ws / "proj"
+        marker = Path(tempfile.mkdtemp()) / "hook-ran"
+        hook = repo / ".git" / "hooks" / "pre-push"
+        hook.write_text(f'#!/bin/sh\ntouch {marker}\necho "$GIT_CONFIG_PARAMETERS" | rev >&2\n')
+        hook.chmod(0o755)
+        out = run(self.ctx, "git_push", path="proj")
+        self.assertFalse(marker.exists())
+        self.assertNotIn("redaehartxe", out)
+
+    def test_push_uploads_lfs_files_itself(self):
+        run(self.ctx, "git_clone", repo=str(self.remote), folder="proj")
+        (self.ws / "proj" / ".gitattributes").write_text("*.bin filter=lfs diff=lfs merge=lfs -text\n")
+        calls, orig = [], gh.git
+
+        def fake(ctx, args, **kw):
+            calls.append(args[0])
+            return "" if args[0] == "lfs" else orig(ctx, args, **kw)
+
+        gh.git = fake
+        try:
+            run(self.ctx, "git_push", path="proj")
+        finally:
+            gh.git = orig
+        self.assertLess(calls.index("lfs"), calls.index("push"))
+
+    def test_commit_lists_files_and_warns_about_secrets(self):
+        run(self.ctx, "git_clone", repo=str(self.remote), folder="proj")
+        repo = self.ws / "proj"
+        (repo / ".env").write_text("KEY=1\n")
+        (repo / "app.py").write_text("x = 1\n")
+        out = run(self.ctx, "git_commit", path="proj", message="Add app")
+        self.assertIn("2 file(s) in the commit", out)
+        self.assertIn("  app.py", out)
+        self.assertIn(".env: looks like keys or passwords", out)
+
+    def test_view_pr_shows_inline_and_latest_comments(self):
+        out = run(self.ctx, "github_view_pr", repo="aidan/proj", number=12)
+        self.assertIn("rev on a.py:3: off by one here", out)
+        self.assertIn("x: c130", out)
+        self.assertIn("x: c111", out)
+        self.assertNotIn("x: c110", out)
 
     def test_remote_detection(self):
         d = self.ws / "r"

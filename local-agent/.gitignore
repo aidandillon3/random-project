@@ -3,3 +3,6 @@ data/
 llama.cpp/
 models/
 __pycache__/
+strata/
+strata.new/
+Strata-data/
