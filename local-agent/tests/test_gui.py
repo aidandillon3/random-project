@@ -975,8 +975,23 @@ class DesktopGuiTest(unittest.TestCase):
             self.assertTrue(dlg.wsl_btn.isVisibleTo(dlg))
             self.assertEqual(dlg.wsl_btn.text(), "Turn on virtual machines...")
             dlg.wsl_btn.click()
-            install_wsl.assert_called_once()
+            install_wsl.assert_called_once_with("vm")
             self.assertIn("restart the PC", dlg.msg.text())
+
+        def no_wsl1(progress, log, stop):
+            raise self.vd.NoWsl1(self.vd.NO_WSL1)
+
+        with mock.patch.object(self.vd, "status", lambda: {"kind": "wsl", "running": False, "installed": False,
+                                                           "problem": "", "wsl": True, "needs": ""}), \
+                mock.patch.object(self.vd, "install", no_wsl1), mock.patch.object(self.vd, "install_wsl") as install_wsl:
+            dlg = self.gui.DesktopSetupDialog()
+            self.assertTrue(self.wait_until(lambda: dlg.go.isEnabled()))
+            dlg.go.click()
+            self.assertTrue(self.wait_until(lambda: not dlg.running))
+            self.assertEqual(dlg.msg.text(), self.vd.NO_WSL1)
+            self.assertEqual(dlg.wsl_btn.text(), "Turn on WSL 1...")
+            dlg.wsl_btn.click()
+            install_wsl.assert_called_once_with("wsl1")
 
 
 if __name__ == "__main__":

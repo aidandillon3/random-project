@@ -37,6 +37,19 @@ if [ -n "$WORK" ]; then
 fi
 mountpoint -q "$H/Work" || chown agent:agent "$H/Work"
 
+# WSL 1 (no virtual machine; its kernel name ends in "-Microsoft") lacks some of what Linux programs
+# expect: shared memory for Firefox and LibreOffice, and the kernel features Firefox's own sandbox is
+# built on (the whole computer is the agent's sandbox here).
+EXTRA=""
+case "$(uname -r)" in
+    *-Microsoft)
+        mountpoint -q /dev/shm 2>/dev/null || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm >&2 || true
+        EXTRA="MOZ_DISABLE_CONTENT_SANDBOX=1 MOZ_DISABLE_GMP_SANDBOX=1 MOZ_DISABLE_RDD_SANDBOX=1"
+        EXTRA="$EXTRA MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1 MOZ_DISABLE_UTILITY_SANDBOX=1"
+        ;;
+esac
+
+# shellcheck disable=SC2086 # EXTRA is a list of NAME=value words
 exec runuser -u agent -- env -i HOME="$H" USER=agent LOGNAME=agent SHELL=/bin/bash LANG=C.UTF-8 \
-    PATH=/usr/local/bin:/usr/bin:/bin \
+    PATH=/usr/local/bin:/usr/bin:/bin $EXTRA \
     /opt/localagent/venv/bin/python -u /opt/localagent/app/guest.py --size "$SIZE" --work "$H/Work"

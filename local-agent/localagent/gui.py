@@ -1021,8 +1021,9 @@ class _SetupSignals(QObject):
     done = Signal(object, object)
 
 
-SETUP_TEXT = ("This adds a computer of the agent's own: Ubuntu Linux in WSL, with Firefox, LibreOffice, a file "
-              "manager and a terminal. Its screen exists only in memory, so the agent never takes over your mouse, "
+SETUP_TEXT = ("This adds a computer of the agent's own: Ubuntu Linux in WSL 1 (no virtual machine, so it doesn't "
+              "need Windows' hypervisor), with Firefox, LibreOffice, a file manager and a terminal. Its screen "
+              "exists only in memory, so the agent never takes over your mouse, "
               "keyboard or screen. It can't see your drives or start Windows programs; only the work folder is "
               "shared with it (as ~/Work).\n\nSetup downloads about 390 MB of Ubuntu, then about 1 GB of programs, "
               "and needs about 3 GB of disk space next to this app. It takes a few minutes, and you can keep "
@@ -1057,6 +1058,7 @@ class DesktopSetupDialog(QDialog):
         self.log.setVisible(False)
         lay.addWidget(self.log, 1)
         row = QHBoxLayout()
+        self.need = "wsl"
         self.wsl_btn = QPushButton("Install WSL...")
         self.wsl_btn.setToolTip("Windows asks for permission. Restart the PC when its window says it's done.")
         self.wsl_btn.clicked.connect(self._install_wsl)
@@ -1098,7 +1100,9 @@ class DesktopSetupDialog(QDialog):
         """Windows lacks something only the user can add (with admin permission and a restart)."""
         self.msg.setText(text)
         self.msg.setStyleSheet(f"color: {BAD};")
-        self.wsl_btn.setText("Turn on virtual machines..." if need == "vm" else "Install WSL...")
+        self.need = need
+        labels = {"vm": "Turn on virtual machines...", "wsl1": "Turn on WSL 1..."}
+        self.wsl_btn.setText(labels.get(need, "Install WSL..."))
         self.wsl_btn.setVisible(True)
         self._fit()
 
@@ -1107,7 +1111,6 @@ class DesktopSetupDialog(QDialog):
         if not self.running and not self.log.toPlainText().strip():
             self.log.setVisible(False)
             self.bar.setVisible(False)
-            self.bar.setVisible(False)
         self.layout().activate()
         h = self.heightForWidth(self.width())
         if h > self.height() or (h > 0 and not self.log.isVisible()):
@@ -1115,14 +1118,14 @@ class DesktopSetupDialog(QDialog):
 
     def _install_wsl(self):
         try:
-            vdesktop.install_wsl()
+            vdesktop.install_wsl(self.need)
         except OSError as e:
             self.msg.setText(f"Couldn't start the WSL install: {e}")
             return
         self.msg.setStyleSheet("")
-        self.msg.setText("Windows asks for permission, then installs WSL and turns on virtual machines in its own "
-                         "window. When that window says it's done, restart the PC (even if it doesn't ask), then "
-                         "come back here and press Set up.")
+        self.msg.setText("Windows asks for permission, then switches on what's missing in a window of its own. When "
+                         "that window says it's done, restart the PC (even if it doesn't ask), then come back here "
+                         "and press Set up.")
 
     def _go(self):
         self.running = True
@@ -1159,8 +1162,8 @@ class DesktopSetupDialog(QDialog):
         self.bar.setRange(0, 1000)
         if isinstance(err, vdesktop.Stopped):
             self.msg.setText("Cancelled. Press Set up again to carry on; the download resumes where it stopped.")
-        elif isinstance(err, vdesktop.NoVirtualMachines):
-            self._needs("vm", str(err))
+        elif isinstance(err, vdesktop.WindowsFeatureMissing):
+            self._needs(err.need, str(err))
         elif err:
             self.msg.setText(f"Setup didn't finish: {err}")
             self.msg.setStyleSheet(f"color: {BAD};")
@@ -3053,7 +3056,8 @@ class SettingsPage(QWidget):
                 self.vd_status.setText(f"Couldn't check: {err}")
                 return
             running = " It's running now." if info["running"] else ""
-            self.vd_status.setText(("Set up." + running) if info["installed"] else
+            how = vdesktop.VERSION_NOTE.get(info.get("wsl_version"))
+            self.vd_status.setText((f"Set up{f' ({how})' if how else ''}." + running) if info["installed"] else
                                    (info["problem"] or "Not set up yet: a one-time download."))
             self.vd_setup.setText("Update / repair..." if info["installed"] else "Set up...")
             self.vd_remove.setVisible(info["installed"] and info["kind"] == "wsl")
