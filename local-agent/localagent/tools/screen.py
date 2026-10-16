@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import ctypes
 import io
+import shutil
+import subprocess
 import sys
 import time
 
@@ -254,7 +256,8 @@ def scroll(ctx: ToolContext, a: dict):
     g = _gui()
     if a.get("x") is not None and a.get("y") is not None:
         g.moveTo(*to_screen(ctx, a["x"], a["y"]), duration=0.1)
-    g.scroll(-int(a["amount"]) * 120)
+    # Windows counts wheel movement in 120ths of a notch, X11 in notches
+    g.scroll(-int(a["amount"]) * (120 if WINDOWS else 1))
     return after_action(ctx, f"Scrolled {a['amount']}.")
 
 
@@ -331,9 +334,48 @@ def _windows():
     return [w for w in gw.getAllWindows() if w.title.strip() and w.width > 0 and w.visible]
 
 
+def _x11(*args: str) -> str:
+    try:
+        r = subprocess.run(list(args), capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise ToolError(f"{args[0]} didn't run: {e}")
+    if r.returncode != 0:
+        raise ToolError(f"{args[0]} failed: {(r.stderr or r.stdout).strip()[:300]}")
+    return r.stdout
+
+
+def _x11_windows() -> list[dict]:
+    """The windows of a Linux desktop (the virtual computer), from wmctrl. Panels are left out."""
+    wins = []
+    for line in _x11("wmctrl", "-lG").splitlines():
+        parts = line.split(None, 7)    # id, desktop, x, y, width, height, host, title
+        if len(parts) < 8 or parts[1] == "-1":      # -1: shown on every desktop, i.e. the panel
+            continue
+        try:
+            wid, left, top, width, height = int(parts[0], 16), *(int(v) for v in parts[2:6])
+        except ValueError:
+            continue
+        if parts[7].strip() and width > 0:
+            wins.append({"id": wid, "title": parts[7].strip(), "left": left, "top": top, "width": width,
+                         "height": height})
+    return wins
+
+
+def _x11_active() -> int | None:
+    try:
+        return int(_x11("xdotool", "getactivewindow").strip())
+    except (ToolError, ValueError):
+        return None
+
+
 @tool("list_windows", "List the open windows (title, position, size, and which one is active).", {},
       group="control")
 def list_windows(ctx: ToolContext, a: dict):
+    if not WINDOWS:
+        active = _x11_active()
+        lines = [f"{'* ' if w['id'] == active else '  '}{w['title']}  [{w['left']},{w['top']} "
+                 f"{w['width']}x{w['height']}]" for w in _x11_windows()]
+        return "Open windows (* = active):\n" + "\n".join(lines) if lines else "No windows are open."
     import pygetwindow as gw
 
     wins = _windows()
@@ -351,6 +393,12 @@ def list_windows(ctx: ToolContext, a: dict):
       describe=lambda a: f"Bring '{a.get('title')}' to the front")
 def focus_window(ctx: ToolContext, a: dict):
     want = a["title"].lower()
+    if not WINDOWS:
+        found = [w for w in _x11_windows() if want in w["title"].lower()]
+        if not found:
+            raise ToolError(f"No window title contains '{a['title']}'. Use list_windows.")
+        _x11("wmctrl", "-i", "-a", hex(found[0]["id"]))     # also brings it back when minimized
+        return after_action(ctx, f"Focused '{found[0]['title']}'.")
     matches = [w for w in _windows() if want in w.title.lower()]
     if not matches:
         raise ToolError(f"No window title contains '{a['title']}'. Use list_windows.")
@@ -391,7 +439,6 @@ Open a program, file, folder or web address the way double-clicking would, e.g. 
       risk_for=_open_risk, describe=lambda a: f"Open {a.get('target')}")
 def open_target(ctx: ToolContext, a: dict):
     import os
-    import subprocess
 
     target = str(a["target"]).strip()
     p = ctx.resolve(target)
@@ -402,7 +449,19 @@ def open_target(ctx: ToolContext, a: dict):
         except OSError as e:
             raise ToolError(f"Windows couldn't open {target}: {e}")
     else:
-        subprocess.Popen(["xdg-open", str(p) if p.exists() else target])
+        if p.exists() or "://" in target or target.startswith("mailto:"):
+            cmd = ["xdg-open", str(p) if p.exists() else target]
+        else:   # a program, by name only: no arguments, like Windows' startfile
+            prog = shutil.which(target)
+            if not prog:
+                raise ToolError(f"There's no file, folder or program called '{target}'. Give a program name "
+                                "(e.g. firefox), a path or a web address.")
+            cmd = [prog]
+        try:
+            subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except OSError as e:
+            raise ToolError(f"Couldn't open {target}: {e}")
     time.sleep(1.5)
     return after_action(ctx, f"Opened {target}.")
 

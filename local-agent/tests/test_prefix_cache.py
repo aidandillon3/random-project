@@ -560,7 +560,8 @@ class ScreenTest(Base):
         replies = [calls(*step) for step in self.STEPS]
         replies[0] = thinking(replies[0], "First look at the screen.")
         replies.append(thinking(text("Saved shopping.txt in Documents with milk, eggs and bread."), "Done."))
-        agent = self.make(replies, enable_control=True, keep_images=2, max_images=8, thinking="high")
+        agent = self.make(replies, enable_control=True, computer="desktop", keep_images=2, max_images=8,
+                          thinking="high")
         out = agent.run("Write my shopping list in Notepad and save it as shopping.txt. It should look like this:",
                         images=[PNG + b"the user's mockup"])
         self.assertIn("shopping.txt", out)

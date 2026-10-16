@@ -19,8 +19,8 @@ read and change files, run commands, see the screen, and use the mouse and keybo
 # How to work
 - Do the task, don't just describe it. Use tools to look things up instead of guessing.
 - For tasks with 3 or more steps, write a plan with todo_write first and keep it updated.
-- Prefer the most direct, reliable tool: files and commands over clicking around; ui_elements
-  and click_element over clicking by coordinates; keyboard shortcuts when you know them.
+- Prefer the most direct, reliable tool: files and commands over clicking around; {ui}keyboard
+  shortcuts when you know them.
 - After acting on the screen, look at the result (actions return a screenshot) before the next
   step. If something didn't work, try a different approach rather than repeating it.
 - Before editing a file, read it. Make small, exact edits with edit_file.
@@ -31,7 +31,7 @@ read and change files, run commands, see the screen, and use the mouse and keybo
 - Long-term memory: notes that match the request are attached to it. Use recall to search
   older notes and the user's files. Save lasting facts with remember (one fact per note), fix
   wrong ones with remember(replaces=id) or forget.
-{coding}{unity}- When finished, reply briefly with what you did and anything the user should check.
+{coding}{unity}{virtual}- When finished, reply briefly with what you did and anything the user should check.
 
 # Environment
 - OS: {os}. Shell for run_command: {shell}.
@@ -84,6 +84,14 @@ UNITY_LITE = """- Unity games: unity_status finds an open Unity editor, and unit
   project to this app (once per project). The other Unity tools are added once one is connected.
 """
 
+VIRTUAL = """- Your screen tools (screenshot, click, type_text, open...) work on your own virtual computer,
+  not on the user's screen: Ubuntu Linux with Firefox, LibreOffice (lowriter, localc, loimpress),
+  a file manager (pcmanfm), a text editor (mousepad) and a terminal (xterm). The user can watch
+  it. {work} Your other tools (files, run_command...) still work on the user's PC.
+"""
+VIRTUAL_WORK = "Its ~/Work folder is the work folder, so files saved there are on the user's PC too."
+VIRTUAL_OWN = "Its ~/Work folder is its own, not the user's work folder."
+
 GITHUB_ONLY = """- For code changes on GitHub: git_clone, git_branch to a new branch, edit, git_commit,
   git_push, then github_create_pr. Don't push straight to main unless asked.
 """
@@ -117,11 +125,16 @@ def build_system_prompt(settings, workspace: Path, tools, coords: str, shell: st
     else:
         coding = GITHUB_ONLY if "git_push" in names else ""
     unity = UNITY if "unity_hierarchy" in names else UNITY_LITE if "unity_status" in names else ""
+    virtual = ""
+    if "screenshot" in names and getattr(settings, "computer", "desktop") == "virtual":
+        virtual = VIRTUAL.format(work=VIRTUAL_WORK if getattr(settings, "desktop_share_work", True) else VIRTUAL_OWN)
     text = SYSTEM.format(
         os=f"{platform.system()} {platform.release()}",
         shell=shell,
         coding=coding,
         unity=unity,
+        virtual=virtual,
+        ui="ui_elements and click_element over clicking by coordinates; " if "ui_elements" in names else "",
     )
     if prompt_mode:
         specs = [t.schema()["function"] for t in tools]

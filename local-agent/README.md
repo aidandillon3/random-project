@@ -1,8 +1,9 @@
 # Local Agent: a Claude-style AI helper that runs fully on your own PC
 
 A chat app where a local AI model can actually do things on your computer: read and edit files,
-run commands, **see your screen**, click, type, open programs, search the web, plan multi-step
-work and remember things between chats. Nothing goes to the cloud: the model runs on your GPU.
+run commands, click, type and open programs on **a virtual computer of its own** (so your desktop
+is left alone) or on your real screen, search the web, plan multi-step work and remember things
+between chats. Nothing goes to the cloud: the model runs on your GPU.
 
 It also starts the model for you, with the speed settings worked out for an
 **RTX 5080 (16 GB) + 64 GB RAM**.
@@ -48,7 +49,7 @@ aren't `.gguf` files you can browse to, so for Ollama models use Ollama itself.)
 |---|---|
 | Files | read (with line numbers, also shows images), write, exact edit, list, find by name, search inside files, move, copy, delete (to the Recycle Bin) |
 | Commands | run PowerShell commands, run long ones in the background and check on them, run Python scripts |
-| Screen | screenshot (with the mouse pointer marked), zoom in to read small text, click, double/right click, drag, scroll, type, key shortcuts, list and focus windows, open programs/files/links, read the buttons and menus of the active window and click them by name, clipboard |
+| Screen | on its [virtual computer](#its-own-virtual-computer) or your desktop: screenshot (with the mouse pointer marked), zoom in to read small text, click, double/right click, drag, scroll, type, key shortcuts, list and focus windows, open programs/files/links, clipboard; on your desktop also read the buttons and menus of the active window and click them by name |
 | Web | search (DuckDuckGo, no account), read pages |
 | Git and GitHub | clone, status, diff, log, branch, commit, pull, push; list your repos; list, read and open pull requests (and ask for reviewers); list and open issues; comment |
 | Coding | work in a private git copy of a repo, run the tests until they pass, map a project's classes and functions, several exact edits at once, a syntax check after every edit |
@@ -206,12 +207,35 @@ in Settings > GitHub. It never force-pushes.
 In the approval box you can also pick **Allow all ... for this chat**, or **Deny** and type what
 it should do instead. Deleted files go to the Recycle Bin.
 
-**Emergency stop:** press **Stop** (or Esc), or slam the mouse into any screen corner while it is
-controlling the mouse.
+**Emergency stop:** press **Stop** (or Esc). When it uses your real desktop, you can also slam the
+mouse into any screen corner.
 
-The app minimizes itself while the AI uses the screen, so it doesn't click on its own window
-(Settings > Screen to change that). If you have two monitors, you can also put the app on one and
-tell it to work on the other (Settings > Screen > Which screen).
+## Its own virtual computer
+
+By default the clicking and typing don't happen on your screen. The agent gets a computer of its
+own, the way Claude's computer use works: **Ubuntu Linux in WSL**, with Firefox, LibreOffice
+(Writer, Calc, Impress), a file manager, a text editor and a terminal. Its screen exists only in
+memory, so it never moves your mouse, types into your windows or pops anything up on your desktop.
+
+- **Watch it:** the chat's right column shows its screen live, with a ring where it last clicked,
+  and a list of everything it did there (✓ done, ✗ failed and why). **Watch** opens a big view.
+- **Use it yourself:** tick **Let me use it** in the big view, and your clicks, scrolling and typing
+  go to the virtual computer, for example to sign in to a website for it.
+- **Sealed off from Windows:** it can't see your drives or start Windows programs (WSL's drive
+  mounts and Windows interop are switched off for it, and it runs as an account without admin
+  rights). Only the **work folder** is shared, as `~/Work`, so what it saves there lands on your
+  PC. Its other tools (files, commands) still work on your PC as before, with the same approvals.
+- **Set up once:** press **Set up...** in the right column (or Settings > Where it clicks and
+  types). It downloads Ubuntu (about 390 MB) and then about 1 GB of programs, and takes about 3 GB
+  of disk next to the app. If WSL isn't on the PC yet, the same window offers to install it
+  (Windows asks for permission, and may want a restart).
+- **Memory:** it starts when the agent first needs it and stops when you quit, after 30 minutes
+  unused, or with **Stop**. The desktop itself takes about 150 MB of RAM, about 500 MB with
+  LibreOffice open, more with Firefox, plus what WSL itself keeps.
+- **Your real desktop instead:** Settings > Where it clicks and types > *Your real desktop*. Then
+  the app minimizes itself while the AI uses the screen (Settings > Screen to change that). With
+  two monitors you can put the app on one and tell it to work on the other (Settings > Screen >
+  Which screen).
 
 ## Models for a 5080 (16 GB) + 64 GB RAM
 
@@ -281,6 +305,8 @@ start. Sampling follows the model maker's recommended values by itself (Settings
 | "Can't reach the model server" | Start the model on the Model server page, or check the address in Settings |
 | The server stops right after starting | Read the log under the Start button. "out of memory": pick a shorter context or q4_0 KV cache. "CUDA driver version is insufficient": update the NVIDIA driver |
 | It writes tool calls as plain text, or ignores tools | Use a model made for tool calling (the list above). The app already starts llama.cpp with `--jinja`, which most models need |
+| The virtual computer won't start | Press **Update / repair...** in Settings > Where it clicks and types. Its log is `data/vdesktop/desktop.log` |
+| Firefox is missing on the virtual computer | Setup gets it from Mozilla; if that was down, press **Update / repair...** to try again |
 | Clicks land in the wrong place | Settings > Screen > Click coordinates: try the other option. Turning on the grid also helps smaller models aim |
 | Unity tools say no editor is running | Open the project in Unity, then ask it to set up Unity for that project. If the scripts have compile errors, choose *Ignore* when Unity offers Safe Mode |
 | It can't see screenshots | Press **Find vision file online** on the Model server page, and keep "Let it see images" on |
@@ -293,5 +319,7 @@ start. Sampling follows the model maker's recommended values by itself (Settings
 - `localagent/tools/unity.py` + `unity/LocalAgentBridge.cs`: the Unity tools and the editor script they talk to.
 - `localagent/tools/`: every tool; adding one is a single decorated function.
 - `localagent/mcp.py` + `plugins.py`: MCP servers and plugin files as extra tools.
+- `localagent/vdesktop/`: the virtual computer: setting it up in WSL, `start.sh` and `setup.sh`
+  inside it, and `guest.py`, which runs the same screen tools on its hidden screen.
 - `localagent/launcher.py` + `gguf.py`: reads the model file header and plans GPU/RAM placement.
 - `tests/`: run `python -m pytest tests` (uses a fake model server; no GPU needed).
