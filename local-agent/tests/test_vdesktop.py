@@ -520,7 +520,10 @@ class SetupTest(Base):
         cmd = popen.call_args[0][0]
         self.assertEqual(cmd[:3], ["powershell", "-NoProfile", "-Command"])
         self.assertIn("-Verb RunAs", cmd[3])
-        self.assertIn("wsl.exe --install --no-distribution", cmd[3])
+        for step in vdesktop.WSL_FIX:
+            self.assertIn(step, cmd[3])
+        self.assertIn("/featurename:VirtualMachinePlatform", cmd[3])
+        self.assertIn("hypervisorlaunchtype auto", cmd[3])
         self.assertIn("restart the PC", cmd[3])
         self.assertTrue(cmd[3].endswith("& pause'"))
         inner = cmd[3].split("-ArgumentList '", 1)[1][:-1]

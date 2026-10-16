@@ -69,8 +69,9 @@ NO_WSL = ("WSL isn't installed. Press \"Install WSL\" (Windows asks for permissi
 NO_VM = ("WSL can't start virtual machines on this PC yet: Windows' \"Virtual Machine Platform\" is off, or "
          "waiting for a restart.\n"
          "1. If WSL was installed or updated just now, restart the PC, then press Set up again.\n"
-         "2. Otherwise press \"Turn on virtual machines\" in the setup window (Windows asks for permission), "
-         "restart the PC when it has finished, then press Set up again.\n"
+         "2. Otherwise press \"Turn on virtual machines\" in the setup window (Windows asks for permission). It "
+         "switches on the Virtual Machine Platform and the Windows hypervisor. Restart the PC when it has finished, "
+         "then press Set up again.\n"
          "3. If it still fails, open Task Manager > Performance > CPU. If it says \"Virtualization: Disabled\", "
          "switch on SVM (AMD) or VT-x (Intel) in the PC's BIOS settings.")
 NO_VM_SIGNS = re.compile(r"HCS_E_SERVICE_NOT_AVAILABLE|HCS_E_HYPERV_NOT_INSTALLED|0x80370114|0x80370102|"
@@ -163,13 +164,21 @@ def wsl_ready() -> bool:
     return wsl_status()[0]
 
 
+# Install WSL without a Linux distribution, make sure the Virtual Machine Platform is on (an existing
+# WSL install can leave it off) and that Windows starts its hypervisor at boot (something can have set
+# that to off). Each is a no-op when it's already so.
+WSL_FIX = ["wsl.exe --install --no-distribution",
+           "dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart",
+           "bcdedit.exe /set hypervisorlaunchtype auto"]
+
+
 def install_wsl() -> None:
-    """Install WSL itself, without a Linux distribution; that also turns on the Virtual Machine Platform.
-    Windows asks for admin permission. The window stays open at the end so its "restart" note can be read."""
+    """Run WSL_FIX in a console window as admin (Windows asks for permission). The window stays open at
+    the end so what it says, and the note to restart, can be read."""
     note = "When it has finished, restart the PC, then press Set up again in Local Agent."
+    steps = " & ".join([*WSL_FIX, "echo.", f"echo {note}", "pause"])
     subprocess.Popen(["powershell", "-NoProfile", "-Command",
-                      f"Start-Process cmd.exe -Verb RunAs -ArgumentList '/c wsl.exe --install --no-distribution "
-                      f"& echo. & echo {note} & pause'"],
+                      f"Start-Process cmd.exe -Verb RunAs -ArgumentList '/c {steps}'"],
                      creationflags=_flags())
 
 

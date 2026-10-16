@@ -1107,6 +1107,7 @@ class DesktopSetupDialog(QDialog):
         if not self.running and not self.log.toPlainText().strip():
             self.log.setVisible(False)
             self.bar.setVisible(False)
+            self.bar.setVisible(False)
         self.layout().activate()
         h = self.heightForWidth(self.width())
         if h > self.height() or (h > 0 and not self.log.isVisible()):
