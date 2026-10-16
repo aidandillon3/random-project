@@ -69,6 +69,10 @@ def enabled_tools(settings, depth: int = 0, workspace=None, full=()) -> list[Too
         tools = [t for t in tools if t.group != "github" or t.name in LOCAL_GIT]
     if depth > 0:  # helpers work quietly: no questions to the user
         tools = [t for t in tools if t.name != "ask_user"]
+    if "control" in groups and getattr(settings, "computer", "desktop") == "virtual":
+        from .. import vdesktop      # the screen tools act on the virtual computer instead of this PC
+
+        tools = vdesktop.wrap_tools(tools)
     return tools
 
 

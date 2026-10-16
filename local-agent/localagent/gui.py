@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import copy
+import gc
 import json
+import queue
 import threading
 import time
+import weakref
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QImage, QKeySequence, QPalette, QPixmap, QShortcut
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPointF, QRectF, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QColor, QDesktopServices, QFont, QImage, QKeySequence, QPainter, QPalette, QPen, QPixmap, QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
@@ -17,7 +22,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import catalog, launcher, mcp, plugins, strata
+from . import catalog, launcher, mcp, plugins, strata, vdesktop
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import gpu_info, model_info
@@ -107,6 +112,34 @@ def in_background(fn, done, poll_ms: int = 50) -> threading.Thread:
 
     QTimer.singleShot(poll_ms, check)
     return t
+
+
+class GuiThreadGC(QObject):
+    """Python collects reference cycles in whichever thread happens to trigger it, often the agent's
+    or a download's. When that garbage holds Qt objects (a closed dialog, an old window), PySide has
+    to delete them off the GUI thread, which can crash the app. So while the window is up, automatic
+    collection is off and this timer runs the same collections on the GUI thread instead."""
+
+    def __init__(self, interval_ms: int = 500):
+        super().__init__()
+        self.threshold = gc.get_threshold()
+        self.timer = QTimer(self, interval=interval_ms, timeout=self.check)
+
+    def start(self) -> "GuiThreadGC":
+        if self.threshold[0] and gc.isenabled():
+            gc.disable()
+            self.timer.start()
+        return self
+
+    def stop(self):
+        if self.timer.isActive():
+            self.timer.stop()
+            gc.enable()
+
+    def check(self):
+        (t0, t1, t2), (c0, c1, c2) = self.threshold, gc.get_count()
+        if c0 > t0:
+            gc.collect(2 if c1 > t1 and c2 > t2 else 1 if c1 > t1 else 0)
 
 
 def _stop_background(agent) -> None:
@@ -410,9 +443,14 @@ class GuiUI(AgentUI):
     def assistant_end(self, turn):
         self.b.assistant_end.emit(turn)
 
-    def tool_start(self, call_id, name, args, summary):
+    def _hide_for(self, name) -> bool:
+        """Get out of the way of the screen tools, unless they use the virtual computer."""
         tool = REGISTRY.get(name)
-        if tool and tool.group == "control" and self.settings.extra.get("minimize_during_control", True):
+        return bool(tool and tool.group == "control" and self.settings.computer != "virtual"
+                    and self.settings.extra.get("minimize_during_control", True))
+
+    def tool_start(self, call_id, name, args, summary):
+        if self._hide_for(name):
             self._wait(self.b.hide_window, True)
         self.b.tool_start.emit(call_id, name, args, summary)
 
@@ -441,8 +479,7 @@ class GuiUI(AgentUI):
 
     def approve(self, req):
         d = self._wait(self.b.approval, req)
-        tool = REGISTRY.get(req.tool)
-        if d and d.allow and tool and tool.group == "control" and self.settings.extra.get("minimize_during_control", True):
+        if d and d.allow and self._hide_for(req.tool):
             self._wait(self.b.hide_window, True)   # the dialog brought the window back; get out of the way again
         return d or Decision(False, note="Stopped by the user.")
 
@@ -451,13 +488,15 @@ class GuiUI(AgentUI):
 
 
 class ApprovalDialog(QDialog):
-    def __init__(self, req: ApprovalRequest, parent=None):
+    def __init__(self, req: ApprovalRequest, parent=None, virtual: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Allow this action?")
         self.setMinimumWidth(560)
         self.decision = Decision(False)
         lay = QVBoxLayout(self)
-        head = QLabel(f"The AI wants to {risk_text(req.risk)}.")
+        # virtual: a screen tool on the virtual computer, not on this PC
+        self.head = head = QLabel("The AI wants to use its virtual computer (not your desktop)." if virtual else
+                                  f"The AI wants to {risk_text(req.risk)}.")
         head.setStyleSheet("font-size: 12pt; font-weight: 600;")
         head.setTextFormat(Qt.PlainText)
         head.setWordWrap(True)
@@ -487,7 +526,9 @@ class ApprovalDialog(QDialog):
         allow.clicked.connect(lambda: self._done(True, False))
         row.addWidget(allow)
         if not req.dangerous:
-            always = QPushButton(f"Allow all '{RISK_LABELS.get(req.risk, req.risk)}' for this chat")
+            label = ("use the virtual computer" if virtual and req.risk == "control" else
+                     RISK_LABELS.get(req.risk, req.risk))
+            always = QPushButton(f"Allow all '{label}' for this chat")
             always.setAutoDefault(False)
             always.clicked.connect(lambda: self._done(True, True))
             row.addWidget(always)
@@ -505,6 +546,621 @@ class ApprovalDialog(QDialog):
 
     def reject(self):
         self.decision = Decision(False, note=self.note.text().strip())
+        super().reject()
+
+
+# ====================================================================== virtual computer
+class DesktopEvents:
+    """The virtual computer's events (from the agent's and its own threads) for the side panel and the
+    watch window. They cross over in a plain queue that a timer empties on the window's thread: no Qt
+    call happens on another thread, where a widget being deleted at the same moment could crash it."""
+
+    def __init__(self):
+        self.q: queue.SimpleQueue = queue.SimpleQueue()
+        self.subs: list = []
+        self.heard = None              # the Desktop it listens to
+        self.timer = QTimer(interval=100, timeout=self.drain)
+        self.timer.start()
+
+    def subscribe(self, method) -> None:
+        self._listen()
+        self.subs.append(weakref.WeakMethod(method))
+
+    def _listen(self):
+        d = vdesktop.desktop()
+        if self.heard is not d:
+            d.listen(self.q.put)
+            self.heard = d
+
+    def drain(self) -> None:
+        self._listen()
+        while True:
+            try:
+                ev = self.q.get_nowait()
+            except queue.Empty:
+                return
+            for ref in list(self.subs):
+                fn = ref()
+                try:
+                    if fn is None:
+                        raise RuntimeError("gone")
+                    fn(ev)
+                except RuntimeError:          # its widget has been deleted
+                    if ref in self.subs:
+                        self.subs.remove(ref)
+
+
+_desktop_events: DesktopEvents | None = None
+
+
+def desktop_events() -> DesktopEvents:
+    global _desktop_events
+    if _desktop_events is None:
+        _desktop_events = DesktopEvents()
+    return _desktop_events
+
+
+DESKTOP_STATES = {"running": ("Running", OK), "starting": ("Starting...", WARN), "error": ("Problem", BAD),
+                  "stopped": ("Stopped", "#6b717c")}
+QT_KEYS = {Qt.Key_Return: "enter", Qt.Key_Enter: "enter", Qt.Key_Backspace: "backspace", Qt.Key_Tab: "tab",
+           Qt.Key_Escape: "esc", Qt.Key_Delete: "delete", Qt.Key_Insert: "insert", Qt.Key_Home: "home",
+           Qt.Key_End: "end", Qt.Key_PageUp: "pageup", Qt.Key_PageDown: "pagedown", Qt.Key_Left: "left",
+           Qt.Key_Right: "right", Qt.Key_Up: "up", Qt.Key_Down: "down", Qt.Key_Space: "space",
+           **{getattr(Qt, f"Key_F{i}"): f"f{i}" for i in range(1, 13)}}
+
+
+def key_input(e) -> dict | None:
+    """A key pressed in the live view, as the virtual computer's input: text, or a key with modifiers."""
+    mods = e.modifiers()
+    held = [name for flag, name in ((Qt.ControlModifier, "ctrl"), (Qt.AltModifier, "alt"), (Qt.MetaModifier, "win"))
+            if mods & flag]
+    key = QT_KEYS.get(e.key())
+    if key is None and held and (Qt.Key_A <= e.key() <= Qt.Key_Z or Qt.Key_0 <= e.key() <= Qt.Key_9):
+        key = chr(e.key()).lower()
+    if key and (held or key != "space"):
+        if mods & Qt.ShiftModifier:
+            held.append("shift")
+        return {"kind": "keys", "keys": "+".join(held + [key])}
+    text = e.text()
+    if text and text.isprintable():
+        return {"kind": "text", "text": text}
+    return None
+
+
+class LiveView(QWidget):
+    """The virtual computer's screen, scaled to fit, with a ring where the last action happened.
+    Interactive: the user's own clicks, scrolls and keys go to the virtual computer."""
+    activated = Signal()           # clicked while not interactive
+    user_input = Signal(object)    # {"kind": ...} in the virtual computer's real pixels
+
+    def __init__(self, placeholder: str = ""):
+        super().__init__()
+        self.pm: QPixmap | None = None
+        self.real = (1280, 800)
+        self.mark: tuple | None = None    # x, y (real pixels), when
+        self.interactive = False
+        self.placeholder = placeholder
+        self._press = None
+        self.setMinimumSize(200, 125)
+        self.setCursor(Qt.PointingHandCursor)
+        self._fade = QTimer(self, interval=50, timeout=self._fade_tick)
+
+    def set_interactive(self, on: bool):
+        self.interactive = on
+        self.setCursor(Qt.CrossCursor if on else Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus if on else Qt.NoFocus)
+        if on:
+            self.setFocus()
+
+    def set_frame(self, jpeg: bytes, width: int, height: int):
+        img = QImage.fromData(jpeg)
+        if img.isNull():
+            return
+        self.pm = QPixmap.fromImage(img)
+        self.real = (width or img.width(), height or img.height())
+        self.update()
+
+    def clear(self, text: str = ""):
+        self.pm = None
+        if text:
+            self.placeholder = text
+        self.update()
+
+    def mark_at(self, x: int, y: int):
+        self.mark = (x, y, time.time())
+        self._fade.start()
+        self.update()
+
+    def _fade_tick(self):
+        if not self.mark or time.time() - self.mark[2] > 1.5:
+            self.mark = None
+            self._fade.stop()
+        self.update()
+
+    def _box(self) -> QRectF:
+        rw, rh = self.real
+        scale = min(self.width() / rw, self.height() / rh)
+        w, h = rw * scale, rh * scale
+        return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor("#0d0f13"))
+        box = self._box()
+        if self.pm is not None:
+            p.drawPixmap(box, self.pm, QRectF(self.pm.rect()))
+        else:
+            p.setPen(QColor("#9aa1ad"))
+            p.drawText(self.rect().adjusted(10, 10, -10, -10), Qt.AlignCenter | Qt.TextWordWrap, self.placeholder)
+        if self.mark and self.pm is not None:
+            age = time.time() - self.mark[2]
+            x = box.x() + self.mark[0] * box.width() / self.real[0]
+            y = box.y() + self.mark[1] * box.height() / self.real[1]
+            p.setPen(QPen(QColor(79, 140, 255, int(255 * max(0.0, 1 - age / 1.5))), 3))
+            p.setBrush(Qt.NoBrush)
+            r = 5 + 16 * age
+            p.drawEllipse(QPointF(x, y), r, r)
+        p.end()
+
+    def to_real(self, pos) -> tuple[int, int] | None:
+        box = self._box()
+        if box.width() <= 0 or not box.contains(pos):
+            return None
+        return (int((pos.x() - box.x()) * self.real[0] / box.width()),
+                int((pos.y() - box.y()) * self.real[1] / box.height()))
+
+    def mousePressEvent(self, e):
+        if self.interactive:
+            self._press = (self.to_real(e.position()), e.button())
+
+    def mouseReleaseEvent(self, e):
+        if not self.interactive:
+            if e.button() == Qt.LeftButton:
+                self.activated.emit()
+            return
+        start, button = self._press or (None, None)
+        self._press = None
+        end = self.to_real(e.position())
+        if not start or not end:
+            return
+        name = {Qt.RightButton: "right", Qt.MiddleButton: "middle"}.get(button, "left")
+        if name == "left" and abs(end[0] - start[0]) + abs(end[1] - start[1]) > 8:
+            self.user_input.emit({"kind": "drag", "x": start[0], "y": start[1], "x2": end[0], "y2": end[1]})
+        else:
+            self.user_input.emit({"kind": "click", "x": start[0], "y": start[1], "button": name})
+
+    def mouseDoubleClickEvent(self, e):
+        # the press and release before it were the first click; this is the second
+        pt = self.to_real(e.position()) if self.interactive else None
+        if pt:
+            self.user_input.emit({"kind": "click", "x": pt[0], "y": pt[1], "button": "left"})
+
+    def wheelEvent(self, e):
+        pt = self.to_real(e.position()) if self.interactive else None
+        notches = -round(e.angleDelta().y() / 120)
+        if pt and notches:
+            self.user_input.emit({"kind": "scroll", "x": pt[0], "y": pt[1], "amount": notches})
+
+    def keyPressEvent(self, e):
+        ev = key_input(e) if self.interactive else None
+        if ev:
+            self.user_input.emit(ev)
+        else:
+            super().keyPressEvent(e)
+
+    def focusNextPrevChild(self, nxt):   # Tab goes to the virtual computer while using it
+        return False if self.interactive else super().focusNextPrevChild(nxt)
+
+
+class ActivityList(QListWidget):
+    """What the agent did on the virtual computer, newest at the bottom."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWordWrap(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setSelectionMode(QListWidget.NoSelection)
+        self._open: tuple | None = None     # the action still waiting for its result
+
+    def add_event(self, ev: dict):
+        when = time.strftime("%H:%M:%S", time.localtime(ev.get("time") or time.time()))
+        if ev.get("type") == "action":
+            item = QListWidgetItem(f"{when}  …  {ev.get('summary', '')}")
+            item.setToolTip(ev.get("summary", ""))
+            self.addItem(item)
+            self._open = (item, when, ev.get("summary", ""))
+        elif ev.get("type") == "result" and self._open:
+            item, when, summary = self._open
+            self._open = None
+            if ev.get("ok"):
+                item.setText(f"{when}  ✓  {summary}")
+            else:
+                item.setText(f"{when}  ✗  {summary}\n{ev.get('text', '')[:200]}")
+                item.setForeground(QColor(BAD))
+        else:
+            return
+        while self.count() > 300:
+            self.takeItem(0)
+        self.scrollToBottom()
+
+
+class DesktopPanel(QWidget):
+    """In the chat's side column: a live view of the virtual computer and what the agent did on it."""
+
+    def __init__(self, page: "ChatPage"):
+        super().__init__()
+        self.page, self.s = page, page.s
+        self.window: DesktopWindow | None = None
+        self._peeking = False
+        self.installed: bool | None = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("<b>Virtual computer</b>"))
+        row.addStretch(1)
+        self.state = QLabel("")
+        self.state.setTextFormat(Qt.RichText)
+        row.addWidget(self.state)
+        lay.addLayout(row)
+        self.view = LiveView("Starts when the agent needs it. Your own desktop is left alone.")
+        self.view.setFixedHeight(156)
+        self.view.setToolTip("Click to watch it bigger")
+        self.view.activated.connect(self.open_window)
+        lay.addWidget(self.view)
+        row = QHBoxLayout()
+        self.start_btn = QPushButton("Start")
+        self.start_btn.clicked.connect(self.start_stop)
+        row.addWidget(self.start_btn)
+        self.big_btn = QPushButton("Watch")
+        self.big_btn.setToolTip("A bigger live view, where you can also use it yourself")
+        self.big_btn.clicked.connect(self.open_window)
+        row.addWidget(self.big_btn)
+        self.setup_btn = QPushButton("Set up...")
+        self.setup_btn.setObjectName("primary")
+        self.setup_btn.clicked.connect(self.setup)
+        self.setup_btn.setVisible(False)
+        row.addWidget(self.setup_btn)
+        lay.addLayout(row)
+        self.activity = ActivityList()
+        self.activity.setMinimumHeight(90)
+        self.activity.setMaximumHeight(170)
+        lay.addWidget(self.activity)
+        d = vdesktop.desktop()
+        for ev in d.history:
+            self.activity.add_event(ev)
+        desktop_events().subscribe(self._on_event)
+        self.show_state(d.state, d.state_text)
+        self.timer = QTimer(self, interval=1000, timeout=self.tick)
+        self.timer.start()
+
+    def refresh_status(self):
+        def done(info, err):
+            if not info:
+                return
+            self.installed = info["installed"]
+            self.setup_btn.setVisible(not info["installed"])
+            self.big_btn.setVisible(info["installed"])
+            if not info["installed"] and not vdesktop.desktop().running:
+                self.view.clear(info["problem"] or "Not set up yet. Press Set up to add it (a one-time download).")
+        in_background(vdesktop.status, done)
+
+    def tick(self):
+        d = vdesktop.desktop()
+        if not d.running or self._peeking or not self.isVisible() or self.page.win.isMinimized():
+            return
+        self._peeking = True
+        width = max(320, int(self.view.width() * self.devicePixelRatioF()))
+        in_background(lambda: d.peek(width), self._frame)
+
+    def _frame(self, frame, _err):
+        self._peeking = False
+        if frame:
+            self.view.set_frame(frame["jpeg"], frame["width"], frame["height"])
+            self.view.setToolTip((frame.get("window") or "Nothing open") + " (click to watch it bigger)")
+
+    def _on_event(self, ev: dict):
+        if ev.get("type") == "state":
+            self.show_state(ev.get("state", ""), ev.get("text", ""))
+            return
+        self.activity.add_event(ev)
+        if ev.get("type") == "result":
+            if ev.get("cursor"):
+                self.view.mark_at(*ev["cursor"])
+            QTimer.singleShot(0, self.tick)
+
+    def show_state(self, state: str, text: str):
+        label, color = DESKTOP_STATES.get(state, (state, "#6b717c"))
+        self.state.setText(f"<span style='color:{color}'>●</span> {label}")
+        self.state.setToolTip(text)
+        busy = state in ("running", "starting")
+        self.start_btn.setText("Stop" if busy else "Start")
+        self.start_btn.setEnabled(state != "starting")
+        if state == "starting":
+            self.view.clear("Starting...")
+        elif state in ("stopped", "error"):
+            self.view.clear(text or "Stopped. It starts again when the agent needs it.")
+        if state == "error":
+            self.refresh_status()
+
+    def start_stop(self):
+        d = vdesktop.desktop()
+        if d.running:
+            self.start_btn.setEnabled(False)
+            in_background(d.stop, lambda *_: self.start_btn.setEnabled(True))
+            return
+        if self.installed is False:
+            self.setup()
+            return
+        self.start_btn.setEnabled(False)
+
+        def done(_r, err):
+            self.start_btn.setEnabled(True)
+            if err:
+                self.view.clear(str(err))
+        in_background(lambda: d.start(self.s), done)
+
+    def setup(self):
+        DesktopSetupDialog(self.page.win).exec()
+        self.refresh_status()
+        self.page.win.settings_page.refresh_desktop()
+
+    def open_window(self):
+        if self.installed is False:
+            self.setup()
+            return
+        if self.window is None:
+            self.window = DesktopWindow(self)
+        self.window.show()
+        self.window.raise_()
+        self.window.activateWindow()
+
+    def close_window(self):
+        if self.window is not None:
+            self.window.close()
+
+
+class DesktopWindow(QWidget):
+    """A big live view of the virtual computer, with the agent's actions beside it. "Let me use it"
+    sends the user's own clicks and keys to it (to sign in to a website, close a dialog...)."""
+
+    def __init__(self, panel: DesktopPanel):
+        super().__init__(None, Qt.Window)
+        self.panel = panel
+        self.setObjectName("page")
+        self.setWindowTitle("Virtual computer - Local Agent")
+        self.resize(1180, 760)
+        self._peeking = False
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.state = QLabel("")
+        self.state.setTextFormat(Qt.RichText)
+        top.addWidget(self.state)
+        top.addSpacing(12)
+        self.take = QCheckBox("Let me use it")
+        self.take.setToolTip("Your clicks, scrolling and typing in the picture go to the virtual computer. Press Stop "
+                             "in the chat first if the agent is working in it.")
+        self.take.toggled.connect(self._take)
+        top.addWidget(self.take)
+        top.addStretch(1)
+        self.hint = muted("The agent's own computer: what it does here doesn't touch your desktop.")
+        top.addWidget(self.hint)
+        lay.addLayout(top)
+        body = QHBoxLayout()
+        self.view = LiveView("Not running. It starts when the agent needs it.")
+        self.view.user_input.connect(self._send)
+        body.addWidget(self.view, 1)
+        side = QVBoxLayout()
+        side.addWidget(QLabel("<b>What the agent did</b>"))
+        self.activity = ActivityList()
+        self.activity.setFixedWidth(300)
+        side.addWidget(self.activity, 1)
+        body.addLayout(side)
+        lay.addLayout(body, 1)
+        for ev in vdesktop.desktop().history:
+            self.activity.add_event(ev)
+        desktop_events().subscribe(self._on_event)
+        d = vdesktop.desktop()
+        self._state(d.state, d.state_text)
+        self.timer = QTimer(self, interval=250, timeout=self.tick)
+
+    def showEvent(self, e):
+        self.timer.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self.timer.stop()
+        self.take.setChecked(False)
+        super().hideEvent(e)
+
+    def _take(self, on: bool):
+        self.view.set_interactive(on)
+        self.hint.setText("Your clicks and keys go to the virtual computer." if on else
+                          "The agent's own computer: what it does here doesn't touch your desktop.")
+
+    def _state(self, state: str, text: str):
+        label, color = DESKTOP_STATES.get(state, (state, "#6b717c"))
+        self.state.setText(f"<span style='color:{color}'>●</span> {label}" + (f"  {_esc(text)}" if state == "error" else ""))
+        if state != "running":
+            self.view.clear(text or "Not running. It starts when the agent needs it.")
+
+    def _on_event(self, ev: dict):
+        if ev.get("type") == "state":
+            self._state(ev.get("state", ""), ev.get("text", ""))
+            return
+        self.activity.add_event(ev)
+        if ev.get("type") == "result" and ev.get("cursor"):
+            self.view.mark_at(*ev["cursor"])
+
+    def tick(self):
+        d = vdesktop.desktop()
+        if not d.running or self._peeking:
+            return
+        self._peeking = True
+        width = min(d.size[0] or 1280, max(480, int(self.view.width() * self.devicePixelRatioF())))
+        in_background(lambda: d.peek(width, 80), self._frame)
+
+    def _frame(self, frame, _err):
+        self._peeking = False
+        if frame:
+            self.view.set_frame(frame["jpeg"], frame["width"], frame["height"])
+            self.setWindowTitle(f"Virtual computer: {frame.get('window') or 'desktop'} - Local Agent")
+
+    def _send(self, ev: dict):
+        def done(resp, _err):
+            if resp and resp.get("cursor"):
+                self.view.mark_at(*resp["cursor"])
+            self.tick()
+        in_background(lambda: vdesktop.desktop().user_input(ev), done)
+
+
+class _SetupSignals(QObject):
+    progress = Signal(str, object)
+    line = Signal(str)
+    done = Signal(object, object)
+
+
+SETUP_TEXT = ("This adds a computer of the agent's own: Ubuntu Linux in WSL, with Firefox, LibreOffice, a file "
+              "manager and a terminal. Its screen exists only in memory, so the agent never takes over your mouse, "
+              "keyboard or screen. It can't see your drives or start Windows programs; only the work folder is "
+              "shared with it (as ~/Work).\n\nSetup downloads about 390 MB of Ubuntu, then about 1 GB of programs, "
+              "and needs about 3 GB of disk space next to this app. It takes a few minutes, and you can keep "
+              "using the app meanwhile.")
+
+
+class DesktopSetupDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Set up the virtual computer")
+        self.setMinimumWidth(640)
+        self.stop = threading.Event()
+        self.running = False
+        lay = QVBoxLayout(self)
+        lay.addWidget(muted(SETUP_TEXT if vdesktop.kind() == "wsl" else
+                            "On Linux the virtual computer is a hidden screen on this PC. It needs: "
+                            f"{vdesktop.LOCAL_PACKAGES} (e.g. sudo apt install ...), and pip packages mss, pillow, "
+                            "pyautogui."))
+        self.msg = QLabel("")
+        self.msg.setWordWrap(True)
+        self.msg.setTextFormat(Qt.PlainText)
+        lay.addWidget(self.msg)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        self.bar.setVisible(False)
+        lay.addWidget(self.bar)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(3000)
+        self.log.setFont(QFont("Consolas", 9))
+        self.log.setMinimumHeight(180)
+        self.log.setVisible(False)
+        lay.addWidget(self.log, 1)
+        row = QHBoxLayout()
+        self.wsl_btn = QPushButton("Install WSL...")
+        self.wsl_btn.setToolTip("Windows asks for permission, then may ask you to restart the PC")
+        self.wsl_btn.clicked.connect(self._install_wsl)
+        self.wsl_btn.setVisible(False)
+        row.addWidget(self.wsl_btn)
+        self.go = QPushButton("Set up")
+        self.go.setObjectName("primary")
+        self.go.clicked.connect(self._go)
+        row.addWidget(self.go)
+        row.addStretch(1)
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.reject)
+        row.addWidget(self.close_btn)
+        lay.addLayout(row)
+        self.sig = _SetupSignals()
+        self.sig.progress.connect(self._progress)
+        self.sig.line.connect(self.log.appendPlainText)
+        self.sig.done.connect(self._done)
+        self.msg.setText("Checking...")
+        self.go.setEnabled(False)
+        in_background(vdesktop.status, self._status)
+
+    def _status(self, info, err):
+        self.go.setEnabled(True)
+        if err or not info:
+            self.msg.setText(f"Couldn't check: {err}")
+            return
+        if not info["wsl"]:
+            self.msg.setText(vdesktop.NO_WSL)
+            self.wsl_btn.setVisible(True)
+        elif info["installed"]:
+            self.msg.setText("It's set up. Setting it up again updates its programs and repairs it; what's saved "
+                             "inside it stays.")
+            self.go.setText("Update / repair")
+        else:
+            self.msg.setText(info["problem"] or "")
+
+    def _install_wsl(self):
+        try:
+            vdesktop.install_wsl()
+        except OSError as e:
+            self.msg.setText(f"Couldn't start the WSL install: {e}")
+            return
+        self.msg.setText("Follow Windows' window to install WSL. If it asks you to restart the PC, do that, then "
+                         "come back here and press Set up.")
+
+    def _go(self):
+        self.running = True
+        self.stop.clear()
+        self.go.setEnabled(False)
+        self.wsl_btn.setVisible(False)
+        self.close_btn.setText("Cancel")
+        self.bar.setVisible(True)
+        self.log.setVisible(True)
+        sig, stop = self.sig, self.stop
+
+        def work():
+            try:
+                warnings = vdesktop.install(progress=lambda m, f: sig.progress.emit(m, f),
+                                            log=lambda line: sig.line.emit(line), stop=stop)
+                sig.done.emit(warnings, None)
+            except Exception as e:  # noqa: BLE001
+                sig.done.emit(None, e)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _progress(self, msg: str, frac):
+        self.msg.setText(msg)
+        if frac is None:
+            self.bar.setRange(0, 0)
+        else:
+            self.bar.setRange(0, 1000)
+            self.bar.setValue(int(frac * 1000))
+
+    def _done(self, warnings, err):
+        self.running = False
+        self.go.setEnabled(True)
+        self.close_btn.setText("Close")
+        self.bar.setRange(0, 1000)
+        if isinstance(err, vdesktop.Stopped):
+            self.msg.setText("Cancelled. Press Set up again to carry on; the download resumes where it stopped.")
+        elif err:
+            self.msg.setText(f"Setup didn't finish: {err}")
+            self.msg.setStyleSheet(f"color: {BAD};")
+        else:
+            self.bar.setValue(1000)
+            self.msg.setStyleSheet("")
+            self.msg.setText("The virtual computer is ready. The agent uses it for clicking and typing from the next "
+                             "message on." + "".join(f"\n⚠️ {w}" for w in warnings or []))
+            self.go.setText("Update / repair")
+
+    def reject(self):
+        if self.running:
+            self.stop.set()
+            self.msg.setText("Cancelling...")
+            self.close_btn.setEnabled(False)
+            QTimer.singleShot(300, self._wait_cancel)
+            return
+        super().reject()
+
+    def _wait_cancel(self):
+        if self.running:
+            QTimer.singleShot(300, self._wait_cancel)
+            return
+        self.close_btn.setEnabled(True)
         super().reject()
 
 
@@ -596,11 +1252,8 @@ class ChatPage(QWidget):
         self.welcome = QWidget()
         wl = QVBoxLayout(self.welcome)
         wl.setContentsMargins(0, 0, 0, 0)
-        wl.addWidget(muted("Ask for anything: \"tidy up my Downloads folder\", \"what's on my screen?\", "
-                           "\"write a script that renames these photos by date\", \"open Notepad and write a "
-                           "poem\". It asks before changing anything (you can loosen that at the top).\n\n"
-                           "Emergency stop while it uses the mouse: press Stop (or Esc), or slam the mouse into "
-                           "a screen corner."))
+        self.welcome_text = muted("")
+        wl.addWidget(self.welcome_text)
         # first run: one click to a working model
         self.setup_card = QGroupBox("No model running yet. Pick one to get started:")
         sc = QVBoxLayout(self.setup_card)
@@ -650,8 +1303,13 @@ class ChatPage(QWidget):
 
         side = QFrame()
         side.setObjectName("side")
-        side.setFixedWidth(260)
+        side.setFixedWidth(290)
         sl = QVBoxLayout(side)
+        self.desk_panel = DesktopPanel(self)
+        sl.addWidget(self.desk_panel)
+        self.desk_gap = QWidget()
+        self.desk_gap.setFixedHeight(10)
+        sl.addWidget(self.desk_gap)
         sl.addWidget(QLabel("<b>Plan</b>"))
         self.todo = muted("No plan yet. It makes one for bigger tasks.")
         self.todo.setTextFormat(Qt.RichText)
@@ -682,6 +1340,7 @@ class ChatPage(QWidget):
         sl.addStretch(1)
         outer.addWidget(side)
         self._update_ws_btn()
+        self.sync_desktop()
 
     def _wire(self):
         b = self.bridge
@@ -739,6 +1398,22 @@ class ChatPage(QWidget):
         elif self.s.model_path:
             m.addAction(f"Start {Path(self.s.model_path).name}", srv.start)
         m.addAction("Model server page...", lambda: self.win.nav.setCurrentRow(1))
+
+    def sync_desktop(self):
+        """Show the virtual computer's panel when the screen tools use it."""
+        s = self.s
+        on = s.enable_control and s.computer == "virtual"
+        self.desk_panel.setVisible(on)
+        self.desk_gap.setVisible(on)
+        if on:
+            self.desk_panel.refresh_status()
+        self.welcome_text.setText(
+            "Ask for anything: \"tidy up my Downloads folder\", \"write a script that renames these photos by "
+            "date\", " + ("\"find a cheap flight to Rome in Firefox\", \"make a spreadsheet of my expenses\". "
+                          "Clicking and typing happen on its own virtual computer (on the right), so your desktop "
+                          "is left alone. " if on else "\"open Notepad and write a poem\". ")
+            + "It asks before changing anything (you can loosen that at the top).\n\nEmergency stop: press Stop "
+            "(or Esc)" + ("." if on else ", or slam the mouse into a screen corner while it uses the mouse."))
 
     def sync_thinking(self):
         self.think.blockSignals(True)
@@ -812,7 +1487,7 @@ class ChatPage(QWidget):
         s = self.s
         sig = (s.base_url, s.model, s.api_key, s.workspace, s.tool_mode, s.enable_shell, s.enable_control,
                s.enable_web, s.enable_subagents, s.enable_github, s.enable_code, s.enable_unity, s.github_token, s.coord_mode,
-               s.shell)
+               s.shell, s.computer, s.desktop_share_work)
         if self.agent is None or sig != self._agent_sig:
             prev = self.agent
             self.agent = Agent(s, GuiUI(self.bridge, self.stop, s), stop=self.stop)
@@ -1012,7 +1687,9 @@ class ChatPage(QWidget):
 
     def _on_approval(self, w: Waiter):
         self._restore()
-        dlg = ApprovalDialog(w.payload, self)
+        tool = REGISTRY.get(w.payload.tool)
+        virtual = bool(tool and tool.group == "control" and self.s.computer == "virtual")
+        dlg = ApprovalDialog(w.payload, self, virtual=virtual)
         dlg.exec()
         w.result = dlg.decision
         w.event.set()
@@ -2112,6 +2789,33 @@ class SettingsPage(QWidget):
         f.addRow(self.dangerous)
         lay.addWidget(g)
 
+        g = QGroupBox("Where it clicks and types")
+        f = QFormLayout(g)
+        self.computer = self._combo([("virtual", "Its own virtual computer (your desktop is left alone)"),
+                                     ("desktop", "Your real desktop (it moves your mouse)")], s.computer)
+        f.addRow("Screen tools use:", self.computer)
+        row = QHBoxLayout()
+        self.vd_status = muted("")
+        self.vd_status.setTextFormat(Qt.PlainText)
+        row.addWidget(self.vd_status, 1)
+        self.vd_setup = QPushButton("Set up...")
+        self.vd_setup.clicked.connect(self._setup_desktop)
+        row.addWidget(self.vd_setup)
+        self.vd_remove = QPushButton("Remove")
+        self.vd_remove.setToolTip("Delete the virtual computer and what's saved inside it (not your work folder)")
+        self.vd_remove.clicked.connect(self._remove_desktop)
+        row.addWidget(self.vd_remove)
+        f.addRow(row)
+        self.vd_size = self._combo([(x, x) for x in vdesktop.SIZES], s.desktop_size)
+        self.vd_size.setToolTip("1280x800 fits a screenshot without shrinking, so text stays sharp for the model")
+        f.addRow("Its screen size:", self.vd_size)
+        self.vd_share = QCheckBox("Share the work folder with it (as ~/Work)")
+        self.vd_share.setChecked(s.desktop_share_work)
+        self.vd_share.toggled.connect(self._save)
+        f.addRow(self.vd_share)
+        lay.addWidget(g)
+        self.refresh_desktop()
+
         g = QGroupBox("GitHub")
         f = QFormLayout(g)
         f.addRow(muted("Lets it clone your repositories, make branches and commits, push, and open pull "
@@ -2309,11 +3013,48 @@ class SettingsPage(QWidget):
 
     def reload(self):
         """The Model server page changes the address and model when it starts one: show what's saved."""
+        self.refresh_desktop()
         self.url.setText(self.s.base_url)
         self.model.setEditText(self.s.model)
         self._conn_shown = (self.s.base_url, self.s.model)
         self._sync_preset()
         self._show_addons()
+
+    def refresh_desktop(self):
+        self.vd_status.setText("Checking...")
+
+        def done(info, err):
+            if err or not info:
+                self.vd_status.setText(f"Couldn't check: {err}")
+                return
+            running = " It's running now." if info["running"] else ""
+            self.vd_status.setText(("Set up." + running) if info["installed"] else
+                                   (info["problem"] or "Not set up yet: a one-time download."))
+            self.vd_setup.setText("Update / repair..." if info["installed"] else "Set up...")
+            self.vd_remove.setVisible(info["installed"] and info["kind"] == "wsl")
+        in_background(vdesktop.status, done)
+
+    def _setup_desktop(self):
+        DesktopSetupDialog(self).exec()
+        self.refresh_desktop()
+        self.win.chat.desk_panel.refresh_status()
+
+    def _remove_desktop(self):
+        r = QMessageBox.question(self, "Remove the virtual computer",
+                                 "Delete the virtual computer and everything saved inside it? Your work folder "
+                                 "is not touched. You can set it up again later.")
+        if r != QMessageBox.Yes:
+            return
+        self.vd_remove.setEnabled(False)
+        self.vd_status.setText("Removing...")
+
+        def done(_r, err):
+            self.vd_remove.setEnabled(True)
+            if err:
+                QMessageBox.warning(self, "Remove the virtual computer", str(err))
+            self.refresh_desktop()
+            self.win.chat.desk_panel.refresh_status()
+        in_background(vdesktop.remove, done)
 
     def _show_addons(self):
         m = mcp.manager()
@@ -2402,10 +3143,15 @@ class SettingsPage(QWidget):
         s.coord_mode = self.coords.currentData()
         s.screenshot_after_action, s.grid_overlay = self.after.isChecked(), self.grid.isChecked()
         s.extra["minimize_during_control"] = self.minimize.isChecked()
+        s.computer, s.desktop_size = self.computer.currentData(), self.vd_size.currentData()
+        s.desktop_share_work = self.vd_share.isChecked()
         s.context_limit, s.keep_images = self.ctx_limit.value(), self.keep_images.value()
         s.max_images = max(self.max_images.value(), s.keep_images)
         s.max_steps, s.max_tool_output = self.max_steps.value(), self.max_out.value()
         s.save()
+        chat = getattr(self.win, "chat", None)
+        if chat is not None:
+            chat.sync_desktop()
 
     def _check_github(self):
         self._save()
@@ -2707,6 +3453,7 @@ class MainWindow(QMainWindow):
             self.memory.refresh()
         if i == 0:
             self.chat.sync_thinking()
+            self.chat.sync_desktop()
 
     def refresh_connection(self):
         s = self.settings
@@ -2757,6 +3504,8 @@ class MainWindow(QMainWindow):
         self.chat.stop.set()
         _stop_background(self.chat.agent)
         mcp.manager().stop()
+        self.chat.desk_panel.close_window()
+        vdesktop.desktop().stop()       # and, in WSL, everything running in it
         super().closeEvent(e)
 
 
@@ -2780,6 +3529,9 @@ def main(argv=None):
     app.setStyle("Fusion")
     app.setPalette(dark_palette())
     app.setStyleSheet(STYLE)
+    collector = GuiThreadGC().start()
     w = MainWindow()
     w.show()
-    return app.exec()
+    code = app.exec()
+    collector.stop()
+    return code

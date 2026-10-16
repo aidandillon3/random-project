@@ -1,3 +1,4 @@
+import gc
 import os
 import stat
 import sys
@@ -78,6 +79,13 @@ def flash_files(d: Path):
     return flash
 
 
+def settle_garbage(app, collector):
+    """Free the windows the tests left behind here on the GUI thread, then hand collection back."""
+    collector.stop()
+    gc.collect()
+    app.processEvents()
+
+
 @unittest.skipIf(QApplication is None, "PySide6 not installed")
 class GuiTest(unittest.TestCase):
     @classmethod
@@ -89,6 +97,11 @@ class GuiTest(unittest.TestCase):
         cls.app.setStyle("Fusion")
         cls.app.setPalette(gui.dark_palette())
         cls.app.setStyleSheet(gui.STYLE)
+        cls.collector = gui.GuiThreadGC().start()      # as in the app: no Qt garbage freed on worker threads
+
+    @classmethod
+    def tearDownClass(cls):
+        settle_garbage(cls.app, cls.collector)
 
     def wait_until(self, cond, timeout=15):
         end = time.time() + timeout
@@ -712,6 +725,235 @@ class GuiTest(unittest.TestCase):
             w.grab().save(out.replace(".png", "_memory.png"))
         memory.indexer().stop()
         w.close()
+
+
+@unittest.skipIf(QApplication is None, "PySide6 not installed")
+class DesktopGuiTest(unittest.TestCase):
+    """The virtual computer in the window: side panel, watch window, setup, approvals."""
+
+    @classmethod
+    def setUpClass(cls):
+        from localagent import gui
+
+        cls.gui = gui
+        cls.app = QApplication.instance() or QApplication([])
+        cls.collector = gui.GuiThreadGC().start()
+
+    @classmethod
+    def tearDownClass(cls):
+        settle_garbage(cls.app, cls.collector)
+
+    def setUp(self):
+        from unittest import mock
+
+        from localagent import vdesktop
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+        from PySide6.QtGui import QColor, QImage
+        from tests.test_vdesktop import FAKE_GUEST, FakeDesktop
+
+        self.vd = vdesktop
+        tmp = Path(tempfile.mkdtemp())
+        script = tmp / "fake_guest.py"
+        script.write_text(FAKE_GUEST, encoding="utf-8")
+        img = QImage(64, 40, QImage.Format_RGB32)
+        img.fill(QColor("#336699"))
+        data = QByteArray()
+        buf = QBuffer(data)
+        buf.open(QIODevice.WriteOnly)
+        img.save(buf, "JPG")
+        jpeg = bytes(data)
+
+        class Desk(FakeDesktop):
+            peeks = 0
+
+            def peek(self, width=640, quality=70):
+                frame = super().peek(width, quality)
+                if frame:
+                    Desk.peeks += 1
+                    frame["jpeg"] = jpeg
+                return frame
+
+        self.desk = Desk(script)
+        self.addCleanup(self.desk.stop)
+        for target, attr, value in [(vdesktop, "_desktop", self.desk), (vdesktop, "HOME", tmp / "vd"),
+                                    (vdesktop, "status", lambda: {"kind": "wsl", "running": self.desk.running,
+                                                                  "installed": True, "problem": "", "wsl": True})]:
+            patcher = mock.patch.object(target, attr, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def wait_until(self, cond, timeout=15):
+        end = time.time() + timeout
+        while time.time() < end:
+            self.app.processEvents()
+            if cond():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_the_agent_clicks_on_the_virtual_computer_and_the_panel_shows_it(self):
+        from localagent.config import Settings
+        from localagent.permissions import Decision
+
+        ws = Path(tempfile.mkdtemp())
+        srv = MockServer([calls(("click", {"x": 500, "y": 300})), text("Clicked it.")])
+        self.addCleanup(srv.close)
+        s = Settings(base_url=srv.url, workspace=str(ws), computer="virtual", approval_mode="ask",
+                     auto_memory=False, auto_recall=False)
+        asked = []
+
+        def fake_exec(dlg):
+            asked.append(dlg.head.text())
+            dlg.decision = Decision(True)
+            return 1
+        orig = self.gui.ApprovalDialog.exec
+        self.gui.ApprovalDialog.exec = fake_exec
+        self.addCleanup(setattr, self.gui.ApprovalDialog, "exec", orig)
+        w = self.gui.MainWindow(s)
+        w.show()
+        chat, panel = w.chat, w.chat.desk_panel
+        self.assertTrue(panel.isVisible())
+        self.assertIn("own virtual computer", chat.welcome_text.text())
+        hidden = []
+        chat.bridge.hide_window.connect(lambda waiter: hidden.append(waiter) or waiter.event.set())
+        chat.input.setPlainText("click the button")
+        chat.send()
+        self.assertTrue(self.wait_until(lambda: not chat.busy() and chat.send_btn.isEnabled()))
+        self.assertEqual(asked, ["The AI wants to use its virtual computer (not your desktop)."])
+        self.assertEqual(hidden, [])                       # the app window stays put
+        self.assertTrue(self.wait_until(lambda: panel.activity.count() == 1))
+        self.assertEqual(panel.activity.item(0).text()[8:], "  ✓  left click x1 at (500, 300)")
+        self.assertIn("Running", panel.state.text())
+        self.assertEqual(panel.start_btn.text(), "Stop")
+        self.assertTrue(self.wait_until(lambda: panel.view.pm is not None, 5))    # the live view
+        sent = [m for m in srv.requests[0]["tools"] if m["function"]["name"] == "screenshot"][0]
+        self.assertIn("virtual computer", sent["function"]["description"])
+
+        # watching it bigger, and using it yourself
+        panel.big_btn.click()
+        win = panel.window
+        self.assertTrue(win.isVisible())
+        self.assertEqual(win.activity.count(), 1)           # what happened before it opened
+        self.assertTrue(self.wait_until(lambda: win.view.pm is not None, 5))
+        win.take.setChecked(True)
+        self.assertTrue(win.view.interactive)
+        got = []
+        orig_input = self.desk.user_input
+        self.desk.user_input = lambda ev: got.append(ev) or orig_input(ev)
+        win.view.user_input.emit({"kind": "click", "x": 7, "y": 8, "button": "left"})
+        self.assertTrue(self.wait_until(lambda: got, 5))
+        self.assertEqual(got[0]["x"], 7)
+        win.close()
+        self.assertFalse(win.take.isChecked())
+
+        # Stop from the panel
+        panel.start_btn.click()
+        self.assertTrue(self.wait_until(lambda: not self.desk.running and "Stopped" in panel.state.text(), 10))
+
+        # back to the real desktop: no panel, the Windows-only tools come back
+        w.nav.setCurrentRow(2)
+        page = w.settings_page
+        page.computer.setCurrentIndex(page.computer.findData("desktop"))
+        self.assertEqual(s.computer, "desktop")
+        w.nav.setCurrentRow(0)
+        self.assertFalse(panel.isVisible())
+        chat._ensure_agent()
+        self.assertIn("ui_elements", chat.agent.tools)
+        w.close()
+
+    def test_closing_the_app_stops_it(self):
+        from localagent.config import Settings
+
+        s = Settings(base_url="http://127.0.0.1:9/v1", workspace=tempfile.mkdtemp(), computer="virtual")
+        w = self.gui.MainWindow(s)
+        w.show()
+        self.desk.start(s)
+        w.chat.desk_panel.start_btn.setEnabled(True)
+        self.assertTrue(self.desk.running)
+        w.close()
+        self.assertFalse(self.desk.running)
+
+    def test_live_view_maps_clicks_and_keys(self):
+        from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+        from PySide6.QtGui import QKeyEvent
+        from PySide6.QtTest import QTest
+
+        gui = self.gui
+        view = gui.LiveView()
+        view.real = (1280, 800)
+        view.resize(640, 500)            # letterboxed: 400 high, 50 empty above and below
+        self.assertEqual(view.to_real(QPointF(320, 250)), (640, 400))
+        self.assertIsNone(view.to_real(QPointF(320, 20)))
+        clicked, sent = [], []
+        view.activated.connect(lambda: clicked.append(1))
+        view.user_input.connect(sent.append)
+        QTest.mouseClick(view, Qt.LeftButton, Qt.NoModifier, QPoint(320, 250))
+        self.assertEqual((clicked, sent), ([1], []))       # watching only: opens the big view
+        view.set_interactive(True)
+        QTest.mouseClick(view, Qt.RightButton, Qt.NoModifier, QPoint(320, 250))
+        QTest.mousePress(view, Qt.LeftButton, Qt.NoModifier, QPoint(100, 100))
+        QTest.mouseRelease(view, Qt.LeftButton, Qt.NoModifier, QPoint(300, 200))
+        self.assertEqual(sent, [{"kind": "click", "x": 640, "y": 400, "button": "right"},
+                                {"kind": "drag", "x": 200, "y": 100, "x2": 600, "y2": 300}])
+
+        def key(k, mods=Qt.NoModifier, txt=""):
+            return gui.key_input(QKeyEvent(QEvent.KeyPress, k, mods, txt))
+        self.assertEqual(key(Qt.Key_A, txt="a"), {"kind": "text", "text": "a"})
+        self.assertEqual(key(Qt.Key_A, Qt.ControlModifier, "\x01"), {"kind": "keys", "keys": "ctrl+a"})
+        self.assertEqual(key(Qt.Key_Return, txt="\r"), {"kind": "keys", "keys": "enter"})
+        self.assertEqual(key(Qt.Key_Tab, Qt.ShiftModifier), {"kind": "keys", "keys": "shift+tab"})
+        self.assertEqual(key(Qt.Key_Space, txt=" "), {"kind": "text", "text": " "})
+        self.assertEqual(key(Qt.Key_F5), {"kind": "keys", "keys": "f5"})
+        self.assertIsNone(key(Qt.Key_Shift))
+
+    def test_activity_list(self):
+        lst = self.gui.ActivityList()
+        lst.add_event({"type": "action", "summary": "Open firefox", "time": 0})
+        lst.add_event({"type": "result", "ok": True})
+        lst.add_event({"type": "action", "summary": "Bring 'x' to the front", "time": 0})
+        lst.add_event({"type": "result", "ok": False, "text": "No window title contains 'x'."})
+        lst.add_event({"type": "result", "ok": True})           # a stray result changes nothing
+        self.assertEqual(lst.count(), 2)
+        self.assertIn("✓  Open firefox", lst.item(0).text())
+        self.assertIn("✗  Bring 'x' to the front\nNo window title", lst.item(1).text())
+
+    def test_setup_dialog(self):
+        from unittest import mock
+
+        def fake_install(progress, log, stop):
+            progress("Downloading Ubuntu (10 of 390 MB)...", 0.03)
+            log("Get:1 http://archive.ubuntu.com noble InRelease")
+            progress("Installing Firefox (step 4 of 7)...", None)
+            return ["Firefox couldn't be installed from Mozilla."]
+
+        with mock.patch.object(self.vd, "status", lambda: {"kind": "wsl", "running": False, "installed": False,
+                                                           "problem": "", "wsl": True}), \
+                mock.patch.object(self.vd, "install", fake_install):
+            dlg = self.gui.DesktopSetupDialog()
+            self.assertTrue(self.wait_until(lambda: dlg.go.isEnabled()))
+            dlg.go.click()
+            self.assertTrue(self.wait_until(lambda: "ready" in dlg.msg.text()))
+        self.assertIn("Firefox couldn't be installed", dlg.msg.text())
+        self.assertIn("InRelease", dlg.log.toPlainText())
+        self.assertEqual(dlg.go.text(), "Update / repair")
+
+        def slow_install(progress, log, stop):
+            stop.wait(10)
+            raise self.vd.Stopped()
+
+        with mock.patch.object(self.vd, "install", slow_install):
+            dlg = self.gui.DesktopSetupDialog()
+            self.assertTrue(self.wait_until(lambda: dlg.go.isEnabled()))
+            dlg.go.click()
+            dlg.reject()                      # Cancel: stops it, closes once it has stopped
+            self.assertTrue(self.wait_until(lambda: not dlg.running and not dlg.isVisible(), 5))
+        self.assertIn("Cancelled", dlg.msg.text())
+
+        with mock.patch.object(self.vd, "status", lambda: {"kind": "wsl", "running": False, "installed": False,
+                                                           "problem": self.vd.NO_WSL, "wsl": False}):
+            dlg = self.gui.DesktopSetupDialog()
+            self.assertTrue(self.wait_until(lambda: dlg.go.isEnabled()))
+            self.assertTrue(dlg.wsl_btn.isVisibleTo(dlg))
 
 
 if __name__ == "__main__":
