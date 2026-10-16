@@ -1058,7 +1058,7 @@ class DesktopSetupDialog(QDialog):
         lay.addWidget(self.log, 1)
         row = QHBoxLayout()
         self.wsl_btn = QPushButton("Install WSL...")
-        self.wsl_btn.setToolTip("Windows asks for permission, then may ask you to restart the PC")
+        self.wsl_btn.setToolTip("Windows asks for permission. Restart the PC when its window says it's done.")
         self.wsl_btn.clicked.connect(self._install_wsl)
         self.wsl_btn.setVisible(False)
         row.addWidget(self.wsl_btn)
@@ -1084,9 +1084,9 @@ class DesktopSetupDialog(QDialog):
         if err or not info:
             self.msg.setText(f"Couldn't check: {err}")
             return
-        if not info["wsl"]:
-            self.msg.setText(vdesktop.NO_WSL)
-            self.wsl_btn.setVisible(True)
+        need = info.get("needs") or ("" if info["wsl"] else "wsl")
+        if need:
+            self._needs(need, info["problem"] or vdesktop.NO_WSL)
         elif info["installed"]:
             self.msg.setText("It's set up. Setting it up again updates its programs and repairs it; what's saved "
                              "inside it stays.")
@@ -1094,13 +1094,33 @@ class DesktopSetupDialog(QDialog):
         else:
             self.msg.setText(info["problem"] or "")
 
+    def _needs(self, need: str, text: str):
+        """Windows lacks something only the user can add (with admin permission and a restart)."""
+        self.msg.setText(text)
+        self.msg.setStyleSheet(f"color: {BAD};")
+        self.wsl_btn.setText("Turn on virtual machines..." if need == "vm" else "Install WSL...")
+        self.wsl_btn.setVisible(True)
+        self._fit()
+
+    def _fit(self):
+        """Room for a long message: an empty log makes way, and the window grows to fit the text."""
+        if not self.running and not self.log.toPlainText().strip():
+            self.log.setVisible(False)
+            self.bar.setVisible(False)
+        self.layout().activate()
+        h = self.heightForWidth(self.width())
+        if h > self.height() or (h > 0 and not self.log.isVisible()):
+            self.resize(self.width(), h)
+
     def _install_wsl(self):
         try:
             vdesktop.install_wsl()
         except OSError as e:
             self.msg.setText(f"Couldn't start the WSL install: {e}")
             return
-        self.msg.setText("Follow Windows' window to install WSL. If it asks you to restart the PC, do that, then "
+        self.msg.setStyleSheet("")
+        self.msg.setText("Windows asks for permission, then installs WSL and turns on virtual machines in its own "
+                         "window. When that window says it's done, restart the PC (even if it doesn't ask), then "
                          "come back here and press Set up.")
 
     def _go(self):
@@ -1108,6 +1128,7 @@ class DesktopSetupDialog(QDialog):
         self.stop.clear()
         self.go.setEnabled(False)
         self.wsl_btn.setVisible(False)
+        self.msg.setStyleSheet("")
         self.close_btn.setText("Cancel")
         self.bar.setVisible(True)
         self.log.setVisible(True)
@@ -1137,9 +1158,12 @@ class DesktopSetupDialog(QDialog):
         self.bar.setRange(0, 1000)
         if isinstance(err, vdesktop.Stopped):
             self.msg.setText("Cancelled. Press Set up again to carry on; the download resumes where it stopped.")
+        elif isinstance(err, vdesktop.NoVirtualMachines):
+            self._needs("vm", str(err))
         elif err:
             self.msg.setText(f"Setup didn't finish: {err}")
             self.msg.setStyleSheet(f"color: {BAD};")
+            self._fit()
         else:
             self.bar.setValue(1000)
             self.msg.setStyleSheet("")

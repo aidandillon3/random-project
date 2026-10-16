@@ -60,6 +60,14 @@ FAKE_GUEST = textwrap.dedent('''
 ''')
 
 
+OK_STATUS = "Default Distribution: Ubuntu\nDefault Version: 2"
+# what wsl --import said on a PC where the Virtual Machine Platform wasn't on yet
+NO_VM_IMPORT = ("The operation could not be started because a required feature is not installed.\r\n"
+                "Error code: Wsl/Service/RegisterDistro/CreateVm/HCS/HCS_E_SERVICE_NOT_AVAILABLE\r\n"
+                "If this error was unexpected, please consider searching for existing issues or filing a new "
+                "issue at https://github.com/microsoft/WSL/issues.")
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -402,7 +410,7 @@ class SetupTest(Base):
         def fake_repack(src, dst, stop):
             dst.write_bytes(b"tar")
 
-        with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_ready=lambda: True, _wsl=fake_wsl,
+        with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_status=lambda: (True, OK_STATUS), _wsl=fake_wsl,
                                  wsl_exe=lambda: "wsl.exe", download_image=fake_download, repack=fake_repack), \
                 mock.patch.object(vdesktop.subprocess, "Popen", popen):
             warnings = vdesktop.install(progress=lambda m, f: progress.append((m, f)), log=logged.append)
@@ -425,7 +433,8 @@ class SetupTest(Base):
         popen.return_value.stdout = io.BytesIO(b"@@step 2 7 Installing the desktop\nE: Unable to locate package x\n")
         popen.return_value.poll.return_value = 100
         popen.return_value.returncode = 100
-        with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_ready=lambda: True, wsl_exe=lambda: "wsl.exe",
+        with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_status=lambda: (True, OK_STATUS),
+                                 wsl_exe=lambda: "wsl.exe",
                                  _wsl=lambda args, **k: (0, vdesktop.DISTRO if args[0] == "--list" else "")), \
                 mock.patch.object(vdesktop.subprocess, "Popen", popen):
             with self.assertRaises(vdesktop.DesktopError) as cm:
@@ -434,10 +443,89 @@ class SetupTest(Base):
         self.assertFalse((vdesktop.HOME / "installed.json").exists())
 
     def test_without_wsl_it_says_how_to_get_it(self):
-        with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_ready=lambda: False):
+        with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_status=lambda: (False, "")):
             with self.assertRaises(vdesktop.DesktopError) as cm:
                 vdesktop.install()
         self.assertIn("Install WSL", str(cm.exception))
+        self.assertNotIsInstance(cm.exception, vdesktop.NoVirtualMachines)
+
+    def test_no_virtual_machines_is_explained_and_the_download_kept(self):
+        HOME = vdesktop.HOME
+        img = HOME / "ubuntu-24.04.wsl"
+
+        def fake_download(progress, stop, session):
+            img.parent.mkdir(parents=True, exist_ok=True)
+            img.write_bytes(b"img")
+            return img
+
+        def fake_wsl(args, data=None, timeout=0):
+            if args[0] == "--import":
+                return 4294967295, NO_VM_IMPORT
+            return 1, "Windows Subsystem for Linux has no installed distributions."
+
+        with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_status=lambda: (True, OK_STATUS), _wsl=fake_wsl,
+                                 download_image=fake_download, repack=lambda src, dst, stop: dst.write_bytes(b"t")):
+            with self.assertRaises(vdesktop.NoVirtualMachines) as cm:
+                vdesktop.install()
+        self.assertEqual(str(cm.exception), vdesktop.NO_VM)
+        self.assertIn("restart the PC", str(cm.exception))
+        self.assertIn("Turn on virtual machines", str(cm.exception))
+        self.assertTrue(img.is_file())                        # no second download
+        self.assertFalse((HOME / "rootfs.tar").exists())
+        self.assertFalse((HOME / "installed.json").exists())
+
+    def test_no_virtual_machines_is_noticed_before_downloading(self):
+        said = ('WSL2 is not supported with your current machine configuration.\nPlease enable the "Virtual '
+                'Machine Platform" optional component and ensure virtualization is enabled in the BIOS.')
+        download = mock.Mock()
+        with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_status=lambda: (True, said),
+                                 download_image=download):
+            with self.assertRaises(vdesktop.NoVirtualMachines):
+                vdesktop.install()
+        download.assert_not_called()
+
+    def test_status_says_what_windows_lacks(self):
+        def status(ready, said, names=""):
+            with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_status=lambda: (ready, said),
+                                     distros=lambda: names.split()):
+                return vdesktop.status()
+        info = status(False, "")
+        self.assertEqual((info["needs"], info["problem"], info["wsl"]), ("wsl", vdesktop.NO_WSL, False))
+        info = status(False, "Error code: Wsl/Service/CreateInstance/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED")
+        self.assertEqual((info["needs"], info["problem"]), ("vm", vdesktop.NO_VM))
+        info = status(True, 'Please enable the "Virtual Machine Platform" optional component.', vdesktop.DISTRO)
+        self.assertEqual((info["needs"], info["problem"], info["wsl"]), ("vm", vdesktop.NO_VM, True))
+        info = status(True, OK_STATUS)
+        self.assertEqual((info["needs"], info["problem"], info["installed"]), ("", "", False))
+
+    def test_other_wsl_failures_keep_their_own_words(self):
+        err = vdesktop._failed("WSL couldn't add the virtual computer", "The file already exists.")
+        self.assertNotIsInstance(err, vdesktop.NoVirtualMachines)
+        self.assertEqual(str(err), "WSL couldn't add the virtual computer: The file already exists.")
+        self.assertIsInstance(vdesktop._failed("x", NO_VM_IMPORT), vdesktop.NoVirtualMachines)
+
+    def test_starting_without_virtual_machines_says_what_to_do(self):
+        class NoVm(vdesktop.Desktop):
+            def command(self, size, work):
+                raise vdesktop.DesktopError("Couldn't copy the app's files into the virtual computer: " + NO_VM_IMPORT)
+        d = NoVm()
+        with self.assertRaises(vdesktop.DesktopError) as cm:
+            d.start(Settings(workspace=str(self.tmp)))
+        self.assertEqual(str(cm.exception), vdesktop.NO_VM)
+        self.assertEqual((d.state, d.state_text), ("error", vdesktop.NO_VM))
+
+    def test_install_wsl_keeps_its_window_open_for_the_restart_note(self):
+        with mock.patch.object(vdesktop.subprocess, "Popen") as popen:
+            vdesktop.install_wsl()
+        cmd = popen.call_args[0][0]
+        self.assertEqual(cmd[:3], ["powershell", "-NoProfile", "-Command"])
+        self.assertIn("-Verb RunAs", cmd[3])
+        self.assertIn("wsl.exe --install --no-distribution", cmd[3])
+        self.assertIn("restart the PC", cmd[3])
+        self.assertTrue(cmd[3].endswith("& pause'"))
+        inner = cmd[3].split("-ArgumentList '", 1)[1][:-1]
+        self.assertNotIn("'", inner)                         # it's inside a single-quoted PowerShell string
+        self.assertFalse(set(inner) & set('"()<>|^%'), inner)  # nothing cmd.exe would read as syntax
 
     def test_the_wsl_start_command(self):
         d = vdesktop.Desktop()

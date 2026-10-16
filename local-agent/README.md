@@ -228,7 +228,7 @@ memory, so it never moves your mouse, types into your windows or pops anything u
 - **Set up once:** press **Set up...** in the right column (or Settings > Where it clicks and
   types). It downloads Ubuntu (about 390 MB) and then about 1 GB of programs, and takes about 3 GB
   of disk next to the app. If WSL isn't on the PC yet, the same window offers to install it
-  (Windows asks for permission, and may want a restart).
+  (Windows asks for permission); restart the PC when its window says it's done.
 - **Memory:** it starts when the agent first needs it and stops when you quit, after 30 minutes
   unused, or with **Stop**. The desktop itself takes about 150 MB of RAM, about 500 MB with
   LibreOffice open, more with Firefox, plus what WSL itself keeps.
@@ -305,6 +305,7 @@ start. Sampling follows the model maker's recommended values by itself (Settings
 | "Can't reach the model server" | Start the model on the Model server page, or check the address in Settings |
 | The server stops right after starting | Read the log under the Start button. "out of memory": pick a shorter context or q4_0 KV cache. "CUDA driver version is insufficient": update the NVIDIA driver |
 | It writes tool calls as plain text, or ignores tools | Use a model made for tool calling (the list above). The app already starts llama.cpp with `--jinja`, which most models need |
+| Setup says WSL can't start virtual machines (`HCS_E_SERVICE_NOT_AVAILABLE`, "a required feature is not installed") | Windows' Virtual Machine Platform is off or waiting for a restart. Restart the PC; if it still fails, press **Turn on virtual machines...** in the setup window and restart again. If Task Manager > Performance > CPU says *Virtualization: Disabled*, switch on SVM (AMD) or VT-x (Intel) in the BIOS. Ubuntu stays downloaded meanwhile |
 | The virtual computer won't start | Press **Update / repair...** in Settings > Where it clicks and types. Its log is `data/vdesktop/desktop.log` |
 | Firefox is missing on the virtual computer | Setup gets it from Mozilla; if that was down, press **Update / repair...** to try again |
 | Clicks land in the wrong place | Settings > Screen > Click coordinates: try the other option. Turning on the grid also helps smaller models aim |

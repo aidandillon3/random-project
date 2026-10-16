@@ -61,8 +61,21 @@ enabled=false
 # wsl-distribution.conf would start Ubuntu's first-run questions and add a Start menu entry.
 DROP_FROM_IMAGE = {"etc/wsl-distribution.conf"}
 
-NO_WSL = ("WSL isn't installed. Press \"Install WSL\" (Windows asks for permission), restart the PC "
-          "when it says so, then press Set up again.")
+NO_WSL = ("WSL isn't installed. Press \"Install WSL\" (Windows asks for permission). When its window says "
+          "it's done, restart the PC, then press Set up again.")
+# WSL is there but can't start a virtual machine: the Virtual Machine Platform feature is off (or
+# waiting for a restart), or virtualization is off in the firmware. The error codes are the same in
+# every language; the sentences are WSL's English ones.
+NO_VM = ("WSL can't start virtual machines on this PC yet: Windows' \"Virtual Machine Platform\" is off, or "
+         "waiting for a restart.\n"
+         "1. If WSL was installed or updated just now, restart the PC, then press Set up again.\n"
+         "2. Otherwise press \"Turn on virtual machines\" in the setup window (Windows asks for permission), "
+         "restart the PC when it has finished, then press Set up again.\n"
+         "3. If it still fails, open Task Manager > Performance > CPU. If it says \"Virtualization: Disabled\", "
+         "switch on SVM (AMD) or VT-x (Intel) in the PC's BIOS settings.")
+NO_VM_SIGNS = re.compile(r"HCS_E_SERVICE_NOT_AVAILABLE|HCS_E_HYPERV_NOT_INSTALLED|0x80370114|0x80370102|"
+                         r"required feature is not installed|Virtual Machine Platform|"
+                         r"virtualization is not enabled", re.I)
 NOT_SET_UP = ("The virtual computer isn't set up yet. Tell the user to press Set up in the side panel "
               "(or Settings > What it may use), or to switch screen control to their own desktop.")
 LOCAL_PACKAGES = "xvfb openbox tint2 xdotool wmctrl xclip x11-xserver-utils dbus-x11"
@@ -72,8 +85,19 @@ class DesktopError(Exception):
     """Something the user needs to read (not set up, didn't start...)."""
 
 
+class NoVirtualMachines(DesktopError):
+    """WSL is installed but can't run a virtual machine (see NO_VM)."""
+
+
 class Stopped(Exception):
     pass
+
+
+def _failed(what: str, out: str, keep: int = 600) -> DesktopError:
+    """A wsl.exe failure, in words the user can act on when it's a known one."""
+    if NO_VM_SIGNS.search(out):
+        return NoVirtualMachines(NO_VM)
+    return DesktopError(f"{what}: {out[-keep:]}")
 
 
 def kind() -> str:
@@ -123,21 +147,29 @@ def distros() -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()] if code == 0 else []
 
 
-def wsl_ready() -> bool:
-    """WSL 2 is installed and works (wsl --status fails, or asks to install, when it isn't)."""
+def wsl_status() -> tuple[bool, str]:
+    """Whether WSL is installed and answers (wsl --status fails, or asks to install, when it isn't),
+    and what it said."""
     if not wsl_exe():
-        return False
+        return False, ""
     try:
-        code, _ = _wsl(["--status"], timeout=30)
+        code, out = _wsl(["--status"], timeout=30)
     except DesktopError:
-        return False
-    return code == 0
+        return False, ""
+    return code == 0, out
+
+
+def wsl_ready() -> bool:
+    return wsl_status()[0]
 
 
 def install_wsl() -> None:
-    """Install WSL itself, without a Linux distribution. Windows asks for admin permission."""
+    """Install WSL itself, without a Linux distribution; that also turns on the Virtual Machine Platform.
+    Windows asks for admin permission. The window stays open at the end so its "restart" note can be read."""
+    note = "When it has finished, restart the PC, then press Set up again in Local Agent."
     subprocess.Popen(["powershell", "-NoProfile", "-Command",
-                      "Start-Process wsl -Verb RunAs -ArgumentList '--install','--no-distribution'"],
+                      f"Start-Process cmd.exe -Verb RunAs -ArgumentList '/c wsl.exe --install --no-distribution "
+                      f"& echo. & echo {note} & pause'"],
                      creationflags=_flags())
 
 
@@ -162,7 +194,8 @@ def installed() -> bool:
 def status() -> dict:
     """For the settings and the side panel. Runs wsl.exe on Windows, so not on the GUI thread."""
     d = desktop()
-    info = {"kind": kind(), "running": d.running, "installed": False, "problem": "", "wsl": True}
+    # needs: what Windows still lacks: "wsl" (not installed) or "vm" (can't run virtual machines)
+    info = {"kind": kind(), "running": d.running, "installed": False, "problem": "", "wsl": True, "needs": ""}
     if kind() == "local":
         missing = local_missing()
         info["installed"] = not missing
@@ -170,12 +203,16 @@ def status() -> dict:
             info["problem"] = (f"Missing on this PC: {', '.join(missing)}. Install them with your package "
                                f"manager (e.g. sudo apt install {LOCAL_PACKAGES}).")
         return info
-    if not wsl_ready():
-        info.update(wsl=False, problem=NO_WSL)
+    ready, said = wsl_status()
+    no_vm = bool(NO_VM_SIGNS.search(said))
+    if not ready:
+        info.update(wsl=False, problem=NO_VM if no_vm else NO_WSL, needs="vm" if no_vm else "wsl")
         return info
+    if no_vm:
+        info.update(problem=NO_VM, needs="vm")
     names = distros()
     info["installed"] = _marker().is_file() and DISTRO in names
-    if DISTRO in names and not _marker().is_file():
+    if DISTRO in names and not _marker().is_file() and not no_vm:
         info["problem"] = "Setup didn't finish last time. Press Set up to finish it."
     return info
 
@@ -213,7 +250,7 @@ def push_guest() -> None:
     code, out = _wsl(["-d", DISTRO, "-u", "root", "--cd", "/", "-e", "/bin/sh", "-c", script], data=guest_tar(),
                      timeout=120)
     if code != 0:
-        raise DesktopError(f"Couldn't copy the app's files into the virtual computer: {out[-500:]}")
+        raise _failed("Couldn't copy the app's files into the virtual computer", out, 500)
 
 
 def local_app_dir() -> Path:
@@ -333,7 +370,10 @@ def install(progress=lambda msg, frac: None, log=lambda line: None, stop: thread
                                f"(e.g. sudo apt install {LOCAL_PACKAGES}) and pip (mss, pillow, pyautogui).")
         return []
     stop = stop or threading.Event()
-    if not wsl_ready():
+    ready, said = wsl_status()
+    if NO_VM_SIGNS.search(said):          # before downloading anything
+        raise NoVirtualMachines(NO_VM)
+    if not ready:
         raise DesktopError(NO_WSL)
     desktop().stop()
     HOME.mkdir(parents=True, exist_ok=True)
@@ -349,7 +389,7 @@ def install(progress=lambda msg, frac: None, log=lambda line: None, stop: thread
             tar.unlink(missing_ok=True)
             tar.with_name(tar.name + ".part").unlink(missing_ok=True)
         if code != 0:
-            raise DesktopError(f"WSL couldn't add the virtual computer: {out[-600:]}")
+            raise _failed("WSL couldn't add the virtual computer", out)   # the download is kept for next time
         img.unlink(missing_ok=True)
     progress("Copying the app's part into it...", None)
     push_guest()
@@ -395,7 +435,10 @@ def _run_setup(progress, log, stop: threading.Event) -> list[str]:
     if stop.is_set():
         raise Stopped()
     if proc.returncode != 0 or not done:
-        raise DesktopError("Setting up the virtual computer failed:\n" + "\n".join(list(tail)[-8:]))
+        said = "\n".join(list(tail)[-8:])
+        if NO_VM_SIGNS.search(said):
+            raise NoVirtualMachines(NO_VM)
+        raise DesktopError("Setting up the virtual computer failed:\n" + said)
     return warnings
 
 
@@ -405,7 +448,7 @@ def remove() -> None:
     if kind() == "wsl" and DISTRO in distros():
         code, out = _wsl(["--unregister", DISTRO], timeout=300)
         if code != 0:
-            raise DesktopError(f"WSL couldn't remove it: {out[-400:]}")
+            raise _failed("WSL couldn't remove it", out, 400)
     _marker().unlink(missing_ok=True)
     shutil.rmtree(HOME / "disk", ignore_errors=True)
 
@@ -482,6 +525,8 @@ class Desktop:
             except Exception as e:
                 self._kill()
                 msg = str(e) if isinstance(e, DesktopError) else f"{type(e).__name__}: {e}"
+                if NO_VM_SIGNS.search(msg):
+                    msg = NO_VM
                 self._set_state("error", msg)
                 raise DesktopError(msg) from e
             self._want = want
