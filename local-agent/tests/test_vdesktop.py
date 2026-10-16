@@ -488,8 +488,14 @@ class SetupTest(Base):
     def test_wsl1_switched_off_is_explained_and_the_download_kept(self):
         err, imports, img = self._install_with({1: (4294967295, NO_WSL1_IMPORT)})
         self.assertIsInstance(err, vdesktop.NoWsl1)
-        self.assertEqual((str(err), err.need), (vdesktop.NO_WSL1, "wsl1"))
+        self.assertEqual(err.need, "wsl1")
+        self.assertTrue(str(err).startswith(vdesktop.NO_WSL1))
         self.assertIn("Turn on WSL 1", str(err))
+        # WSL's own words follow, on one line with its error code, so a screenshot shows what it said
+        self.assertTrue(str(err).endswith('\n\nWSL said: WSL1 is not supported with your current machine '
+                                          'configuration. Please enable the "Windows Subsystem for Linux" optional '
+                                          'component to use WSL1. Error code: '
+                                          'Wsl/Service/RegisterDistro/WSL_E_WSL1_NOT_SUPPORTED'), str(err))
         self.assertEqual([a[-1] for a in imports], ["1"])
         self.assertTrue(img.is_file())                        # no second download
         self.assertFalse((vdesktop.HOME / "rootfs.tar").exists())
@@ -524,6 +530,26 @@ class SetupTest(Base):
                 vdesktop.install()
         download.assert_not_called()
 
+    def test_wsl1_missing_is_noticed_before_downloading(self):
+        # wsl --status adds this when WSL 1's driver (the lxss service) isn't on the PC
+        said = OK_STATUS + "\n" + NO_WSL1_IMPORT.split("\r\nError code")[0]
+        download = mock.Mock()
+        with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_status=lambda: (True, said), wsl_version=lambda: 1,
+                                 distros=lambda: [], download_image=download):
+            with self.assertRaises(vdesktop.NoWsl1) as cm:
+                vdesktop.install()
+        download.assert_not_called()
+        self.assertIn("WSL said: Default Distribution", str(cm.exception))
+        # one added already (as WSL 2, before WSL 1 became the default) is set up again as it is
+        with mock.patch.object(vdesktop, "distros", lambda: [vdesktop.DISTRO]), \
+                mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_status=lambda: (True, said),
+                                    wsl_version=lambda: 1, download_image=download, push_guest=mock.Mock(),
+                                    _run_setup=mock.Mock(return_value=[]), _wsl=mock.Mock(return_value=(0, "")),
+                                    distro_version=lambda: 2):
+            vdesktop.install()
+        download.assert_not_called()
+        self.assertEqual(json.loads((vdesktop.HOME / "installed.json").read_text())["wsl_version"], 2)
+
     def test_status_says_what_windows_lacks(self):
         def status(ready, said, names="", want=1):
             with mock.patch.multiple(vdesktop, kind=lambda: "wsl", wsl_status=lambda: (ready, said),
@@ -539,6 +565,13 @@ class SetupTest(Base):
         self.assertEqual((info["needs"], info["problem"], info["wsl"]), ("vm", vdesktop.NO_VM, True))
         info = status(True, vmp)                              # WSL 1 doesn't need one
         self.assertEqual((info["needs"], info["problem"]), ("", ""))
+        no_wsl1 = OK_STATUS + "\n" + NO_WSL1_IMPORT.split("\r\nError code")[0]
+        info = status(True, no_wsl1)
+        self.assertEqual((info["needs"], info["problem"]), ("wsl1", vdesktop.NO_WSL1))
+        info = status(True, no_wsl1, want=2)                  # WSL 2 doesn't need WSL 1's driver
+        self.assertEqual(info["needs"], "")
+        info = status(True, no_wsl1, vdesktop.DISTRO)         # already added (as WSL 2)
+        self.assertEqual(info["needs"], "")
         info = status(True, OK_STATUS)
         self.assertEqual((info["needs"], info["problem"], info["installed"], info["wsl_version"]), ("", "", False, 0))
         vdesktop.HOME.mkdir(parents=True, exist_ok=True)
@@ -585,8 +618,10 @@ class SetupTest(Base):
         d = NoVm()
         with self.assertRaises(vdesktop.DesktopError) as cm:
             d.start(Settings(workspace=str(self.tmp)))
-        self.assertEqual(str(cm.exception), vdesktop.NO_VM)
-        self.assertEqual((d.state, d.state_text), ("error", vdesktop.NO_VM))
+        self.assertTrue(str(cm.exception).startswith(vdesktop.NO_VM + "\n\nWSL said: "))
+        self.assertIn("HCS_E_SERVICE_NOT_AVAILABLE", str(cm.exception))
+        self.assertNotIn("If this error was unexpected", str(cm.exception))
+        self.assertEqual((d.state, d.state_text), ("error", str(cm.exception)))
 
     def test_install_wsl_keeps_its_window_open_for_the_restart_note(self):
         with mock.patch.object(vdesktop.subprocess, "Popen") as popen, \
