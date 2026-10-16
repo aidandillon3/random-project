@@ -950,10 +950,33 @@ class DesktopGuiTest(unittest.TestCase):
         self.assertIn("Cancelled", dlg.msg.text())
 
         with mock.patch.object(self.vd, "status", lambda: {"kind": "wsl", "running": False, "installed": False,
-                                                           "problem": self.vd.NO_WSL, "wsl": False}):
+                                                           "problem": self.vd.NO_WSL, "wsl": False,
+                                                           "needs": "wsl"}):
             dlg = self.gui.DesktopSetupDialog()
             self.assertTrue(self.wait_until(lambda: dlg.go.isEnabled()))
             self.assertTrue(dlg.wsl_btn.isVisibleTo(dlg))
+            self.assertEqual(dlg.wsl_btn.text(), "Install WSL...")
+            self.assertEqual(dlg.msg.text(), self.vd.NO_WSL)
+
+        # WSL is there but can't run virtual machines: said in plain words, with the button that fixes it
+        def no_vm(progress, log, stop):
+            progress("Adding it to WSL...", None)
+            raise self.vd.NoVirtualMachines(self.vd.NO_VM)
+
+        with mock.patch.object(self.vd, "status", lambda: {"kind": "wsl", "running": False, "installed": False,
+                                                           "problem": "", "wsl": True, "needs": ""}), \
+                mock.patch.object(self.vd, "install", no_vm), mock.patch.object(self.vd, "install_wsl") as install_wsl:
+            dlg = self.gui.DesktopSetupDialog()
+            self.assertTrue(self.wait_until(lambda: dlg.go.isEnabled()))
+            self.assertFalse(dlg.wsl_btn.isVisibleTo(dlg))
+            dlg.go.click()
+            self.assertTrue(self.wait_until(lambda: not dlg.running))
+            self.assertEqual(dlg.msg.text(), self.vd.NO_VM)
+            self.assertTrue(dlg.wsl_btn.isVisibleTo(dlg))
+            self.assertEqual(dlg.wsl_btn.text(), "Turn on virtual machines...")
+            dlg.wsl_btn.click()
+            install_wsl.assert_called_once()
+            self.assertIn("restart the PC", dlg.msg.text())
 
 
 if __name__ == "__main__":
