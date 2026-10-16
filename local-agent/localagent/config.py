@@ -84,6 +84,7 @@ class Settings:
     computer: str = "virtual"          # virtual (its own hidden Linux desktop, see vdesktop/) | desktop (yours)
     desktop_size: str = "1280x800"     # the virtual computer's screen
     desktop_share_work: bool = True    # the work folder is ~/Work in the virtual computer
+    desktop_wsl_version: int = 1       # 1: no virtual machine, no hypervisor needed; 2: WSL 2's virtual machine
     shell: str = "auto"                # auto | powershell | cmd | bash
 
     # model server launcher

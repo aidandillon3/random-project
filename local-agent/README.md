@@ -217,13 +217,20 @@ own, the way Claude's computer use works: **Ubuntu Linux in WSL**, with Firefox,
 (Writer, Calc, Impress), a file manager, a text editor and a terminal. Its screen exists only in
 memory, so it never moves your mouse, types into your windows or pops anything up on your desktop.
 
+It runs as **WSL 1**: Linux programs on Windows' own Linux layer, without a virtual machine, so it
+works even where Windows can't run one (no hypervisor or Host Compute Service needed), starts
+quickly and uses less memory. A web app the agent starts on your PC opens in its Firefox at
+`localhost`. What WSL 1 can't do is Docker and some low-level Linux tools, which this computer
+doesn't need. For a WSL 2 virtual machine instead, set `"desktop_wsl_version": 2` in
+`data/settings.json` before setting it up (it falls back to WSL 1 if Windows can't run one).
+
 - **Watch it:** the chat's right column shows its screen live, with a ring where it last clicked,
   and a list of everything it did there (✓ done, ✗ failed and why). **Watch** opens a big view.
 - **Use it yourself:** tick **Let me use it** in the big view, and your clicks, scrolling and typing
   go to the virtual computer, for example to sign in to a website for it.
-- **Sealed off from Windows:** it can't see your drives or start Windows programs (WSL's drive
+- **Kept apart from Windows:** it can't see your drives or start Windows programs (WSL's drive
   mounts and Windows interop are switched off for it, and it runs as an account without admin
-  rights). Only the **work folder** is shared, as `~/Work`, so what it saves there lands on your
+  rights). Without a virtual machine that's a wall against mistakes, not against anything hostile. Only the **work folder** is shared, as `~/Work`, so what it saves there lands on your
   PC. Its other tools (files, commands) still work on your PC as before, with the same approvals.
 - **Set up once:** press **Set up...** in the right column (or Settings > Where it clicks and
   types). It downloads Ubuntu (about 390 MB) and then about 1 GB of programs, and takes about 3 GB
@@ -231,7 +238,7 @@ memory, so it never moves your mouse, types into your windows or pops anything u
   (Windows asks for permission); restart the PC when its window says it's done.
 - **Memory:** it starts when the agent first needs it and stops when you quit, after 30 minutes
   unused, or with **Stop**. The desktop itself takes about 150 MB of RAM, about 500 MB with
-  LibreOffice open, more with Firefox, plus what WSL itself keeps.
+  LibreOffice open, more with Firefox (WSL 2 also keeps memory for its virtual machine).
 - **Your real desktop instead:** Settings > Where it clicks and types > *Your real desktop*. Then
   the app minimizes itself while the AI uses the screen (Settings > Screen to change that). With
   two monitors you can put the app on one and tell it to work on the other (Settings > Screen >
@@ -305,7 +312,8 @@ start. Sampling follows the model maker's recommended values by itself (Settings
 | "Can't reach the model server" | Start the model on the Model server page, or check the address in Settings |
 | The server stops right after starting | Read the log under the Start button. "out of memory": pick a shorter context or q4_0 KV cache. "CUDA driver version is insufficient": update the NVIDIA driver |
 | It writes tool calls as plain text, or ignores tools | Use a model made for tool calling (the list above). The app already starts llama.cpp with `--jinja`, which most models need |
-| Setup says WSL can't start virtual machines (`HCS_E_SERVICE_NOT_AVAILABLE`, "a required feature is not installed") | Windows' Virtual Machine Platform or its hypervisor is off, or waiting for a restart. Restart the PC; if it still fails, press **Turn on virtual machines...** in the setup window (it switches on the Virtual Machine Platform and sets the hypervisor to start with Windows) and restart again. If Task Manager > Performance > CPU says *Virtualization: Disabled*, switch on SVM (AMD) or VT-x (Intel) in the BIOS. Still failing: Windows Security > App & browser control > Exploit protection > Program settings, and if `vmcompute.exe` is listed with *Control flow guard* overridden, remove that override and restart. Ubuntu stays downloaded meanwhile |
+| Setup says Windows Subsystem for Linux isn't switched on (`WSL_E_WSL1_NOT_SUPPORTED`) | Press **Turn on WSL 1...** in the setup window (Windows asks for permission), restart the PC when its window says it's done, then press Set up again. Ubuntu stays downloaded meanwhile |
+| With WSL 2: setup says WSL can't start virtual machines (`HCS_E_SERVICE_NOT_AVAILABLE`, "a required feature is not installed") | Windows' Virtual Machine Platform or its hypervisor is off, or waiting for a restart. Restart the PC; if it still fails, press **Turn on virtual machines...** in the setup window (it switches on the Virtual Machine Platform and sets the hypervisor to start with Windows) and restart again. If Task Manager > Performance > CPU says *Virtualization: Disabled*, switch on SVM (AMD) or VT-x (Intel) in the BIOS. Still failing: Windows Security > App & browser control > Exploit protection > Program settings, and if `vmcompute.exe` is listed with *Control flow guard* overridden, remove that override and restart. Ubuntu stays downloaded meanwhile |
 | The virtual computer won't start | Press **Update / repair...** in Settings > Where it clicks and types. Its log is `data/vdesktop/desktop.log` |
 | Firefox is missing on the virtual computer | Setup gets it from Mozilla; if that was down, press **Update / repair...** to try again |
 | Clicks land in the wrong place | Settings > Screen > Click coordinates: try the other option. Turning on the grid also helps smaller models aim |
