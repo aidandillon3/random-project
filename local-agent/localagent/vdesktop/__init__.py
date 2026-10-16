@@ -117,12 +117,21 @@ class Stopped(Exception):
     pass
 
 
+def _said(out: str, keep: int = 300) -> str:
+    """WSL's own words, short and on one line (its error code included), shown under the explanation:
+    a screenshot then says what really happened."""
+    lines = [line.strip() for line in out.splitlines()
+             if line.strip() and not line.strip().startswith("If this error was unexpected")]
+    return " ".join(lines)[-keep:]
+
+
 def _failed(what: str, out: str, keep: int = 600) -> DesktopError:
     """A wsl.exe failure, in words the user can act on when it's a known one."""
+    said = f"\n\nWSL said: {_said(out)}" if _said(out) else ""
     if NO_WSL1_SIGNS.search(out):
-        return NoWsl1(NO_WSL1)
+        return NoWsl1(NO_WSL1 + said)
     if NO_VM_SIGNS.search(out):
-        return NoVirtualMachines(NO_VM)
+        return NoVirtualMachines(NO_VM + said)
     return DesktopError(f"{what}: {out[-keep:]}")
 
 
@@ -257,7 +266,7 @@ def installed() -> bool:
 def status() -> dict:
     """For the settings and the side panel. Runs wsl.exe on Windows, so not on the GUI thread."""
     d = desktop()
-    # needs: what Windows still lacks: "wsl" (not installed) or "vm" (can't run virtual machines)
+    # needs: what Windows still lacks: "wsl" (not installed), "vm" (can't run virtual machines) or "wsl1"
     # wsl_version: what it was set up as (0: not set up, or set up before this was recorded)
     info = {"kind": kind(), "running": d.running, "installed": False, "problem": "", "wsl": True, "needs": "",
             "wsl_version": 0}
@@ -273,13 +282,15 @@ def status() -> dict:
     if not ready:
         info.update(wsl=False, problem=NO_VM if no_vm else NO_WSL, needs="vm" if no_vm else "wsl")
         return info
+    names = distros()
     if no_vm:
         info.update(problem=NO_VM, needs="vm")
-    names = distros()
+    elif wsl_version() == 1 and DISTRO not in names and NO_WSL1_SIGNS.search(said):
+        info.update(problem=NO_WSL1, needs="wsl1")     # (one already added keeps the version it was added as)
     info["installed"] = _marker().is_file() and DISTRO in names
     if info["installed"]:
         info["wsl_version"] = int(_marker_info().get("wsl_version") or 0)
-    if DISTRO in names and not _marker().is_file() and not no_vm:
+    if DISTRO in names and not _marker().is_file() and not info["needs"]:
         info["problem"] = "Setup didn't finish last time. Press Set up to finish it."
     return info
 
@@ -443,10 +454,13 @@ def install(progress=lambda msg, frac: None, log=lambda line: None, stop: thread
         raise NoVirtualMachines(NO_VM)
     if not ready:
         raise DesktopError(NO_WSL)
+    names = distros()
+    if want == 1 and DISTRO not in names and NO_WSL1_SIGNS.search(said):
+        raise _failed("", said)                     # wsl --status says so when WSL 1's driver isn't there
     desktop().stop()
     HOME.mkdir(parents=True, exist_ok=True)
     version = 0
-    if DISTRO in distros():
+    if DISTRO in names:
         version = int(_marker_info().get("wsl_version") or 0) or distro_version()
     else:
         img = download_image(progress, stop, session)
