@@ -180,7 +180,7 @@ class CodingAgentTest(CodingModeTest):
         self.addCleanup(srv.close)
         os.environ.update(GIT_AUTHOR_NAME="T", GIT_AUTHOR_EMAIL="t@example.com",
                           GIT_COMMITTER_NAME="T", GIT_COMMITTER_EMAIL="t@example.com")
-        s = Settings(base_url=srv.url, workspace=str(self.home), approval_mode="auto", enable_control=False)
+        s = Settings(base_url=srv.url, workspace=str(self.home), approval_mode="auto")
         results = []
 
         class UI(AgentUI):

@@ -358,13 +358,13 @@ class UnityToolsTest(unittest.TestCase):
 
         tools = enabled_tools(Settings(), workspace=self.project)      # a Unity project: every Unity tool
         self.assertIn("unity_play", [t.name for t in tools])
-        prompt = build_system_prompt(Settings(), self.root, tools, "", "powershell", False)
+        prompt = build_system_prompt(Settings(), self.root, tools, "powershell", False)
         self.assertIn("unity_refresh", prompt)
         lite = [t.name for t in enabled_tools(Settings(), workspace=self.ctx.workspace) if t.group == "unity"]
         self.assertEqual(sorted(lite), sorted(unity.ALWAYS_ON))       # nothing Unity around: just the way in
         off = enabled_tools(Settings(enable_unity=False))
         self.assertNotIn("unity_play", [t.name for t in off])
-        self.assertNotIn("Unity games", build_system_prompt(Settings(), self.root, off, "", "powershell", False))
+        self.assertNotIn("Unity games", build_system_prompt(Settings(), self.root, off, "powershell", False))
 
     # ------------------------------------------------------------------ busy, reloading, lost
     def test_busy_answers_are_retried(self):

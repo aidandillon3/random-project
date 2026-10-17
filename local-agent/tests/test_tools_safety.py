@@ -1,5 +1,5 @@
 """Safety and robustness of the tools: risk levels, dangerous commands, encodings, links, the
-process runner, the web reader and the screen math."""
+process runner and the web reader."""
 
 import os
 import shutil
@@ -17,7 +17,7 @@ os.environ.setdefault("LOCALAGENT_DATA", tempfile.mkdtemp())
 from localagent.config import DATA_DIR, Settings  # noqa: E402
 from localagent.permissions import danger_text, is_dangerous  # noqa: E402
 from localagent.tools import REGISTRY, ToolContext, ToolError  # noqa: E402
-from localagent.tools import files, misc, screen, shell  # noqa: E402
+from localagent.tools import files, misc, shell  # noqa: E402
 from localagent.tools.base import truncate  # noqa: E402
 
 POSIX = sys.platform != "win32"
@@ -108,12 +108,6 @@ class RiskTest(unittest.TestCase):
         finally:
             misc._mem = orig
 
-    def test_open_runs_scripts_only_with_run_approval(self):
-        for t in ("setup.exe", "C:/x/build.bat", "x.ps1", "file:///C:/a.cmd", "evil.bat."):
-            self.assertEqual(risk(self.ctx, "open", target=t), "run", t)
-        for t in ("notepad", "https://example.com", "report.docx", "ms-settings:display"):
-            self.assertEqual(risk(self.ctx, "open", target=t), "control", t)
-
     def test_describe_and_risk_never_raise(self):
         odd = [None, 12345, [1, 2], {"a": 1}, "bad\x00path"]
         for t in REGISTRY.values():
@@ -122,9 +116,8 @@ class RiskTest(unittest.TestCase):
                 if t.describe:
                     self.assertIsInstance(t.describe(args), str, t.name)
                 if t.risk_for:
-                    self.assertIn(t.risk_for(self.ctx, args), ("safe", "edit", "run", "control", "publish"), t.name)
+                    self.assertIn(t.risk_for(self.ctx, args), ("safe", "edit", "run", "publish"), t.name)
         # the lambdas themselves cope with null text
-        self.assertEqual(REGISTRY["type_text"].describe({"text": None}), "Type: ")
         self.assertIn("0 characters", REGISTRY["write_file"].describe({"path": "a", "content": None}))
 
 
@@ -339,47 +332,6 @@ class ShellTest(unittest.TestCase):
             self.assertEqual(shell._argv("cmd", 'dir "C:\\Program Files"'), 'cmd /d /s /c "dir "C:\\Program Files""')
         finally:
             shell.WINDOWS = old
-
-
-class ScreenTest(unittest.TestCase):
-    MONS = [None, {"left": 0, "top": 0, "width": 2560, "height": 1440},
-            {"left": -1920, "top": 0, "width": 1920, "height": 1080}]
-
-    def setUp(self):
-        from PIL import Image
-
-        def fake_grab(monitor, region=None):
-            m = self.MONS[monitor] if 0 < monitor < len(self.MONS) else self.MONS[1]
-            box = region or m
-            return Image.new("RGB", (box["width"], box["height"])), m
-
-        self.orig = screen._grab, screen._cursor, screen.time.sleep
-        screen._grab, screen._cursor, screen.time.sleep = fake_grab, (lambda: None), (lambda s: None)
-        self.ctx = ToolContext(settings=Settings(), workspace=Path(tempfile.mkdtemp()))
-
-    def tearDown(self):
-        screen._grab, screen._cursor, screen.time.sleep = self.orig
-
-    def test_follow_up_shot_stays_on_the_same_screen(self):
-        run(self.ctx, "screenshot", monitor=2)
-        before = screen.to_screen(self.ctx, 640, 360)
-        r = screen.after_action(self.ctx, "Clicked.")
-        self.assertEqual(len(r.images), 1)
-        self.assertEqual(self.ctx.screen["monitor"], 2)
-        self.assertEqual(screen.to_screen(self.ctx, 640, 360), before)
-
-    def test_capture_after_off_attaches_nothing(self):
-        run(self.ctx, "screenshot")
-        self.ctx.capture_after = False
-        r = screen.after_action(self.ctx, "Clicked.")
-        self.assertEqual(r.images, [])
-        self.assertEqual(r.text, "Clicked.")
-
-    def test_corners_are_not_the_failsafe(self):
-        self.ctx.settings.coord_mode = "normalized"
-        run(self.ctx, "screenshot", monitor=1)
-        self.assertEqual(screen.to_screen(self.ctx, 0, 0), (1, 1))
-        self.assertEqual(screen.to_screen(self.ctx, 1000, 1000), (2558, 1438))
 
 
 class WebTest(unittest.TestCase):

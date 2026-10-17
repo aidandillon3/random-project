@@ -167,7 +167,7 @@ class Base(unittest.TestCase):
     def make(self, chat=None, props=None, http11=False, model="test-model", **kw):
         self.srv = FakeServer(chat, props, http11, model)
         self.addCleanup(self.srv.close)
-        kw = {"enable_control": False, "auto_memory": False, "auto_recall": False, "approval_mode": "auto", **kw}
+        kw = {"auto_memory": False, "auto_recall": False, "approval_mode": "auto", **kw}
         self.ui = RecUI()
         self.agent = Agent(Settings(base_url=self.srv.url, workspace=str(self.ws), **kw), self.ui)
         return self.agent
@@ -299,19 +299,6 @@ class ResultsTest(Base):
         self.assertEqual(agent._output_limit(), agent.settings.max_tool_output)
         agent = self.make(props=lambda: (404, {}))      # the server doesn't say: the setting as is
         self.assertEqual(agent._output_limit(), agent.settings.max_tool_output)
-
-    def test_only_the_last_screen_action_takes_a_screenshot(self):
-        agent = self.make(script({"calls": [("click", {}), ("click", {}), ("note", {})]},
-                                 {"calls": [("click", {}), ("list_windows", {})]}, {"text": "ok"}))
-        seen = []
-        self.add_tool("click", lambda ctx, a: seen.append(ctx.capture_after) or "clicked", group="control")
-        self.add_tool("list_windows", lambda ctx, a: seen.append(ctx.capture_after) or "windows", group="control")
-        self.add_tool("note", lambda ctx, a: seen.append(ctx.capture_after) or "noted")
-        agent.run("go")
-        # a look-only screen tool last doesn't take the picture away from the click before it
-        self.assertEqual(seen, [False, True, True, True, True])
-        self.assertTrue(agent.ctx.capture_after)
-
 
     def test_add_on_tools_are_checked_for_dangerous_commands(self):
         args = {"script": "Remove-Item -Recurse -Force C:\\Users\\me\\Documents"}
@@ -677,7 +664,7 @@ class PromptCacheTest(Base):
     def test_the_system_prompt_is_the_same_in_every_chat(self):
         agent = self.make()
         (self.ws / "AGENT.md").write_text("Use tabs, not spaces.")
-        other = Agent(Settings(base_url=self.srv.url, workspace=tempfile.mkdtemp(), enable_control=False,
+        other = Agent(Settings(base_url=self.srv.url, workspace=tempfile.mkdtemp(),
                                auto_memory=False, auto_recall=False), RecUI())
         self.assertEqual(agent.system_prompt(), other.system_prompt())
         self.assertNotIn(str(self.ws), agent.system_prompt())
@@ -756,7 +743,7 @@ class PromptCacheTest(Base):
         new = Path(tempfile.mkdtemp())
         (new / "AGENT.md").write_text("Never touch the vendor/ folder.")
         # what the window does when another folder is picked mid-chat: a new Agent with the old messages
-        agent2 = Agent(Settings(base_url=self.srv.url, workspace=str(new), enable_control=False,
+        agent2 = Agent(Settings(base_url=self.srv.url, workspace=str(new),
                                 auto_memory=False, auto_recall=False), RecUI())
         agent2.messages = agent.messages
         agent2.run("read notes.txt")
@@ -785,8 +772,19 @@ class PromptCacheTest(Base):
 
 # ---------------------------------------------------------------------- which tools are offered
 class ToolSetTest(Base):
+    def test_no_screen_control_but_the_run_and_fix_loop(self):
+        s = Settings()
+        offered = enabled_tools(s, 0, self.ws)
+        names = {t.name for t in offered}
+        self.assertFalse(names & {"screenshot", "click", "type_text", "press_keys", "open", "ui_elements"})
+        self.assertTrue({"run_command", "check_process", "stop_process", "run_python", "run_tests"} <= names)
+        prompt = prompts.build_system_prompt(s, self.ws, offered, "bash", False)
+        self.assertIn("Check your work by running it", prompt)
+        self.assertIn("background=true", prompt)
+        self.assertIn("can't see or use the user's screen, mouse or keyboard", prompt)
+
     def test_unity_and_github_only_when_likely_used(self):
-        s = Settings(enable_control=False)
+        s = Settings()
         with mock.patch.object(tools_mod.unity, "detected", return_value=False, create=True), \
                 mock.patch.object(tools_mod, "github_signed_in", return_value=False):
             names = {t.name for t in enabled_tools(s, 0, self.ws)}
@@ -794,7 +792,7 @@ class ToolSetTest(Base):
             self.assertIn("git_commit", names)
             self.assertNotIn("git_push", names)
             self.assertNotIn("github_create_pr", names)
-            prompt = prompts.build_system_prompt(s, self.ws, enabled_tools(s, 0, self.ws), "", "bash", False)
+            prompt = prompts.build_system_prompt(s, self.ws, enabled_tools(s, 0, self.ws), "bash", False)
             self.assertNotIn("git_push", prompt)
             self.assertIn("unity_install_bridge", prompt)
             full = {t.name for t in enabled_tools(s, 0, self.ws, full=("unity", "github"))}

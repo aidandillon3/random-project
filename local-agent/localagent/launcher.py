@@ -208,15 +208,15 @@ def build_launch(settings, exe: Path, help_text: str, info: ModelInfo | None = N
         found = find_mmproj(model, info)
         notes.append(f"The vision file picked before ({mmproj}) isn't there any more, so "
                      + (f"{found.name} next to the model is used instead." if found else
-                        "the model can't see screenshots. Pick it again with 'Find vision file online'."))
+                        "the model can't see images. Pick it again with 'Find vision file online'."))
         mmproj = found
     elif mmproj is None and s.use_vision:
         mmproj = find_mmproj(model, info)
         if mmproj is None:
             notes.append("None of the vision files (mmproj) next to this model is made for it, so it can't see "
-                         "screenshots. 'Find vision file online' gets the right one."
+                         "images. 'Find vision file online' gets the right one."
                          if any(model.parent.glob("*mmproj*.gguf")) else
-                         "No vision file (mmproj) next to this model, so it can't see screenshots. Download the "
+                         "No vision file (mmproj) next to this model, so it can't see images. Download the "
                          "matching mmproj-*.gguf into the same folder.")
     use_vision = s.use_vision and mmproj is not None and mmproj.exists()
     if use_vision:
@@ -262,7 +262,7 @@ def build_launch(settings, exe: Path, help_text: str, info: ModelInfo | None = N
             build = build_number(help_text, exe)
             if use_vision and build is not None and build < MTP_VISION_BUILD:
                 notes.append(f"This llama.cpp (b{build}) drafts MTP guesses without looking at pictures, so with a "
-                             f"screenshot in the chat fewer guesses hit and it writes slower. b{MTP_VISION_BUILD} and "
+                             f"image in the chat fewer guesses hit and it writes slower. b{MTP_VISION_BUILD} and "
                              "newer fix that: use 'Download / update llama.cpp'.")
         else:
             notes.append("This llama.cpp is too old for MTP. Use 'Download / update llama.cpp'.")

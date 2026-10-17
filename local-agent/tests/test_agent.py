@@ -45,7 +45,7 @@ class Base(unittest.TestCase):
     def make(self, replies, ui=None, **kw):
         self.srv = MockServer(replies, **{k: kw.pop(k) for k in ("n_ctx", "reject_tools") if k in kw})
         self.addCleanup(self.srv.close)
-        s = Settings(base_url=self.srv.url, workspace=str(self.ws), enable_control=False, **kw)
+        s = Settings(base_url=self.srv.url, workspace=str(self.ws), **kw)
         ui = ui or RecUI()
         return Agent(s, ui), ui
 

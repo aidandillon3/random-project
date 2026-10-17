@@ -18,10 +18,9 @@ from .permissions import ApprovalRequest, Decision, Policy, danger_text, is_dang
 from .tools import SAFE, ToolContext, ToolError, ToolResult, enabled_tools, shell
 from .tools.base import truncate
 from .tools.github import redact_all
-from .tools.screen import coord_help
 from .tools.shell import shell_kind
 
-IMAGE_TOKENS = 1200          # rough cost of one screenshot, for estimates only
+IMAGE_TOKENS = 1200          # rough cost of one image, for estimates only
 CHARS_PER_TOKEN = 3.5
 SUMMARY_TOKENS = 3072        # room a summary made inside the conversation may take
 NO_VISION = "[image not shown: this model can't see images]"
@@ -73,12 +72,6 @@ class AgentUI:
 
     def ask(self, question: str, options: list[str]) -> str:
         return ""
-
-
-# Screen tools that end with a picture of the screen (list_windows, ui_elements and the clipboard
-# only read): of several in one step, only the last one waits for the screen and takes it.
-SHOWS_SCREEN = {"click", "move_mouse", "drag", "scroll", "type_text", "press_keys", "focus_window", "open",
-                "click_element", "screenshot", "zoom"}
 
 
 def png_part(png: bytes) -> dict:
@@ -155,10 +148,9 @@ class Agent:
     def system_prompt(self) -> str:
         if self._system is None:
             self.client.resolve_model()
-            self.ctx.screen["model_name"] = self.client.model
             self._system = prompts.build_system_prompt(
-                self.settings, self.workspace, list(self.tools.values()), coord_help(self.ctx),
-                shell_kind(self.ctx), self.prompt_mode) + self.system_extra
+                self.settings, self.workspace, list(self.tools.values()), shell_kind(self.ctx),
+                self.prompt_mode) + self.system_extra
         return self._system
 
     def context_limit(self) -> int:
@@ -283,21 +275,17 @@ class Agent:
     def _run_calls(self, calls: list[ToolCall], cut_off: bool = False):
         """Run one step's tool calls. Every call gets a result in the history whatever happens
         (Stop, an error): a call without one would break every later request."""
-        last_control = max((i for i, c in enumerate(calls) if c.name in SHOWS_SCREEN), default=-1)
         results: list[tuple[ToolCall, ToolResult]] = []
         try:
-            for i, call in enumerate(calls):
+            for call in calls:
                 if self.stop.is_set():
                     results.append((call, ToolResult(STOPPED, ok=False)))
                     continue
                 if cut_off and not _valid_json(call.arguments):
                     results.append((call, ToolResult(CUT_OFF, ok=False)))
                     continue
-                # several screen actions in one step: only the last waits and takes a screenshot
-                self.ctx.capture_after = i >= last_control
                 results.append((call, self.execute(call)))
         finally:
-            self.ctx.capture_after = True
             why = STOPPED if self.stop.is_set() else "Not run: the step was interrupted."
             results += [(c, ToolResult(why, ok=False)) for c in calls[len(results):]]
             self._record_results(results)
@@ -339,9 +327,7 @@ class Agent:
     def _context_note(self) -> str:
         """What used to be in the system prompt but differs per chat (date, work folder...). It goes
         in the first message instead, so the system prompt stays the same and stays cached."""
-        self.system_prompt()     # learns the model name, which decides the coordinate style
-        coords = coord_help(self.ctx) if "screenshot" in self.tools else ""
-        return prompts.build_context(self.workspace, coords)
+        return prompts.build_context(self.workspace)
 
     # ------------------------------------------------------------------ long-term memory
     def _recalled(self, text: str) -> tuple[str, list[int]]:
@@ -624,12 +610,7 @@ class Agent:
         except ToolError as e:
             result = ToolResult(f"Error: {e}", ok=False)
         except Exception as e:  # noqa: BLE001 - every failure goes back to the model
-            if type(e).__name__ == "FailSafeException":
-                self.stop.set()
-                result = ToolResult("Stopped: the user moved the mouse into a screen corner (emergency stop).",
-                                    ok=False)
-            else:
-                result = ToolResult(f"Error: {type(e).__name__}: {e}", ok=False)
+            result = ToolResult(f"Error: {type(e).__name__}: {e}", ok=False)
         finally:
             self.ui.status("")
         result.text = truncate(redact_all(result.text, self.settings), self._output_limit())
@@ -664,11 +645,11 @@ class Agent:
 
     # ------------------------------------------------------------------ context management
     def _prune_images(self):
-        """Clear older tool screenshots, keeping the newest keep_images, once more than max_images
+        """Clear older tool images, keeping the newest keep_images, once more than max_images
         have piled up. Rarely and many at once, because the server has to re-read the chat from the
         first changed message on. Images the user attached are kept: they're part of the request."""
         keep = max(1, int(self.settings.keep_images))
-        # at least a few clears apart (keep == max would rewrite the history on every screenshot)
+        # at least a few clears apart (keep == max would rewrite the history on every image)
         most = max(keep + max(4, keep), int(getattr(self.settings, "max_images", 8)))
         shots = [m for m in self.messages if m.get("_kind") in ("tool_images", "tool_response")]
         total = sum(_count_images(m) for m in shots)

@@ -38,15 +38,15 @@ about 12x slower. Everything below is about putting the right parts of a model i
 
 ## Recommended models
 
-| Model | Type | Sees the screen | How it runs on your PC | Pick it for |
+| Model | Type | Sees images | How it runs on your PC | Pick it for |
 |---|---|---|---|---|
-| **Qwen3.6-35B-A3B** (Q4_K_M) | MoE, 3B active | Yes | ~21 GB: attention on GPU, some experts in RAM. Fast. | **Best all-rounder for this app.** Quick tool loops and screen work |
+| **Qwen3.6-35B-A3B** (Q4_K_M) | MoE, 3B active | Yes | ~21 GB: attention on GPU, some experts in RAM. Fast. | **Best all-rounder for this app.** Quick tool and test loops |
 | **Qwen3.8-27B** (IQ4_XS or Q3_K_M) | Dense | Check the model page | Q4_K_M (~18 GB) spills to RAM and slows down; IQ4_XS/Q3 fit | The smartest model that runs locally; slower |
 | **Qwen3.6-27B** (IQ4_XS, MTP version) | Dense | Yes | ~14 GB, fits on the GPU | Hard coding and reasoning; turn on MTP for about 1.3-2x faster writing |
 | **gpt-oss-20b** (MXFP4) | MoE, 3.6B active | No | ~13 GB, fully on the GPU. Very fast | Fast text and coding work with strong tool calling |
 
 Get them from Hugging Face (search the name plus "GGUF"; bartowski and unsloth upload good ones).
-For screen vision you also need the matching **mmproj** file: the Model server page can find and
+For vision you also need the matching **mmproj** file: the Model server page can find and
 download it for you (**Find vision file online**), also for fine-tunes of these models.
 
 How sure is this list? Qwen3.6/3.8 were checked against model pages in October 2026; the speeds

@@ -9,7 +9,6 @@ os.environ.setdefault("LOCALAGENT_DATA", tempfile.mkdtemp())
 
 from localagent.config import Settings  # noqa: E402
 from localagent.tools import REGISTRY, ToolContext, ToolError  # noqa: E402
-from localagent.tools import screen  # noqa: E402
 from localagent.tools.web import html_to_text, parse_ddg  # noqa: E402
 
 
@@ -87,34 +86,6 @@ class FileToolsTest(unittest.TestCase):
         import time
         time.sleep(2.5)
         self.assertIn("end", run(self.ctx, "check_process", id=pid))
-
-
-class ScreenMathTest(unittest.TestCase):
-    def ctx(self, mode, model=""):
-        c = ToolContext(settings=Settings(coord_mode=mode), workspace=Path("."))
-        c.screen.update(left=1920, top=0, width=2560, height=1440, img_w=1280, img_h=720, monitor=2,
-                        model_name=model)
-        return c
-
-    def test_pixels(self):
-        c = self.ctx("pixels")
-        self.assertEqual(screen.to_screen(c, 640, 360), (1920 + 1280, 720))
-        self.assertEqual(screen.from_screen(c, 1920 + 1280, 720), (640, 360))
-
-    def test_normalized(self):
-        c = self.ctx("normalized")
-        self.assertEqual(screen.to_screen(c, 500, 500), (1920 + 1280, 720))
-        # clamped on screen, 1 pixel off the edges: a corner is pyautogui's emergency stop
-        self.assertEqual(screen.to_screen(c, 1000, 1000), (1920 + 2558, 1438))
-        self.assertEqual(screen.to_screen(c, 0, 0), (1920 + 1, 1))
-
-    def test_auto_by_model(self):
-        self.assertEqual(screen.coord_mode(self.ctx("auto", "Qwen3.6-27B-Q4_K_M")), "normalized")
-        self.assertEqual(screen.coord_mode(self.ctx("auto", "gemma-3-27b")), "pixels")
-
-    def test_keys(self):
-        self.assertEqual(screen.parse_keys("Ctrl+Shift+Escape"), ["ctrl", "shift", "esc"])
-        self.assertEqual(screen.parse_keys("Windows r"), ["win", "r"])
 
 
 class WebParseTest(unittest.TestCase):

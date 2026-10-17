@@ -5,8 +5,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import code, files, github, misc, screen, shell, unity, web  # noqa: F401  (registers tools)
-from .base import CONTROL, EDIT, PUBLISH, REGISTRY, RISK_LABELS, RUN, SAFE, Tool, ToolContext, ToolError, ToolResult
+from . import code, files, github, misc, shell, unity, web  # noqa: F401  (registers tools)
+from .base import EDIT, PUBLISH, REGISTRY, RISK_LABELS, RUN, SAFE, Tool, ToolContext, ToolError, ToolResult
 
 # Every tool's definition goes with every request and costs prompt tokens, so two big groups are
 # cut down unless they're likely to be used. Left in: what's needed to start using them.
@@ -48,8 +48,6 @@ def enabled_tools(settings, depth: int = 0, workspace=None, full=()) -> list[Too
     groups = {"core"}
     if settings.enable_shell:
         groups.add("shell")
-    if settings.enable_control:
-        groups.add("control")
     if settings.enable_web:
         groups.add("web")
     if getattr(settings, "enable_github", True):
@@ -69,12 +67,8 @@ def enabled_tools(settings, depth: int = 0, workspace=None, full=()) -> list[Too
         tools = [t for t in tools if t.group != "github" or t.name in LOCAL_GIT]
     if depth > 0:  # helpers work quietly: no questions to the user
         tools = [t for t in tools if t.name != "ask_user"]
-    if "control" in groups and getattr(settings, "computer", "desktop") == "virtual":
-        from .. import vdesktop      # the screen tools act on the virtual computer instead of this PC
-
-        tools = vdesktop.wrap_tools(tools)
     return tools
 
 
 __all__ = ["REGISTRY", "Tool", "ToolContext", "ToolError", "ToolResult", "enabled_tools", "github_signed_in",
-           "SAFE", "EDIT", "RUN", "CONTROL", "PUBLISH", "RISK_LABELS"]
+           "SAFE", "EDIT", "RUN", "PUBLISH", "RISK_LABELS"]
