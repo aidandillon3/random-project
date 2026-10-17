@@ -45,8 +45,8 @@ class Settings:
 
     # context
     context_limit: int = 0             # 0 = ask the server, else 32768
-    keep_images: int = 2               # newest screenshots kept when older ones are cleared
-    max_images: int = 8                # clear older screenshots only once more than this many pile up
+    keep_images: int = 2               # newest images kept when older ones are cleared
+    max_images: int = 8                # clear older images only once more than this many pile up
                                        # (each clearing makes the server re-read the chat from there)
     max_tool_output: int = 20000       # characters per tool result
     max_steps: int = 150               # tool rounds per message before it stops and checks in
@@ -60,7 +60,6 @@ class Settings:
 
     # tool groups
     enable_shell: bool = True
-    enable_control: bool = True
     enable_web: bool = True
     enable_subagents: bool = True
     enable_github: bool = True
@@ -75,16 +74,8 @@ class Settings:
     index_files: bool = True           # keep a search index of the work folder + index_folders
     index_folders: list = field(default_factory=list)
 
-    # screen
-    screenshot_max_side: int = 1280
-    coord_mode: str = "auto"           # auto | pixels | normalized (0-1000)
-    grid_overlay: bool = False
-    screenshot_after_action: bool = True
-    monitor: int = 1                   # 1 = main screen, 2 = second ...
-    computer: str = "virtual"          # virtual (its own hidden Linux desktop, see vdesktop/) | desktop (yours)
-    desktop_size: str = "1280x800"     # the virtual computer's screen
-    desktop_share_work: bool = True    # the work folder is ~/Work in the virtual computer
-    desktop_wsl_version: int = 1       # 1: no virtual machine, no hypervisor needed; 2: WSL 2's virtual machine
+    # images and the shell
+    screenshot_max_side: int = 1280    # images the model reads are scaled to fit this (longest side, pixels)
     shell: str = "auto"                # auto | powershell | cmd | bash
 
     # model server launcher
@@ -132,7 +123,7 @@ class Settings:
         if version < 2 and raw.get("max_tokens") == 8192:
             s.max_tokens = 32768      # the old default cut long thinking short
         if version < 3 and raw.get("keep_images") == 3:
-            s.keep_images = 2         # the old default; fewer screenshots, cleared less often, is faster
+            s.keep_images = 2         # the old default; fewer images, cleared less often, is faster
         return s
 
     def save(self, path: Path | None = None) -> None:

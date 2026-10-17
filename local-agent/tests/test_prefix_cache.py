@@ -9,8 +9,8 @@ messages[0..n] must stay byte for byte the same, with new content only added at 
 
 Side questions (the compaction summary, the memory check, a helper agent's chat) may look different,
 but afterwards the main chat must carry on from the same prefix as before. Only the request right
-after a compaction may start a new prefix, once, and clearing old screenshots may break it once
-per batch of screenshots, never on every step.
+after a compaction may start a new prefix, once, and clearing old images may break it once per
+batch of images, never on every step.
 """
 
 import io
@@ -18,8 +18,6 @@ import json
 import os
 import sys
 import tempfile
-import time
-import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -31,7 +29,6 @@ from localagent import prompts, tools as tools_mod  # noqa: E402
 from localagent.agent import CHARS_PER_TOKEN, IMAGE_TOKENS, Agent, AgentUI  # noqa: E402
 from localagent.config import Settings  # noqa: E402
 from localagent.permissions import Decision  # noqa: E402
-from localagent.tools import screen  # noqa: E402
 from tests.mockserver import MockServer, calls, text  # noqa: E402
 
 # A chat template that knows thinking levels (Qwen3.8 style), so reasoning_effort is really sent.
@@ -203,7 +200,7 @@ class Base(unittest.TestCase):
         self.n_ctx = n_ctx
         self.srv = CacheServer(replies, n_ctx, summary, memories)
         self.addCleanup(self.srv.close)
-        kw = {"enable_control": False, "approval_mode": "auto", "thinking": "medium", **settings}
+        kw = {"approval_mode": "auto", "thinking": "medium", **settings}
         self.ui = RecUI()
         self.agent = Agent(Settings(base_url=self.srv.url, workspace=str(self.ws), **kw), self.ui)
         return self.agent
@@ -506,76 +503,53 @@ class CompactionTest(Base):
         self.assert_cache_friendly("low")
 
 
-# ---------------------------------------------------------------------- screen control and screenshots
-class FakeGui:
-    """Stands in for pyautogui: records what would have been done."""
-    KEYBOARD_KEYS = ["ctrl", "alt", "shift", "tab", "enter", "esc", "s", "a", "l", "win", "f5"]
+# ---------------------------------------------------------------------- images
+class ImageTest(Base):
+    """Pictures the model reads (here the frames a game rendered, read with read_file) pile up in
+    the chat and are cleared in batches."""
+    FRAMES = 17
 
-    def __init__(self):
-        self.done = []
-
-    def __getattr__(self, name):
-        return lambda *a, **kw: self.done.append(name)
-
-
-class ScreenTest(Base):
     def setUp(self):
         super().setUp()
-        self.shots, self.gui = 0, FakeGui()
+        from PIL import Image
 
-        def shot(ctx, monitor=None):
-            self.shots += 1
-            ctx.screen.update(left=0, top=0, width=1920, height=1080, img_w=1280, img_h=720, monitor=monitor or 1)
-            return PNG + f"screen {self.shots}".encode()
-        for p in (mock.patch.object(screen, "_shot", shot), mock.patch.object(screen, "_gui", lambda: self.gui),
-                  mock.patch.object(screen, "time", types.SimpleNamespace(sleep=lambda s: None, time=time.time))):
-            p.start()
-            self.addCleanup(p.stop)
+        (self.ws / "frames").mkdir()
+        for i in range(1, self.FRAMES + 1):
+            Image.new("RGB", (64, 40), (i * 12, 90, 200)).save(self.ws / "frames" / f"f{i:02}.png")
+        (self.ws / "render.py").write_text("SKY = (200, 90, 30)   # blue, green, red\n")
 
     STEPS = [
-        [("screenshot", {})],
-        [("click", {"x": 24, "y": 700})],
-        [("type_text", {"text": "notepad", "enter": True})],
-        [("click", {"x": 640, "y": 360})],
-        [("type_text", {"text": "milk\neggs\nbread"})],
-        [("press_keys", {"keys": "ctrl+s"}), ("type_text", {"text": "shopping.txt"})],   # one screenshot
-        [("press_keys", {"keys": "enter"})],
-        [("todo_write", {"todos": [{"content": "Save the list", "status": "done"},
-                                   {"content": "Check it in the folder", "status": "in_progress"}]})],
-        [("screenshot", {})],
-        [("press_keys", {"keys": "win"})],
-        [("type_text", {"text": "documents", "enter": True})],
-        [("scroll", {"amount": 3, "x": 640, "y": 400})],
-        [("move_mouse", {"x": 300, "y": 220})],
-        [("drag", {"from_x": 300, "from_y": 220, "to_x": 600, "to_y": 220})],
-        [("click", {"x": 300, "y": 220, "clicks": 2})],
-        [("screenshot", {})],
-        [("press_keys", {"keys": "ctrl+a"})],
-        [("press_keys", {"keys": "alt+tab"})],
-        [("screenshot", {})],
-        [("click", {"x": 1200, "y": 10})],
+        [("read_file", {"path": "frames/f01.png"})],
+        [("read_file", {"path": "frames/f02.png"})],
+        [("read_file", {"path": "render.py"})],
+        [("read_file", {"path": "frames/f03.png"}), ("read_file", {"path": "frames/f04.png"})],
+        [("todo_write", {"todos": [{"content": "Find why the sky is orange", "status": "done"},
+                                   {"content": "Check every frame", "status": "in_progress"}]})],
+        [("read_file", {"path": "frames/f05.png"})],
+        [("read_file", {"path": "frames/f06.png"})],
+        [("read_file", {"path": "frames/f07.png"})],
+        [("read_file", {"path": "frames/f08.png"}), ("read_file", {"path": "frames/f09.png"})],
+        [("read_file", {"path": "render.py", "offset": -5})],
+        *[[("read_file", {"path": f"frames/f{i:02}.png"})] for i in range(10, FRAMES + 1)],
     ]
 
-    def test_screenshots_are_cleared_once_per_batch_not_every_step(self):
+    def test_images_are_cleared_once_per_batch_not_every_step(self):
         replies = [calls(*step) for step in self.STEPS]
-        replies[0] = thinking(replies[0], "First look at the screen.")
-        replies.append(thinking(text("Saved shopping.txt in Documents with milk, eggs and bread."), "Done."))
-        agent = self.make(replies, enable_control=True, computer="desktop", keep_images=2, max_images=8,
-                          thinking="high")
-        out = agent.run("Write my shopping list in Notepad and save it as shopping.txt. It should look like this:",
+        replies[0] = thinking(replies[0], "First look at the frames it rendered.")
+        replies.append(thinking(text("The sky colour had red and blue swapped in render.py."), "Done."))
+        agent = self.make(replies, keep_images=2, max_images=8, thinking="high")
+        out = agent.run("The game draws the sky orange. It should look like this:",
                         images=[PNG + b"the user's mockup"])
-        self.assertIn("shopping.txt", out)
-        self.assertIn("click", self.gui.done)
-        self.assertIn("screenshot", json.dumps(agent._tool_schemas()))
+        self.assertIn("red and blue", out)
+        offered = {t["function"]["name"] for t in agent._tool_schemas()}
+        self.assertFalse(offered & {"screenshot", "click", "type_text", "press_keys", "open"})   # no screen control
 
         bodies, mains = self.srv.requests, self.mains()
         self.assertEqual(len(mains), len(self.STEPS) + 1)
         self.assertEqual(self.kinds(), ["main"] * len(mains) + ["memory check"])
 
-        # where clearing is due: count the screenshots step by step (several screen actions in one
-        # step give one; todo_write none)
-        per_step = [int(any(n in ("screenshot", "click", "type_text", "press_keys", "scroll", "move_mouse",
-                                  "drag") for n, _ in step)) for step in self.STEPS]
+        # where clearing is due: count the images step by step
+        per_step = [sum(str(a.get("path", "")).endswith(".png") for _, a in step) for step in self.STEPS]
         expect, held = [], 0
         for step, n in enumerate(per_step):
             held += n
@@ -584,7 +558,7 @@ class ScreenTest(Base):
                 held = 2
         self.assertEqual(len(expect), 2)
 
-        # the attached image stays; tool screenshots: never more than 8, back to 2 after clearing
+        # the attached image stays; images from tools: never more than 8, back to 2 after clearing
         tool_images = [images_in(bodies[i]["messages"]) - 1 for i in mains]
         self.assertEqual(images_in(bodies[mains[0]]["messages"]), 1)
         self.assertLessEqual(max(tool_images), 8)

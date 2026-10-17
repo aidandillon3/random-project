@@ -12,14 +12,12 @@ from typing import Any, Callable
 SAFE = "safe"        # reading, looking, planning
 EDIT = "edit"        # changes files
 RUN = "run"          # runs programs or code
-CONTROL = "control"  # moves your mouse, types, opens apps, focuses windows
 PUBLISH = "publish"  # sends something to the internet under your name (git push, pull requests)
 
 RISK_LABELS = {
     SAFE: "look around",
     EDIT: "change files",
     RUN: "run commands",
-    CONTROL: "use your mouse and keyboard",
     PUBLISH: "post to GitHub",
 }
 
@@ -72,12 +70,9 @@ class ToolContext:
     stop: threading.Event = field(default_factory=threading.Event)
     ask_user: Callable[[str, list[str]], str] | None = None
     agent: Any = None                 # the running Agent (todos, sub-agents)
-    screen: dict = field(default_factory=dict)   # last screenshot geometry
-    ui_cache: list = field(default_factory=list)  # last ui_elements result
     processes: dict = field(default_factory=dict)
     coding: dict = field(default_factory=dict)   # the active coding task (see tools/code.py)
     unity: dict = field(default_factory=dict)    # the Unity project in use (see tools/unity.py)
-    capture_after: bool = True   # control actions attach a screenshot (the agent sets False for all but the last)
 
     def resolve(self, path: str) -> Path:
         p = Path(str(path).strip().strip('"')).expanduser()
