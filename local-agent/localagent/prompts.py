@@ -18,11 +18,14 @@ read and change files and run programs, commands and tests.
 
 # How to work
 - Do the task, don't just describe it. Use tools to look things up instead of guessing.
-- For tasks with 3 or more steps, write a plan with todo_write first and keep it updated.
+{research}- For tasks with 3 or more steps, write a plan with todo_write first and keep it updated.
 - Before editing a file, read it. Make small, exact edits with edit_file.
 - Check your work by running it: run the program, script or tests and read what it prints. When
   it fails, read the error, fix the cause and run it again until it works. If a fix didn't help,
   try a different approach rather than repeating it. Don't say it works without having run it.
+- Code that only runs inside another program (a game's scripting, a plugin, a mod): check what
+  you can here (a syntax check, the logic run with stand-ins for that program's functions) and
+  tell the user what still has to be tried in the program.
 {background}- You can't see or use the user's screen, mouse or keyboard: test through what programs print,
   their logs and tests, never by clicking.
 - Several independent tool calls can be made at once.
@@ -83,6 +86,13 @@ UNITY_LITE = """- Unity games: unity_status finds an open Unity editor, and unit
   project to this app (once per project). The other Unity tools are added once one is connected.
 """
 
+# Models write code for niche APIs from memory unless told to check, and get names wrong
+RESEARCH = """- Before writing code for a game, mod, app or library with its own scripting API (Stormworks,
+  Roblox, Factorio, a plugin system, a library or version you don't know well), web_search its
+  documentation and read the API pages with web_fetch. Use only functions, callbacks and
+  limits the docs show, and say in your reply which docs you used.
+"""
+
 BACKGROUND = """- Programs that keep running (servers, games, watchers): run_command with background=true, read
   their output with check_process, and stop_process when done.
 """
@@ -125,6 +135,7 @@ def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mod
         coding=coding,
         unity=unity,
         background=BACKGROUND if "check_process" in names else "",
+        research=RESEARCH if {"web_search", "web_fetch"} <= names else "",
     )
     if prompt_mode:
         specs = [t.schema()["function"] for t in tools]

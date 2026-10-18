@@ -783,6 +783,17 @@ class ToolSetTest(Base):
         self.assertIn("background=true", prompt)
         self.assertIn("can't see or use the user's screen, mouse or keyboard", prompt)
 
+    def test_it_looks_up_unfamiliar_apis_before_coding(self):
+        s = Settings()
+        prompt = prompts.build_system_prompt(s, self.ws, enabled_tools(s, 0, self.ws), "bash", False)
+        self.assertIn("web_search its\n  documentation", prompt)
+        self.assertIn("Stormworks", prompt)
+        self.assertIn("stand-ins for that program's functions", prompt)
+        s.enable_web = False                 # no web tools: no rule that names them
+        prompt = prompts.build_system_prompt(s, self.ws, enabled_tools(s, 0, self.ws), "bash", False)
+        self.assertNotIn("web_search", prompt)
+        self.assertIn("stand-ins for that program's functions", prompt)
+
     def test_unity_and_github_only_when_likely_used(self):
         s = Settings()
         with mock.patch.object(tools_mod.unity, "detected", return_value=False, create=True), \
