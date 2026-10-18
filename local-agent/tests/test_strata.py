@@ -140,6 +140,36 @@ class StrataTest(unittest.TestCase):
         s.ctx_size = 131072
         self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))
 
+    def test_each_size_has_its_own_setup(self):
+        s = Settings(ctx_size=65536, use_vision=True)
+        iq3 = catalog.BY_KEY["swift-flash-next-iq3s"]
+        iq3_model = self.model.with_name(iq3.files[0])
+        self.root.mkdir(parents=True)
+        strata.python(self.root).parent.mkdir(parents=True)
+        strata.python(self.root).write_text("")
+        # an older version's stamp: IQ2_XS set up, one setup's choices only
+        strata.config_path(self.flash, self.root).write_text("{}")
+        (self.root / strata.STAMP).write_text(json.dumps(strata.wanted(self.flash, self.model, s)))
+        self.assertFalse(strata.needs_setup(self.flash, self.model, s, self.root))
+        self.assertTrue(strata.set_up_before(self.root))
+        # IQ3_S: its own setup, config and engine options
+        self.assertTrue(strata.needs_setup(iq3, iq3_model, s, self.root))
+        a = strata.setup_args(iq3, iq3_model, s, self.root)
+        self.assertEqual(a[a.index("--model") + 1], "IQ3_S")
+        cfg_path = strata.config_path(iq3, self.root)
+        self.assertEqual(cfg_path.name, "strata-swift-iq3_s.json")
+        cfg_path.write_text(json.dumps({"args": ["--serve"]}))
+        strata.mark_setup_done(iq3, iq3_model, s, self.root)
+        # switching back and forth sets neither up again
+        self.assertFalse(strata.needs_setup(iq3, iq3_model, s, self.root))
+        self.assertFalse(strata.needs_setup(self.flash, self.model, s, self.root))
+        cmd = strata.serve_args(iq3, s, self.root)
+        self.assertEqual(cmd[cmd.index("--config") + 1], str(cfg_path))
+        args = json.loads(cfg_path.read_text())["args"]
+        # its experts take ~50 of the 64 GB of RAM: less room to park chats (one 64K chat still fits)
+        self.assertEqual(args[args.index("--conversation-cache-mib") + 1], "1024")
+        self.assertEqual(args[args.index("--prompt-cache") + 1], "10")
+
     def test_download_unpacks_and_keeps_an_earlier_install(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:

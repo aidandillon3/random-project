@@ -1728,7 +1728,8 @@ class ServerPage(QWidget):
             model = Path(s.model_path)
             args = strata.setup_args(p, model, s) if strata.needs_setup(p, model, s) else strata.serve_args(p, s)
             self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
-            first = not strata.installed() or strata.needs_setup(p, model, s)
+            first = not strata.installed() or not strata.set_up_before()
+            again = not first and strata.needs_setup(p, model, s)
             self.plan_label.setText(
                 f"<b style='color:{OK}'>Runs on Strata.</b> It places the model itself: attention and the busiest "
                 "experts on the GPU, the other experts in RAM (worked on by the CPU at the same time), the n-gram "
@@ -1736,7 +1737,8 @@ class ServerPage(QWidget):
                 "still apply; the other settings are llama.cpp's."
                 + ("<br>The first start downloads Strata (about 55 MB) and runs its setup, which installs Python if "
                    "needed and fetches its engine and a ~6 GB draft layer. Later starts take 30-90 seconds."
-                   if first else ""))
+                   if first else "<br>The next start runs Strata's setup again first, for this size and these "
+                   "settings (its engine and draft layer are already here)." if again else ""))
             return
         self._startable = bool(s.model_path)     # without llama.cpp, Start offers to download it
         if not (self.exe and s.model_path):
