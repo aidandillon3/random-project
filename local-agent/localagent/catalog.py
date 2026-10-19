@@ -37,6 +37,11 @@ class Preset:
     sizes: dict[str, int] = field(default_factory=dict)   # bytes, for the space check and progress
     launch: dict = field(default_factory=dict)            # Settings fields to apply
     strata: dict | None = None            # Strata's setup choice, when Strata can run it (strata.py)
+    subdir: str = ""                      # the model files' folder in the repo, when they aren't at its top
+
+    def remote(self, repo: str, name: str) -> str:
+        """The file's path in its Hugging Face repo."""
+        return f"{self.subdir}/{name}" if self.subdir and repo == self.repo and name in self.files else name
 
     def all_files(self) -> list[tuple[str, str]]:
         out = [(self.repo, f) for f in self.files]
@@ -106,6 +111,29 @@ PRESETS = [
         "12 GB RTX 5070). Its 50 GB of experts stay in RAM, which leaves a 64 GB PC about 10 GB for "
         "everything else: close big programs like Unity or games while it runs, or take IQ3_XXS.",
         (44900816736, 38842920384), {"--conversation-cache-mib": "1024"}),
+    # ISTA-DASLab's pruned release: the original Qwen3.8 (not Swift), 256 of each layer's 512 experts kept, picked
+    # on code, tool use and images. Strata: --family coder, its only size IQ1_M (the experts stored like IQ3_S)
+    Preset(
+        key="flash-next-coder",
+        title="Qwen3.8 Flash Next Coder IQ1_M (for coding, half the RAM)",
+        blurb="The original Flash Next with half its experts removed, keeping the ones code, tools and images "
+              "use. The rest are stored like IQ3_S, so it codes nearly as well as the full model (by its makers: "
+              "99% on LiveCodeBench, 91% on SWE-bench Verified) but is weaker at everything else. Its 23 GB of "
+              "experts leave plenty of RAM for Unity or a game. It is the plain Qwen model, not Swift, so it "
+              "thinks for longer before answering. Has its own vision file.",
+        repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF", subdir="IQ1_M",
+        files=[f"Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-0000{i}-of-00002.gguf" for i in (1, 2)],
+        mmproj=("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF", "mmproj-Qwen3.8-Flash-Next-BF16.gguf"),
+        folder="Qwen3.8-Flash-Next-Coder",
+        sizes={"Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf": 29608446496,
+               "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf": 28800138432,
+               "mmproj-Qwen3.8-Flash-Next-BF16.gguf": 907543008},
+        launch={"ctx_size": 65536, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": True,
+                "engine": "strata"},
+        # only 23 GB of experts in RAM, so it can park more chats than the default 4 GiB
+        strata={"family": "coder", "model": "IQ1_M", "tag": "coder-",
+                "engine_args": {"--conversation-cache-mib": "8192"}},
+    ),
 ]
 BY_KEY = {p.key: p for p in PRESETS}
 
@@ -252,7 +280,8 @@ def download(preset: Preset, dest: Path, progress=lambda msg, frac: None, stop: 
         headers = {"Range": f"bytes={start}-"} if start else {}
         h = None
         try:
-            with session.get(url(repo, name, base), headers=headers, stream=True, timeout=60) as r:
+            link = url(repo, preset.remote(repo, name), base)
+            with session.get(link, headers=headers, stream=True, timeout=60) as r:
                 sha = _sha256_of(r)
                 h = hashlib.sha256() if sha else None
                 if r.status_code == 416:          # the .part is already complete
