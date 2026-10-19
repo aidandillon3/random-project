@@ -170,6 +170,23 @@ class StrataTest(unittest.TestCase):
         self.assertEqual(args[args.index("--conversation-cache-mib") + 1], "1024")
         self.assertEqual(args[args.index("--prompt-cache") + 1], "10")
 
+    def test_coder_runs_as_its_own_family(self):
+        s = Settings(ctx_size=65536, use_vision=True)
+        coder = catalog.BY_KEY["flash-next-coder"]
+        model = Path("/models/Qwen3.8-Flash-Next-Coder") / coder.files[0]
+        a = strata.setup_args(coder, model, s, self.root)
+        self.assertEqual((a[a.index("--family") + 1], a[a.index("--model") + 1]), ("coder", "IQ1_M"))
+        self.assertEqual(a[a.index("--gguf-dir") + 1], str(model.parent))
+        # setup.py names it strata-<family tag><size>.json
+        cfg_path = strata.config_path(coder, self.root)
+        self.assertEqual(cfg_path.name, "strata-coder-iq1_m.json")
+        self.root.mkdir(parents=True)
+        cfg_path.write_text(json.dumps({"args": ["--serve"]}))
+        strata.tune_config(coder, self.root)
+        args = json.loads(cfg_path.read_text())["args"]
+        # only 23 GB of experts in RAM: room to park more chats
+        self.assertEqual(args[args.index("--conversation-cache-mib") + 1], "8192")
+
     def test_download_unpacks_and_keeps_an_earlier_install(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:

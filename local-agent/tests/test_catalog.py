@@ -99,7 +99,7 @@ class CatalogTest(unittest.TestCase):
         self.assertIsNone(catalog.matching("other.gguf"))
 
     def test_flash_next_sizes(self):
-        sizes = {p.strata["model"]: p for p in catalog.PRESETS if p.strata}
+        sizes = {p.strata["model"]: p for p in catalog.PRESETS if p.strata and p.strata["family"] == "swift"}
         iq2 = catalog.BY_KEY["swift-flash-next"]
         self.assertEqual(list(sizes), ["IQ2_XS", "IQ3_XXS", "IQ3_S"])
         for size, p in sizes.items():
@@ -114,6 +114,33 @@ class CatalogTest(unittest.TestCase):
         totals = [sizes[m].total_bytes() for m in ("IQ2_XS", "IQ3_XXS", "IQ3_S")]
         self.assertEqual(totals, sorted(totals))
         self.assertAlmostEqual(sizes["IQ3_S"].total_bytes() / catalog.GB, 84.6, delta=0.1)
+
+    def test_flash_next_coder(self):
+        coder = catalog.BY_KEY["flash-next-coder"]
+        # what Strata's setup looks for with --family coder --model IQ1_M (its config: strata-coder-iq1_m.json)
+        self.assertEqual(coder.strata["family"], "coder")
+        self.assertEqual(coder.strata["model"], "IQ1_M")
+        self.assertEqual(coder.files, [f"Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-0000{i}-of-00002.gguf" for i in (1, 2)])
+        self.assertEqual(coder.mmproj[1], "mmproj-Qwen3.8-Flash-Next-BF16.gguf")
+        self.assertIs(catalog.matching(f"D:/m/{coder.files[0]}"), coder)
+        # Hugging Face's sizes (2026-10-19): Strata's 58.4 GB download, plus the vision file
+        self.assertAlmostEqual(coder.total_bytes() / catalog.GB, 59.3, delta=0.1)
+        # the shards sit in the repo's IQ1_M folder, the vision file at its top
+        self.assertEqual(coder.remote(coder.repo, coder.files[1]), f"IQ1_M/{coder.files[1]}")
+        self.assertEqual(coder.remote(*coder.mmproj), coder.mmproj[1])
+
+    def test_download_from_a_folder_of_the_repo(self):
+        p = preset()
+        p.repo, p.subdir = "u/Coder-GGUF", "Q"
+        p.mmproj = ("u/Coder-GGUF", "mmproj-M-BF16.gguf")
+        saved = dict(FILES)
+        self.addCleanup(lambda: (FILES.clear(), FILES.update(saved)))
+        for (_, f), b in saved.items():
+            FILES[("u/Coder-GGUF", f"Q/{f}" if f in p.files else f)] = b
+        model, mm = catalog.download(p, self.root / p.folder, base=self.hf.url)
+        self.assertEqual(model.read_bytes(), FILES[("u/Coder-GGUF", "Q/M-00001-of-00002.gguf")])
+        self.assertEqual(mm.read_bytes(), FILES[("u/Coder-GGUF", "mmproj-M-BF16.gguf")])
+        self.assertEqual(model.parent, self.root / p.folder)       # no Q folder on the PC: Strata wants them here
 
     def test_download_resumes_and_finds_everything(self):
         p = preset()

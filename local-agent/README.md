@@ -236,6 +236,7 @@ follow whichever model is running.
 | **Swift 1.5 Qwen3.8 Flash Next IQ2_XS** | 69 GB (+6 GB for Strata) | 125B MoE, 6B active, on Strata: busiest experts on the GPU, the rest in RAM, its 28 GB n-gram table read from the SSD as needed, 64K context | Hardest tasks |
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_XXS** | 77 GB | The same model at 3 bits: 43 GB of experts in RAM, about 20% slower than IQ2_XS | Hardest tasks, better answers |
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_S** | 85 GB | The same model at 3.5 bits: 50 GB of experts in RAM, about a third slower than IQ2_XS | Best answers, with little else open |
+| **Qwen3.8 Flash Next Coder IQ1_M** | 59 GB | The original Flash Next with half its experts removed, the rest stored like IQ3_S: 23 GB of experts in RAM | Coding, with Unity or a game open |
 
 Flash Next IQ2_XS needs about 40 GB of RAM + VRAM plus space on a fast SSD. It runs on
 **[Strata](https://github.com/Niko1221/Strata)** by default (the "Run it with Strata" box under
@@ -255,6 +256,17 @@ PC IQ3_S leaves little room: close big programs (Unity, games) while it runs, or
 three sizes share the vision file and Strata's draft layer; each size runs Strata's setup once, the
 first time it starts. Once you've settled on a size, delete the other sizes' two `.gguf` files from
 `Swift-1.5-Qwen3.8-Flash-Next` to get the space back.
+
+The Coder mode is [ISTA-DASLab's coding version](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF)
+of Flash Next: it keeps the 256 of each layer's 512 experts that code, tool use and images use and
+drops the rest. Its makers measured 99% of the full model's LiveCodeBench score and 91% of its
+SWE-bench Verified score (fixing real bugs in real repos, the closest to this app's coding mode).
+It is weaker at everything else and in languages other than English. Strata measured 55 tokens/s
+on the RTX 5070, about IQ3_S's speed, and it reads long prompts the fastest of all the sizes. Its
+experts take only 23 GB of RAM, so Unity or a game can stay open. It is the plain Qwen model, not
+the Swift fine-tune, so it thinks for longer before it answers. It has its own folder
+(`Qwen3.8-Flash-Next-Coder`) and vision file, and Strata sets it up once the first time it starts.
+Switch to it for coding from the model menu in the chat bar, and back to a Swift size for the rest.
 
 | Model | Type | Sees images | On your PC | Pick it for |
 |---|---|---|---|---|
