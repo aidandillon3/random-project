@@ -559,7 +559,7 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(self.wait_until(lambda: "Ready" in page.state.text(), 30), page.state.text())
         args = (root / "setup-args.txt").read_text().split()
         self.assertEqual(args[args.index("--context") + 1], "65536")
-        self.assertEqual(json.loads((root / strata.STAMP).read_text())["context"], 65536)
+        self.assertEqual(json.loads((root / strata.STAMP).read_text())["swift:IQ2_XS"]["context"], 65536)
         self.assertTrue(strata.needs_setup(flash, Path(s.model_path), s))     # the next start sets up again
         self.assertEqual(s.base_url, f"http://127.0.0.1:{port}/v1")         # where it really runs
         page.stop()

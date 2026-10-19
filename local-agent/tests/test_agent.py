@@ -279,7 +279,11 @@ class ThinkingTest(Base):
         agent.client._template = self.QWEN38
         p = agent._params()
         self.assertEqual(p["reasoning_effort"], "xhigh")
-        self.assertEqual(p["chat_template_kwargs"], {"enable_thinking": True, "reasoning_effort": "xhigh"})
+        self.assertEqual(p["chat_template_kwargs"], {"enable_thinking": True, "reasoning_effort": "xhigh",
+                                                     "preserve_thinking": True})
+        agent.settings.send_back_reasoning = False   # earlier thinking isn't sent: nothing to keep
+        self.assertFalse(agent._params()["chat_template_kwargs"]["preserve_thinking"])
+        agent.settings.send_back_reasoning = True
         agent.settings.thinking = "medium"
         self.assertEqual(agent._params()["reasoning_effort"], "medium")
         agent.settings.thinking = "off"

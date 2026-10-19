@@ -409,7 +409,10 @@ class Agent:
             if "low" in self.effort_levels():   # models that can't switch it off (gpt-oss) think least
                 p["reasoning_effort"] = p["chat_template_kwargs"]["reasoning_effort"] = "low"
         elif want in EFFORTS:
-            p["chat_template_kwargs"] = {"enable_thinking": True}
+            # preserve_thinking: Qwen's templates otherwise drop the thinking of earlier turns, which loses the
+            # reasoning behind earlier tool calls (Qwen recommends keeping it for agents) and changes the
+            # start of the prompt, so the server can't reuse what it already read
+            p["chat_template_kwargs"] = {"enable_thinking": True, "preserve_thinking": s.send_back_reasoning}
             level = pick_effort(want, self.effort_levels())
             if level:  # sent both ways: llama.cpp passes either one to the template
                 p["reasoning_effort"] = p["chat_template_kwargs"]["reasoning_effort"] = level

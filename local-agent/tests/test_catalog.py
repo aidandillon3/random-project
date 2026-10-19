@@ -98,6 +98,23 @@ class CatalogTest(unittest.TestCase):
         self.assertIs(catalog.matching("D:/m/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf"), flash)
         self.assertIsNone(catalog.matching("other.gguf"))
 
+    def test_flash_next_sizes(self):
+        sizes = {p.strata["model"]: p for p in catalog.PRESETS if p.strata}
+        iq2 = catalog.BY_KEY["swift-flash-next"]
+        self.assertEqual(list(sizes), ["IQ2_XS", "IQ3_XXS", "IQ3_S"])
+        for size, p in sizes.items():
+            # the names Strata's setup looks for with --family swift --model <size>, in the folder and with the
+            # vision file every size shares
+            names = [f"Swift-Qwen3.8-Flash-Next-GSQ-RCO-{size}-0000{i}-of-00002.gguf" for i in (1, 2)]
+            self.assertEqual(p.files, names)
+            self.assertEqual((p.folder, p.mmproj), (iq2.folder, iq2.mmproj))
+            self.assertIn(size, p.title)
+            self.assertIs(catalog.matching(f"D:/m/{p.files[0]}"), p)
+        # bigger files for the better sizes (Hugging Face's sizes, 2026-10-18)
+        totals = [sizes[m].total_bytes() for m in ("IQ2_XS", "IQ3_XXS", "IQ3_S")]
+        self.assertEqual(totals, sorted(totals))
+        self.assertAlmostEqual(sizes["IQ3_S"].total_bytes() / catalog.GB, 84.6, delta=0.1)
+
     def test_download_resumes_and_finds_everything(self):
         p = preset()
         model, mm, missing = catalog.model_path(p, [self.root])

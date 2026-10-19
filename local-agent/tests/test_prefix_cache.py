@@ -43,7 +43,8 @@ PNG = b"\x89PNG\r\n\x1a\n"
 
 
 def reasoning(effort):
-    return {"reasoning_effort": effort, "chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": effort}}
+    return {"reasoning_effort": effort,
+            "chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": effort, "preserve_thinking": True}}
 
 
 def thinking(reply: dict, thought: str) -> dict:
@@ -415,14 +416,14 @@ class MemoryCheckTest(Base):
         report = "## Findings\n" + "".join(f"- day{d % 3 + 1}: request {d} took {d}ms, within limits.\n"
                                           for d in range(70))
         agent = self.make([calls(("read_file", {"path": f"day{d}.log"})) for d in range(1, 4)]
-                          + [thinking(text(report), "Go through every request of every day. " * 380)],
+                          + [thinking(text(report), "Go through every request of every day. " * 360)],
                           n_ctx=16384, thinking="medium")
         self.assertEqual(agent.run("Go through day1.log to day3.log and report anything slow."), report)
         bodies = self.srv.requests
         self.assertEqual(self.kinds(), ["main"] * 4 + ["memory check"])
         last, check = bodies[3], bodies[4]
         self.assertLess(estimate(last), 16384 * 0.75)                      # no compaction was due
-        self.assertLessEqual(len(report + "Go through every request of every day. " * 380) / CHARS_PER_TOKEN,
+        self.assertLessEqual(len(report + "Go through every request of every day. " * 360) / CHARS_PER_TOKEN,
                              last["max_tokens"])                           # the reply fit its room
         self.assertEqual(self.main_breaks(), [])
         self.assert_same_prompt_settings("medium")                      # passes
@@ -499,7 +500,7 @@ class CompactionTest(Base):
         self.assert_cache_friendly("low")
 
     def test_compacting_with_a_transcript_summary(self):
-        self.assertEqual(self.run_compacting_chat(16384), "transcript summary")
+        self.assertEqual(self.run_compacting_chat(15000), "transcript summary")
         self.assert_cache_friendly("low")
 
 

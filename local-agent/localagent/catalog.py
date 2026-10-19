@@ -48,6 +48,27 @@ class Preset:
         return sum(self.sizes.get(f, 0) for _, f in self.all_files())
 
 
+FLASH_REPO = "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
+FLASH_MMPROJ = "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf"
+
+
+def _flash_next(key: str, size: str, note: str, blurb: str, shards: tuple[int, int],
+                engine_args: dict | None = None) -> Preset:
+    """A size of Swift 1.5 Flash Next: two shards named as Strata's setup expects for --model <size>, in one
+    folder with the vision file all sizes share. engine_args: Strata options that differ from strata.ENGINE_ARGS."""
+    files = [f"Swift-Qwen3.8-Flash-Next-GSQ-RCO-{size}-0000{i}-of-00002.gguf" for i in (1, 2)]
+    return Preset(
+        key=key, title=f"Swift 1.5 Qwen3.8 Flash Next {size} ({note})", blurb=blurb, repo=FLASH_REPO, files=files,
+        mmproj=(FLASH_REPO, FLASH_MMPROJ), folder="Swift-1.5-Qwen3.8-Flash-Next",
+        sizes={**dict(zip(files, shards)), FLASH_MMPROJ: 907543520},
+        # no MTP layers in these files (Strata fetches its own draft layer); its sparse attention keeps
+        # the context cache tiny
+        launch={"ctx_size": 65536, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": True,
+                "engine": "strata"},
+        strata={"family": "swift", "model": size, "tag": "swift-", "engine_args": engine_args or {}},
+    )
+
+
 PRESETS = [
     Preset(
         key="swift-27b",
@@ -62,27 +83,29 @@ PRESETS = [
                "mmproj-Qwen3.8-27B-Q8_0.gguf": 629247008},
         launch={"ctx_size": 49152, "kv_type": "q8_0", "speedup": "mtp", "placement": "auto", "use_vision": True},
     ),
-    Preset(
-        key="swift-flash-next",
-        title="Swift 1.5 Qwen3.8 Flash Next (smartest, uses RAM)",
-        blurb="125B MoE with 6B active per token, IQ2_XS. The experts sit in RAM and the 28 GB "
-              "n-gram table is read from the SSD as needed, so it needs about 40 GB of RAM + VRAM. "
-              "Much more capable than the 27B. With Strata it's about as quick; on plain llama.cpp it's "
-              "several times slower. Has its own vision file.",
-        repo="ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
-        files=["Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
-               "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf"],
-        mmproj=("ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf"),
-        folder="Swift-1.5-Qwen3.8-Flash-Next",
-        sizes={"Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf": 39788473344,
-               "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf": 28363693824,
-               "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf": 907543520},
-        # no MTP layers in these files (Strata fetches its own draft layer); its sparse attention keeps
-        # the context cache tiny
-        launch={"ctx_size": 65536, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": True,
-                "engine": "strata"},
-        strata={"family": "swift", "model": "IQ2_XS", "tag": "swift-"},
-    ),
+    _flash_next(
+        "swift-flash-next", "IQ2_XS", "smart, uses RAM",
+        "125B MoE with 6B active per token, IQ2_XS. The experts sit in RAM and the 28 GB "
+        "n-gram table is read from the SSD as needed, so it needs about 40 GB of RAM + VRAM. "
+        "Much more capable than the 27B. With Strata it's about as quick; on plain llama.cpp it's "
+        "several times slower. Has its own vision file.",
+        (39788473344, 28363693824)),
+    # the larger sizes keep more experts in RAM (Strata: 43 / 50 GB of experts, vs 35.5 for IQ2_XS), so they
+    # park fewer chats there; 1 GiB still holds one parked 64K chat (~0.9 GB of 8-bit KV)
+    _flash_next(
+        "swift-flash-next-iq3xxs", "IQ3_XXS", "smarter, a bit slower",
+        "The same 125B model at 3 bits (IQ3_XXS): closer to the full model than IQ2_XS and about "
+        "20% slower on Strata (62 vs 79 tokens/s on a 12 GB RTX 5070). Its 43 GB of experts stay in "
+        "RAM, so keep about 10 GB free beside it. Shares the vision file and Strata's draft layer "
+        "with IQ2_XS.",
+        (39785790560, 36180282560), {"--conversation-cache-mib": "2048"}),
+    _flash_next(
+        "swift-flash-next-iq3s", "IQ3_S", "smartest, slowest, most RAM",
+        "The same 125B model at 3.5 bits (IQ3_S): the closest to the full model (it matches it on "
+        "the published tests) and about a third slower than IQ2_XS on Strata (53 vs 79 tokens/s on a "
+        "12 GB RTX 5070). Its 50 GB of experts stay in RAM, which leaves a 64 GB PC about 10 GB for "
+        "everything else: close big programs like Unity or games while it runs, or take IQ3_XXS.",
+        (44900816736, 38842920384), {"--conversation-cache-mib": "1024"}),
 ]
 BY_KEY = {p.key: p for p in PRESETS}
 

@@ -117,14 +117,31 @@ def wanted(preset, model: Path, settings) -> dict:
             "context": int(settings.ctx_size), "vision": bool(settings.use_vision)}
 
 
+def _stamps(root: Path) -> dict:
+    """What setup last ran with, per size ("swift:IQ3_S"), so switching sizes doesn't set the other one up again.
+    Older versions kept one setup's choices only."""
+    try:
+        got = json.loads((root / STAMP).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(got, dict):
+        return {}
+    if "family" in got:
+        return {f"{got['family']}:{got.get('model')}": got}
+    return got
+
+
+def set_up_before(root: Path | None = None) -> bool:
+    """Setup finished for some size here, so its engine and draft layer are on the PC."""
+    return bool(_stamps(root or STRATA_DIR))
+
+
 def needs_setup(preset, model: Path, settings, root: Path | None = None) -> bool:
     root = root or STRATA_DIR
     if not (config_path(preset, root).is_file() and python(root).is_file()):
         return True
-    try:
-        return json.loads((root / STAMP).read_text(encoding="utf-8")) != wanted(preset, model, settings)
-    except (OSError, ValueError):
-        return True
+    w = wanted(preset, model, settings)
+    return _stamps(root).get(f"{w['family']}:{w['model']}") != w
 
 
 def setup_args(preset, model: Path, settings, root: Path | None = None) -> list[str]:
@@ -149,18 +166,21 @@ def setup_args(preset, model: Path, settings, root: Path | None = None) -> list[
 
 def mark_setup_done(preset, model: Path, settings, root: Path | None = None) -> None:
     root = root or STRATA_DIR
-    (root / STAMP).write_text(json.dumps(wanted(preset, model, settings)), encoding="utf-8")
+    w = wanted(preset, model, settings)
+    stamps = {**_stamps(root), f"{w['family']}:{w['model']}": w}
+    (root / STAMP).write_text(json.dumps(stamps), encoding="utf-8")
 
 
 # Engine options setup doesn't write (and drops again on each setup run), put back into the config's "args":
 # keep up to 10 prompt checkpoints, and park conversations of 8K tokens or more (a helper's task in between
 # doesn't throw the main chat out) in 4 GiB of RAM. Not 8 GiB: IQ2_XS keeps about 48 GB of the 64 GB in RAM.
+# A mode's strata["engine_args"] changes them for its size (the 3-bit sizes park less).
 ENGINE_ARGS = {"--prompt-cache": "10", "--conversation-cache-mib": "4096", "--conversation-cache-min-tokens": "8192"}
 
 
 def tune_config(preset, root: Path | None = None) -> bool:
-    """Add ENGINE_ARGS to strata-<model>.json where it doesn't have them (it keeps values set by hand). True
-    when the file changed."""
+    """Add ENGINE_ARGS (with the mode's own values) to strata-<model>.json where it doesn't have them (it keeps
+    values set by hand). True when the file changed."""
     path = config_path(preset, root or STRATA_DIR)
     try:
         cfg = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -169,7 +189,8 @@ def tune_config(preset, root: Path | None = None) -> bool:
     args = cfg.get("args")
     if not isinstance(args, list):
         return False
-    add = [x for flag, value in ENGINE_ARGS.items() if flag not in args for x in (flag, value)]
+    want = {**ENGINE_ARGS, **preset.strata.get("engine_args", {})}
+    add = [x for flag, value in want.items() if flag not in args for x in (flag, value)]
     if not add:
         return False
     cfg["args"] = args + add
