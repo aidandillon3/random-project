@@ -79,6 +79,17 @@ class NotesTest(unittest.TestCase):
         other = self.mem.add("The budget tracker sheet is in Documents/Money", "Budget tracker file")
         self.assertEqual([n.id for n in self.mem.recall_for("budget tracker spreadsheet", exclude={nid})], [other.id])
 
+    def test_a_greeting_brings_up_no_notes(self):
+        # "hi" used to match any note with a word starting "hi" (his, high, hinge...), so a bare hello
+        # came with the user's latest project attached and the model offered to carry on with it
+        self.mem.add("Stormworks ray tracer: his hinge and high-speed hit detection are in tracer.lua", "Stormworks")
+        self.mem.add("Aidan's GPU is an RTX 5080; the gpus list in config lists both", "PC")
+        for hello in ("hi", "hey", "hello", "thanks!", "good morning", "hi there"):
+            self.assertEqual(self.mem.recall_for(hello), [], hello)
+        self.assertEqual([n.title for n in self.mem.recall_for("stormworks")], ["Stormworks"])
+        self.assertEqual([n.title for n in self.mem.recall_for("gpu")], ["PC"])           # short words: whole
+        self.assertEqual([n.title for n in self.mem.recall_for("fix the hit detection")], ["Stormworks"])
+
     def test_recall_ignores_accents(self):
         self.mem.add("Le café préféré est à Montréal", "cafe")
         self.assertEqual([n.title for n in self.mem.recall_for("Montreal")], ["cafe"])

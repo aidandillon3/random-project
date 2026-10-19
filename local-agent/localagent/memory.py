@@ -24,7 +24,9 @@ STOP_WORDS = set("""
 a an and are as at be but by can could do does for from had has have how i if in into is it its
 me my no not of on or our please so than that the their them then there these they this to up us
 was we were what when where which who why will with would you your yes ok okay just also make
-get let lets want need help some any all""".split())
+get let lets want need help some any all
+hi hey hello yo sup hiya howdy thanks thank thx ty cool nice great good morning afternoon evening
+night""".split())   # greetings and thanks say nothing about which notes matter
 
 # Files whose contents are indexed. Every other file is still findable by its name.
 TEXT_EXT = {
@@ -77,6 +79,14 @@ def _stem(word: str) -> str:
         if word.endswith(end) and len(word) - len(end) >= 4:
             return word[:-len(end)]
     return word
+
+
+def _same_word(term: str, word: str) -> bool:
+    """A request word matches a note word with the same stem ("budgets" ~ "budget", "tracking" ~
+    "tracker"). Short words only match whole: "hi" is not "his" or "history"."""
+    if len(term) < 4:
+        return word in (term, term + "s")
+    return word.startswith(_stem(term))
 
 
 def fts_query(text: str) -> str:
@@ -236,7 +246,7 @@ class Memory:
             if n.pinned or n.id in exclude:
                 continue  # pinned ones are in the system prompt already
             words = set(terms(f"{n.title} {n.body}", limit=400))
-            hits = sum(1 for t in want if any(w.startswith(_stem(t)) for w in words))
+            hits = sum(1 for t in want if any(_same_word(t, w) for w in words))
             if hits < need:
                 continue
             over = used + len(n.line()) - budget
