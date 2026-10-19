@@ -782,6 +782,11 @@ class ToolSetTest(Base):
         self.assertIn("Check your work by running it", prompt)
         self.assertIn("background=true", prompt)
         self.assertIn("can't see or use the user's screen, mouse or keyboard", prompt)
+        # what other agents (Qwen Code, OpenHands) tell their models, for the usual small-model slips
+        for rule in ("only asks a question", "Don't guess file contents", "no copies like",
+                     "If the\n  same thing fails twice", "Report honestly", "empty or odd result",
+                     "don't wait for input", "Keep going until the task is done"):
+            self.assertIn(rule, prompt)
 
     def test_it_looks_up_unfamiliar_apis_before_coding(self):
         s = Settings()
