@@ -38,13 +38,15 @@ class Preset:
     launch: dict = field(default_factory=dict)            # Settings fields to apply
     strata: dict | None = None            # Strata's setup choice, when Strata can run it (strata.py)
     subdir: str = ""                      # the model files' folder in the repo, when they aren't at its top
+    extra: list[tuple[str, str]] = field(default_factory=list)   # (repo, file) from other repos, beside the model
+    odp: dict | None = None               # the 1-bit engine's prefill blocks, when it runs on it (odp.py)
 
     def remote(self, repo: str, name: str) -> str:
         """The file's path in its Hugging Face repo."""
         return f"{self.subdir}/{name}" if self.subdir and repo == self.repo and name in self.files else name
 
     def all_files(self) -> list[tuple[str, str]]:
-        out = [(self.repo, f) for f in self.files]
+        out = [(self.repo, f) for f in self.files] + list(self.extra)
         if self.mmproj:
             out.append(self.mmproj)
         return out
@@ -133,6 +135,30 @@ PRESETS = [
         # only 23 GB of experts in RAM, so it can park more chats than the default 4 GiB
         strata={"family": "coder", "model": "IQ1_M", "tag": "coder-",
                 "engine_args": {"--conversation-cache-mib": "8192"}},
+    ),
+    # IST-DASLab's disaggregated quantization (odp.py): Unsloth's 1-bit 27B writes, the NVFP4 prefill blocks
+    # trained for exactly that file read the prompt, streamed from the SSD. 64 blocks, every 4th one smaller.
+    Preset(
+        key="qwen27b-1bit-odp",
+        title="Qwen3.8 27B 1-bit + NVFP4 prefill (experimental)",
+        blurb="Research mode from IST-DASLab: a 1-bit 27B (6 GB on the GPU) writes the answers, and a 4-bit "
+              "copy of its layers trained to go with it reads your prompt, streamed from the SSD a layer at a "
+              "time so it takes no VRAM. By its makers' tests that wins back much of what 1 bit loses, but it "
+              "is still below the 3-bit Swift 27B. Plain Qwen (not Swift), no vision, no MTP, and every prompt "
+              "streams the 13.7 GB of prefill weights (about 1-3 s per step). Runs on its own engine, built "
+              "in your GitHub repo.",
+        repo="unsloth/Qwen3.8-27B-GGUF",
+        files=["Qwen3.8-27B-UD-IQ1_S.gguf"],
+        extra=[("ISTA-DASLab/Qwen3.8-27B-NVFP4-prefiller", f"Qwen3.8-27B-ODP-IQ1_S-{i:05d}-of-00064.gguf")
+               for i in range(1, 65)],
+        mmproj=None,
+        folder="Qwen3.8-27B-1bit-ODP",
+        sizes={"Qwen3.8-27B-UD-IQ1_S.gguf": 6192222208,
+               **{f"Qwen3.8-27B-ODP-IQ1_S-{i:05d}-of-00064.gguf": 209388416 if i % 4 == 0 else 216269632
+                  for i in range(1, 65)}},
+        # no MTP: ODP streams the prefill weights for every multi-token batch, a verify batch included
+        launch={"ctx_size": 65536, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": False},
+        odp={"blocks": "Qwen3.8-27B-ODP-IQ1_S-00001-of-00064.gguf"},
     ),
 ]
 BY_KEY = {p.key: p for p in PRESETS}
@@ -225,10 +251,11 @@ def model_path(preset: Preset, dirs: list[Path]) -> tuple[Path | None, Path | No
     """(model file, vision file, missing file names)."""
     found = locate(preset, dirs)
     missing = [f for _, f in preset.all_files() if f not in found]
-    model = found.get(preset.files[0]) if all(f in found for f in preset.files) else None
+    side = preset.files + [f for _, f in preset.extra]
+    model = found.get(preset.files[0]) if all(f in found for f in side) else None
     mm = found.get(preset.mmproj[1]) if preset.mmproj else None
-    if model and any(found[f].parent != model.parent for f in preset.files):
-        missing = [f for f in preset.files[1:] if found[f].parent != model.parent] + missing
+    if model and any(found[f].parent != model.parent for f in side):
+        missing = [f for f in side[1:] if found[f].parent != model.parent] + missing
         model = None      # split files must sit side by side
     return model, mm, missing
 

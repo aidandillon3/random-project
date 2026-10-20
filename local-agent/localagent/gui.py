@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import catalog, launcher, mcp, plugins, strata
+from . import catalog, launcher, mcp, odp, plugins, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import gpu_info, model_info
@@ -1374,6 +1374,10 @@ class ServerPage(QWidget):
     def _refresh_exe(self):
         self._show_exe(launcher.find_server(self.s))
 
+    def _exe_now(self) -> Path | None:
+        """The llama-server that runs the current mode: the 1-bit engine's own, or llama.cpp's."""
+        return odp.find_server() if odp.supports(catalog.matching(self.s.model_path)) else self.exe
+
     def _show_exe(self, exe):
         self.exe = exe
         self.exe_label.setText(str(exe) if exe else "<span style='color:#e0a43a'>Not found. Press Download (or "
@@ -1462,7 +1466,7 @@ class ServerPage(QWidget):
         if strata.active(s, p):
             if strata.needs_setup(p, Path(s.model_path), s):
                 return              # the first Strata setup asks first; it isn't started unasked
-        elif not self.exe:
+        elif not self._exe_now():
             return
         port = s.port
         result = {}
@@ -1741,25 +1745,35 @@ class ServerPage(QWidget):
                    "settings (its engine and draft layer are already here)." if again else ""))
             return
         self._startable = bool(s.model_path)     # without llama.cpp, Start offers to download it
-        if not (self.exe and s.model_path):
+        on_odp = odp.supports(p)
+        exe = self._exe_now()
+        if on_odp and not exe:
+            self.launch = None
+            self.cmd.setPlainText("")
+            self.plan_label.setText("This mode runs on its own build of llama.cpp (IST-DASLab's fork), which isn't on "
+                                    "this PC yet. Start model downloads it from your GitHub repo's releases first; "
+                                    "that needs the GitHub token in Settings.")
+            self._sync_start_btn()
+            return
+        if not (exe and s.model_path):
             self.launch = None
             self.cmd.setPlainText("")
             self.plan_label.setText("llama.cpp, the program that runs the model, isn't on this PC yet. Start model "
                                     "offers to download it first." if s.model_path else "")
             self._sync_start_btn()
             return
-        help_text = launcher.server_help(self.exe, wait=False)
+        help_text = launcher.server_help(exe, wait=False)
         if help_text is None:      # a llama-server not asked yet: --help can take seconds, so not on this thread
             self.launch = None
             self.cmd.setPlainText("")
             self.plan_label.setText("Checking which options this llama.cpp build has...")
-            exe = self.exe
             if self._help_job != exe:
                 self._help_job = exe
                 in_background(lambda: launcher.server_help(exe), lambda *_: self._help_read(exe))
             self._sync_start_btn()
             return
-        lp = launcher.build_launch(s, self.exe, help_text, self.info, self.vram)
+        lp = launcher.build_launch(s, exe, help_text, self.info, self.vram,
+                                   odp_blocks=odp.blocks_path(p, Path(s.model_path)) if on_odp else None)
         self.launch = lp
         self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in lp.args))
         lines = []
@@ -1783,7 +1797,7 @@ class ServerPage(QWidget):
     def _help_read(self, exe):
         if self._help_job == exe:
             self._help_job = None
-        if exe != self.exe:
+        if exe != self._exe_now():
             return          # another one was picked since; its own check carries on
         self._changed()
         if self._start_pending and self._help_job is None:
@@ -1804,7 +1818,13 @@ class ServerPage(QWidget):
             self._start_strata(p)
             return
         self._cancel_strata()      # a stopped Strata start still downloading must not start anything later
-        if self.s.model_path and not self.exe:
+        if odp.supports(p) and not odp.find_server():
+            if QMessageBox.question(self, "1-bit engine", "This mode runs on IST-DASLab's research build of llama.cpp, "
+                                    "which your GitHub repo builds for Windows. Download it from the repo's releases "
+                                    f"into\n{odp.ODP_DIR}\nnow, then start the model?") == QMessageBox.Yes:
+                self._download(then_start=True, engine="odp")
+            return
+        if self.s.model_path and not self.exe and not odp.supports(p):
             if QMessageBox.question(self, "llama.cpp", "The model runs in llama.cpp's server program, which isn't on "
                                     "this PC yet. Download the newest build for your graphics card from GitHub now, "
                                     "then start the model?") == QMessageBox.Yes:
@@ -2045,7 +2065,8 @@ class ServerPage(QWidget):
 
         tick()
 
-    def _download(self, then_start: bool = False):
+    def _download(self, then_start: bool = False, engine: str = "llama.cpp"):
+        """Fetch llama.cpp's newest build, or (engine "odp") the 1-bit engine from this repo's releases."""
         if self._llama_dl is not None:
             return
         state = self._llama_dl = {"msg": "", "frac": 0.0, "done": None, "then_start": then_start}
@@ -2056,7 +2077,8 @@ class ServerPage(QWidget):
 
         def work():
             try:
-                state["done"] = launcher.download_llamacpp(lambda m, f: state.update(msg=m, frac=f))
+                say = lambda m, f: state.update(msg=m, frac=f)
+                state["done"] = (odp.download(self.s, say) if engine == "odp" else launcher.download_llamacpp(say))
             except Exception as e:  # noqa: BLE001
                 state["done"] = e
 
@@ -2066,7 +2088,8 @@ class ServerPage(QWidget):
             self.dl_bar.setValue(int(state["frac"] * 100))
             self.dl_bar.setFormat(state["msg"][:80] + "  %p%")
             if state["then_start"]:
-                self.state.setText(f"Downloading llama.cpp: {state['msg'][:80]} {state['frac'] * 100:.0f}%")
+                self.state.setText(f"Downloading {'the 1-bit engine' if engine == 'odp' else 'llama.cpp'}: "
+                                   f"{state['msg'][:80]} {state['frac'] * 100:.0f}%")
             if state["done"] is None:
                 QTimer.singleShot(200, tick)
                 return
@@ -2078,8 +2101,9 @@ class ServerPage(QWidget):
             if isinstance(state["done"], Exception):
                 QMessageBox.warning(self, "Download", f"Download failed: {state['done']}")
             else:
-                self.s.server_exe = str(state["done"])
-                self.s.save()
+                if engine != "odp":            # the 1-bit engine is found in its own folder
+                    self.s.server_exe = str(state["done"])
+                    self.s.save()
                 self._refresh_exe()
                 self._changed()
                 if state["then_start"] and not self.proc.running:

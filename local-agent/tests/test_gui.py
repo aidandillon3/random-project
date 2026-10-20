@@ -277,6 +277,51 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(self.wait_until(lambda: "On this PC" in page.preset_info.text(), 10), page.preset_info.text())
         w.close()
 
+    def test_one_bit_mode_runs_on_its_own_engine(self):
+        from localagent import catalog, odp
+        from localagent.config import Settings
+
+        d = Path(tempfile.mkdtemp())
+        p = catalog.BY_KEY["qwen27b-1bit-odp"]
+        folder = d / p.folder
+        folder.mkdir()
+        for _, name in p.all_files():
+            with open(folder / name, "wb") as f:
+                f.truncate(p.sizes[name])
+        old, odp.ODP_DIR = odp.ODP_DIR, d / "odp-llama"
+        self.addCleanup(setattr, odp, "ODP_DIR", old)
+        llama = d / "llama"
+        llama.mkdir()
+        s = Settings(server_exe=str(serving_llama(llama)), models_dir=str(d), base_url="http://127.0.0.1:9/v1",
+                     engine="strata")
+        w = self.gui.MainWindow(s)
+        page = w.server
+        self.assertTrue(self.wait_until(lambda: page.exe is not None, 10))
+        page.preset_box.setCurrentIndex(page.preset_box.findData(p.key))
+        self.assertFalse(page.strata_box.isVisibleTo(page))
+        asked = []
+        orig = self.gui.QMessageBox.question
+        self.gui.QMessageBox.question = lambda *a, **k: asked.append(a) or self.gui.QMessageBox.No
+        self.addCleanup(setattr, self.gui.QMessageBox, "question", orig)
+        page._use_preset()
+        self.assertTrue(asked)                    # offered to download the engine (said no here)
+        page.stop()
+        self.assertEqual(Path(s.model_path).name, p.files[0])
+        self.assertEqual(s.engine, "strata")      # Flash Next's engine choice stays as it was
+        # no engine yet: llama.cpp's own build can't run it, so Start downloads the fork's build first
+        self.assertIn("its own build of llama.cpp", page.plan_label.text())
+        self.assertEqual(page.cmd.toPlainText(), "")
+        odp.ODP_DIR.mkdir()
+        engine = serving_llama(odp.ODP_DIR)
+        page._changed()
+        self.assertTrue(self.wait_until(lambda: "--odp-blocks" in page.cmd.toPlainText(), 10))
+        cmd = page.cmd.toPlainText()
+        self.assertTrue(cmd.startswith(str(engine)))
+        self.assertIn(str(folder / p.odp["blocks"]), cmd)
+        self.assertNotIn("--spec-type", cmd)
+        self.assertNotIn("--mmproj", cmd)
+        w.close()
+
     def test_flash_next_runs_on_strata(self):
         from localagent import catalog, strata
         from localagent.config import Settings
