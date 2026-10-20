@@ -1,0 +1,109 @@
+diff --git a/src/llama-odp.cpp b/src/llama-odp.cpp
+index 0caef20..f16f425 100644
+--- a/src/llama-odp.cpp
++++ b/src/llama-odp.cpp
+@@ -15,8 +15,20 @@
+ #include <cstring>
+ #include <sys/stat.h>
+ 
+-#include <fcntl.h>
+-#include <unistd.h>
++#include <thread>
++
++#ifdef _WIN32
++#  ifndef WIN32_LEAN_AND_MEAN
++#    define WIN32_LEAN_AND_MEAN
++#  endif
++#  ifndef NOMINMAX
++#    define NOMINMAX
++#  endif
++#  include <windows.h>
++#else
++#  include <fcntl.h>
++#  include <unistd.h>
++#endif
+ 
+ // ---------------------------------------------------------------------------- block file
+ 
+@@ -402,15 +414,53 @@ uint64_t llama_odp::carveout_bytes() const {
+     return ring_bytes;
+ }
+ 
++#ifdef _WIN32
++// Windows has no pread: each thread opens its own handle (reads on one synchronous handle are
++// serialized) and reads at an offset with ReadFile + OVERLAPPED.
++static bool read_range(const std::filesystem::path & path, uint8_t * dst, uint64_t offset, uint64_t n) {
++    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
++                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
++    if (h == INVALID_HANDLE_VALUE) {
++        return false;
++    }
++    bool ok = true;
++    while (n > 0) {
++        const DWORD want = (DWORD) std::min<uint64_t>(n, 1u << 30);
++        OVERLAPPED ov = {};
++        ov.Offset     = (DWORD) (offset & 0xFFFFFFFFu);
++        ov.OffsetHigh = (DWORD) (offset >> 32);
++        DWORD got = 0;
++        if (!ReadFile(h, dst, want, &got, &ov) || got == 0) {
++            ok = false;
++            break;
++        }
++        dst += got;
++        offset += got;
++        n -= got;
++    }
++    CloseHandle(h);
++    return ok;
++}
++#endif
++
+ // Worker thread, no CUDA. Parallel because one pread gives 1.27 GB/s against ~5 GB/s
+ // with sixteen -- the difference between hiding under a layer's compute and not.
+ static bool read_block_to_host(const llama_odp_block & blk, std::vector<uint8_t> & host,
+                                int n_threads) {
++#ifdef _WIN32
++    const std::filesystem::path path = std::filesystem::u8path(blk.path);
++    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
++        LLAMA_LOG_ERROR("%s: cannot open %s (error %lu)\n", __func__, blk.path.c_str(),
++                        (unsigned long) GetLastError());
++        return false;
++    }
++#else
+     const int fd = open(blk.path.c_str(), O_RDONLY);
+     if (fd < 0) {
+         LLAMA_LOG_ERROR("%s: cannot open %s: %s\n", __func__, blk.path.c_str(), strerror(errno));
+         return false;
+     }
++#endif
+ 
+     std::atomic<bool> ok(true);
+     const uint64_t span = (blk.body_bytes + n_threads - 1) / n_threads;
+@@ -424,6 +474,11 @@ static bool read_block_to_host(const llama_odp_block & blk, std::vector<uint8_t>
+             break;
+         }
+         ts.emplace_back([&, lo, hi] {
++#ifdef _WIN32
++            if (!read_range(path, host.data() + lo, blk.head_bytes + lo, hi - lo)) {
++                ok = false;
++            }
++#else
+             uint64_t done = lo;
+             while (done < hi) {
+                 const ssize_t r = pread(fd, host.data() + done, hi - done,
+@@ -434,12 +489,15 @@ static bool read_block_to_host(const llama_odp_block & blk, std::vector<uint8_t>
+                 }
+                 done += (uint64_t) r;
+             }
++#endif
+         });
+     }
+     for (auto & t : ts) {
+         t.join();
+     }
++#ifndef _WIN32
+     close(fd);
++#endif
+ 
+     if (!ok) {
+         LLAMA_LOG_ERROR("%s: short read on %s\n", __func__, blk.path.c_str());
