@@ -136,9 +136,21 @@ def set_up_before(root: Path | None = None) -> bool:
     return bool(_stamps(root or STRATA_DIR))
 
 
+def _files_gone(config: Path) -> bool:
+    """The size's prepared files moved or were deleted since setup (Strata's server refuses to start: "the model's
+    tokenizer is missing; run setup again"). Setup fetches them again."""
+    try:
+        tok = json.loads(config.read_text(encoding="utf-8-sig")).get("tokenizer")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return bool(tok) and not (Path(tok) / "vocab.json").is_file()
+
+
 def needs_setup(preset, model: Path, settings, root: Path | None = None) -> bool:
     root = root or STRATA_DIR
     if not (config_path(preset, root).is_file() and python(root).is_file()):
+        return True
+    if _files_gone(config_path(preset, root)):
         return True
     w = wanted(preset, model, settings)
     return _stamps(root).get(f"{w['family']}:{w['model']}") != w
