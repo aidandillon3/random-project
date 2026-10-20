@@ -140,6 +140,20 @@ class StrataTest(unittest.TestCase):
         s.ctx_size = 131072
         self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))
 
+    def test_setup_runs_again_when_its_files_are_gone(self):
+        s = Settings(ctx_size=65536, use_vision=True)
+        self.root.mkdir(parents=True)
+        strata.python(self.root).parent.mkdir(parents=True)
+        strata.python(self.root).write_text("")
+        tok = self.root.parent / "Strata-data" / "packs" / "swift-iq2_xs" / "tokenizer"
+        tok.mkdir(parents=True)
+        (tok / "vocab.json").write_text("{}")
+        strata.config_path(self.flash, self.root).write_text(json.dumps({"args": [], "tokenizer": str(tok)}))
+        strata.mark_setup_done(self.flash, self.model, s, self.root)
+        self.assertFalse(strata.needs_setup(self.flash, self.model, s, self.root))
+        (tok / "vocab.json").unlink()       # Strata's server: "the model's tokenizer is missing; run setup again"
+        self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))
+
     def test_each_size_has_its_own_setup(self):
         s = Settings(ctx_size=65536, use_vision=True)
         iq3 = catalog.BY_KEY["swift-flash-next-iq3s"]
