@@ -129,6 +129,27 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(coder.remote(coder.repo, coder.files[1]), f"IQ1_M/{coder.files[1]}")
         self.assertEqual(coder.remote(*coder.mmproj), coder.mmproj[1])
 
+    def test_ornith(self):
+        ps = catalog.families()["Ornith 1.5 122B"]
+        self.assertEqual([p.key for p in ps], ["ornith-iq3xxs", "ornith-q3kxl", "ornith-q2kxl", "ornith-q3kl-mtp"])
+        for p in ps:
+            self.assertIsNone(p.strata)                       # Strata runs only Flash Next: llama.cpp
+            self.assertEqual((p.folder, p.mmproj), ("Ornith-1.5-122B", ("unsloth/Ornith-1.5-122B-GGUF",
+                                                                        "mmproj-BF16.gguf")))
+            self.assertIs(catalog.matching(f"D:/m/{p.files[0]}"), p)
+        # Hugging Face's sizes (2026-10-20)
+        self.assertAlmostEqual(ps[0].total_bytes() / catalog.GB, 50.4, delta=0.1)
+        q3 = catalog.BY_KEY["ornith-q3kxl"]
+        self.assertEqual(q3.files[0], "Ornith-1.5-122B-UD-Q3_K_XL-00001-of-00003.gguf")    # llama.cpp loads the first
+        self.assertEqual(q3.remote(q3.repo, q3.files[2]), f"UD-Q3_K_XL/{q3.files[2]}")
+        mtp = catalog.BY_KEY["ornith-q3kl-mtp"]
+        self.assertEqual(mtp.launch["speedup"], "mtp")         # the only upload that kept the MTP layers
+        self.assertEqual(mtp.remote(mtp.repo, mtp.files[0]), "Q3_K_L/Ornith-1.5-122B.Q3_K_L.gguf")
+        self.assertEqual(mtp.remote(*mtp.mmproj), "mmproj-BF16.gguf")
+        self.assertEqual(ps[0].launch["speedup"], "ngram")
+        from localagent.guide import sampling_for
+        self.assertEqual(sampling_for("Ornith-1.5-122B-UD-IQ3_XXS.gguf")["temperature"], 0.6)
+
     def test_download_from_a_folder_of_the_repo(self):
         p = preset()
         p.repo, p.subdir = "u/Coder-GGUF", "Q"

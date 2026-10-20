@@ -118,7 +118,13 @@ class StrataTest(unittest.TestCase):
         self.assertEqual(val("--prompt-cache"), "4")                           # set by hand: kept
         self.assertEqual((val("--conversation-cache-mib"), val("--conversation-cache-min-tokens")), ("4096", "8192"))
         self.assertEqual(cfg["sampling"], {"temperature": 1.0})
+        # Strata's two opt-in speed-ups (README, v0.1.44+)
+        self.assertEqual(val("--adapt-async"), "1")
+        self.assertEqual(cfg["env"], {"STRATA_PIN_BY_NEED": "1"})
         self.assertFalse(strata.tune_config(self.flash, self.root))            # already there: file left alone
+        cfg["env"] = {"STRATA_PIN_BY_NEED": "0", "OTHER": "x"}                 # turned off by hand: kept
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.assertFalse(strata.tune_config(self.flash, self.root))
         cfg["args"] = ["--serve"]                                              # setup ran again and rewrote it
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
         self.assertTrue(strata.tune_config(self.flash, self.root))
@@ -218,6 +224,28 @@ class StrataTest(unittest.TestCase):
         self.assertTrue((self.root / ".venv").is_dir())
         self.assertEqual(seen[-1], 1.0)
         self.assertIn("/archive/" + strata.COMMIT, strata.ZIP_URL)
+        self.assertFalse(strata.outdated(self.root))
+
+    def test_an_older_strata_is_updated_and_set_up_again(self):
+        s = Settings(ctx_size=65536, use_vision=True)
+        self.root.mkdir(parents=True)
+        for f in ("setup.py", "serve/server.py"):
+            (self.root / f).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / f).write_text("#")
+        strata.python(self.root).parent.mkdir(parents=True)
+        strata.python(self.root).write_text("")
+        strata.config_path(self.flash, self.root).write_text("{}")
+        self.assertTrue(strata.outdated(self.root))           # installed by an app from before the pin was kept
+        (self.root / strata.INSTALLED).write_text("7695859aa13afb248bdb4d36f9b2e95707db079d")
+        self.assertTrue(strata.outdated(self.root))
+        # its setup stamp, without the version: set up again for the new engine
+        old = {k: v for k, v in strata.wanted(self.flash, self.model, s).items() if k != "strata"}
+        (self.root / strata.STAMP).write_text(json.dumps({"swift:IQ2_XS": old}))
+        self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))
+        (self.root / strata.INSTALLED).write_text(strata.COMMIT)
+        strata.mark_setup_done(self.flash, self.model, s, self.root)
+        self.assertFalse(strata.outdated(self.root))
+        self.assertFalse(strata.needs_setup(self.flash, self.model, s, self.root))
 
     def test_ready_waits_for_strata_to_load(self):
         routes = {"/health": (200, json.dumps({"status": "ok", "loaded": False}).encode())}

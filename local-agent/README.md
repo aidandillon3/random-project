@@ -238,6 +238,7 @@ follow whichever model is running.
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_XXS** | 77 GB | The same model at 3 bits: 43 GB of experts in RAM, about 20% slower than IQ2_XS | Hardest tasks, better answers |
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_S** | 85 GB | The same model at 3.5 bits: 50 GB of experts in RAM, about a third slower than IQ2_XS | Best answers, with little else open |
 | **Qwen3.8 Flash Next Coder IQ1_M** | 59 GB | The original Flash Next with half its experts removed, the rest stored like IQ3_S: 23 GB of experts in RAM | Coding, with Unity or a game open |
+| **Ornith 1.5 122B** (UD-IQ3_XXS, UD-Q3_K_XL, UD-Q2_K_XL, Q3_K_L + MTP) | 45-66 GB | A coding and agent fine-tune of a 122B MoE, on llama.cpp with its experts in RAM | Trying the newest coding model; slower than Flash Next on Strata |
 | **Qwen3.8 27B 1-bit + NVFP4 prefill** (experimental) | 20 GB | A 1-bit 27B on the GPU writes; a 4-bit copy of its layers, streamed from the SSD, reads your prompt. No vision, no MTP | Trying the 1-bit research trick |
 
 Flash Next IQ2_XS needs about 40 GB of RAM + VRAM plus space on a fast SSD. It runs on
@@ -246,10 +247,18 @@ Mode), an engine made for this one model. Strata keeps the most-used experts on 
 rest out on the CPU at the same time, and adds a draft layer that guesses a few tokens ahead.
 Strata measured 79 tokens/s for IQ2_XS on a 12 GB RTX 5070, where llama.cpp manages roughly
 20-27; nobody has measured a 5080 yet. The first start downloads Strata (pinned to a checked
-version) into `strata/` next to the app and runs its setup, which installs Python if needed and
+version, v0.1.45 since 2026-10-20; an older install is updated and set up again on the next start) into
+`strata/` next to the app and runs its setup, which installs Python if needed and
 fetches its engine and the draft layer into `Strata-data` beside your models folder. Your model
 files are used where they are. Untick the box to run Flash Next on llama.cpp instead. Strata can't
 run the 27B, which stays on llama.cpp.
+
+The app also turns on Strata's two opt-in speed-ups for one card whose RAM holds every expert (Strata's
+README): `--adapt-async 1` updates the expert cache on a helper thread instead of pausing the answer
+(+4-5% writing, +7-10% on code and long documents on an RTX 5070; answers can differ slightly from
+Strata's default but stay the same from run to run), and `STRATA_PIN_BY_NEED=1` locks the experts the
+card needs most first (+4% prompt reading on Windows). To turn one off, set it to `0` in
+`strata-<size>.json` (in `strata/`): the app keeps values you set.
 
 The two 3-bit sizes answer closer to the full model (IQ3_S matches it on the published tests) but
 write slower: 62 tokens/s for IQ3_XXS and 53 for IQ3_S on the same RTX 5070. Strata keeps every
@@ -295,6 +304,18 @@ fork is a research prototype tested by its makers on Linux only.
 
 Search Hugging Face for the name plus "GGUF" (bartowski and unsloth make good ones), and for
 vision download the matching **mmproj** file into the same folder as the model.
+
+Ornith 1.5 122B ([ornith-ai](https://huggingface.co/ornith-ai/Ornith-1.5-122B-GGUF), MIT licence, out
+on 2026-10-20) is a coding and agent fine-tune of a 122B Qwen3.5-style MoE. Its makers' table puts it
+level with Flash Next: ahead on SWE-bench Pro, NL2Repo, HLE and the search tests, behind on
+TerminalBench 2.1 and Toolathlon. Its SWE-bench Pro lead (76.9 against 43.9) uses a score for Flash
+Next well below Qwen's own (62.5), so take that one with salt. Strata runs only Flash Next, so Ornith
+runs on llama.cpp with its experts in RAM, which is much slower than Flash Next on Strata (nobody has
+measured a 16 GB card yet). Four sizes: UD-IQ3_XXS (50 GB, the pick), UD-Q3_K_XL (61 GB, better but
+leaves little RAM), UD-Q2_K_XL (45 GB) and Q3_K_L with its MTP layers kept (66 GB, from
+prithivMLmods: the MTP speed-up guesses words ahead, but it is the most a 64 GB PC can take). The
+Unsloth sizes use the n-gram speed-up instead. All four see images and use the model card's coding
+sampling (temperature 0.6).
 
 What's checked and what's guessed: Qwen3.6-35B-A3B, Qwen3.6-27B and Qwen3.8-27B were checked
 against model pages in October 2026, and the 27B file sizes come from a real quant table. Speed

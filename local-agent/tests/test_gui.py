@@ -49,9 +49,11 @@ HTTPServer(("127.0.0.1", port), H).serve_forever()
 
 def fake_strata(root: Path):
     """A stand-in for Strata's folder: setup.sh records its arguments and writes the config and the venv."""
+    from localagent import strata
     (root / "serve").mkdir(parents=True)
     (root / "setup.py").write_text("")
     (root / "serve" / "server.py").write_text(FAKE_SERVER)
+    (root / strata.INSTALLED).write_text(strata.COMMIT)       # the pinned version, so no update download
     (root / "setup.sh").write_text(
         "#!/bin/sh\ncd \"$(dirname \"$0\")\"\necho \"$@\" > setup-args.txt\nmkdir -p .venv/bin\n"
         f"ln -sf {sys.executable} .venv/bin/python\necho {{}} > strata-swift-iq2_xs.json\necho setup done\n")
@@ -502,7 +504,7 @@ class GuiTest(unittest.TestCase):
         w.server._use_preset = lambda: picked.append(w.server.preset_box.currentData())
         chat._fill_model_menu()
         menus = {a.text(): a.menu() for a in chat.model_menu.actions() if a.menu()}
-        self.assertEqual(list(menus), ["Qwen3.8 27B", "Qwen3.8 Flash Next"])       # one entry per model
+        self.assertEqual(list(menus), ["Qwen3.8 27B", "Qwen3.8 Flash Next", "Ornith 1.5 122B"])       # one entry per model
         self.assertEqual([a.text() for a in menus["Qwen3.8 Flash Next"].actions()][-1],
                          "Coder IQ1_M (for coding, less RAM)")                  # and its quants inside
         menus["Qwen3.8 27B"].actions()[0].trigger()

@@ -10,6 +10,9 @@ SAMPLING = [
     # Qwen3.8 model page, October 2026
     ("qwen3.8", _QWEN38_THINK, _QWEN38_FAST),
     ("swift-1.5", _QWEN38_THINK, _QWEN38_FAST),      # Strata calls the Swift Flash Next model "swift-1.5-iq2_xs"
+    # Ornith 1.5 model card (2026-10-20): its "precise coding" values (the general ones add presence_penalty 1.5
+    # at temperature 1.0), the closest to what this app asks of it; before "qwen" (it is Qwen3.5-based)
+    ("ornith", dict(temperature=0.6, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=0.0), None),
     # Qwen3 family (model cards): thinking vs. non-thinking
     ("qwen", dict(temperature=0.6, top_p=0.95, top_k=20, min_p=0.0),
              dict(temperature=0.7, top_p=0.8, top_k=20, min_p=0.0)),
