@@ -182,7 +182,8 @@ class LaunchPlan:
 
 
 def build_launch(settings, exe: Path, help_text: str, info: ModelInfo | None = None,
-                 vram_gb: float | None = None) -> LaunchPlan:
+                 vram_gb: float | None = None, odp_blocks: Path | None = None) -> LaunchPlan:
+    """odp_blocks: the first prefill block, for the 1-bit engine (odp.py)."""
     s = settings
     model = Path(s.model_path)
     has = lambda flag: flag in help_text
@@ -251,8 +252,17 @@ def build_launch(settings, exe: Path, help_text: str, info: ModelInfo | None = N
     if info and info.is_moe and (auto_fit or (p and p.n_cpu_moe > 0) or s.n_cpu_moe > 0):
         args += ["-b", "2048", "-ub", "2048"]   # faster prompt reading when experts sit in RAM
 
+    if odp_blocks is not None:
+        # streamed once per batch; llama.cpp raises the batch to 8192 for it unless -ub is given
+        args += ["--odp-blocks", str(odp_blocks)]
+        if s.speedup != "off":
+            notes.append("No speed-up with the 1-bit engine: it streams its prefill weights for every batch of "
+                         "more than one token, and a draft's check is such a batch.")
+
     # speed-ups
-    if s.speedup == "mtp":
+    if odp_blocks is not None:
+        pass
+    elif s.speedup == "mtp":
         if info and not info.has_mtp:
             notes.append("This model file has no MTP layers, so the MTP speed-up was skipped.")
         elif has("draft-mtp"):

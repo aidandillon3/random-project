@@ -189,6 +189,20 @@ class ContextTest(Base):
                                 ToolResult("shot", images=[b"png"]))])
         self.assertEqual(count(), 2)
 
+    def test_many_pictures_in_one_task_bring_a_reminder_to_ask(self):
+        agent, _ = self.make([], keep_images=2, max_images=8)
+        shot = lambda i: [(type("C", (), {"id": f"i{i}", "name": "screenshot"})(), ToolResult("shot", images=[b"png"]))]
+        tool_texts = lambda: [m["content"] for m in agent.messages if m["role"] == "tool"]
+        for i in range(5):
+            agent._record_results(shot(i))
+        texts = tool_texts()
+        self.assertTrue(all("show the user" not in t for t in texts[:3]))
+        self.assertIn("picture 4 of this task", texts[3])
+        self.assertIn("picture 5 of this task", texts[4])
+        # a tool result without a picture gets nothing
+        agent._record_results([(type("C", (), {"id": "t", "name": "read_file"})(), ToolResult("text"))])
+        self.assertEqual(tool_texts()[-1], "text")
+
     def test_compaction_keeps_recent_steps(self):
         big = "x" * 4000
         replies = [calls(("write_file", {"path": f"f{i}.txt", "content": big})) for i in range(6)] + [text("done")]

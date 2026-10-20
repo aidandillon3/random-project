@@ -225,7 +225,8 @@ Ubuntu download, about 390 MB). If you got as far as setting it up, first run
 
 ## Models for a 5080 (16 GB) + 64 GB RAM
 
-**Ready-made modes** (Model server page > Mode): pick one and press the button. If the files
+**Ready-made modes** (Model server page > Mode): pick the model, then its size (quant) in the list
+beside it, and press the button. The chat bar's Model menu has the same, one sub-menu per model. If the files
 aren't on your PC it downloads them first (it can pause and resume), then switches the model,
 its vision file and the server settings, and restarts the model. Sampling and thinking levels
 follow whichever model is running.
@@ -237,6 +238,7 @@ follow whichever model is running.
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_XXS** | 77 GB | The same model at 3 bits: 43 GB of experts in RAM, about 20% slower than IQ2_XS | Hardest tasks, better answers |
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_S** | 85 GB | The same model at 3.5 bits: 50 GB of experts in RAM, about a third slower than IQ2_XS | Best answers, with little else open |
 | **Qwen3.8 Flash Next Coder IQ1_M** | 59 GB | The original Flash Next with half its experts removed, the rest stored like IQ3_S: 23 GB of experts in RAM | Coding, with Unity or a game open |
+| **Qwen3.8 27B 1-bit + NVFP4 prefill** (experimental) | 20 GB | A 1-bit 27B on the GPU writes; a 4-bit copy of its layers, streamed from the SSD, reads your prompt. No vision, no MTP | Trying the 1-bit research trick |
 
 Flash Next IQ2_XS needs about 40 GB of RAM + VRAM plus space on a fast SSD. It runs on
 **[Strata](https://github.com/Niko1221/Strata)** by default (the "Run it with Strata" box under
@@ -267,6 +269,22 @@ experts take only 23 GB of RAM, so Unity or a game can stay open. It is the plai
 the Swift fine-tune, so it thinks for longer before it answers. It has its own folder
 (`Qwen3.8-Flash-Next-Coder`) and vision file, and Strata sets it up once the first time it starts.
 Switch to it for coding from the model menu in the chat bar, and back to a Swift size for the rest.
+
+The 1-bit mode is IST-DASLab's [disaggregated prefill](https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-NVFP4-prefiller)
+research. A 1-bit model is small but answers badly, mostly because it misreads the prompt. Here a
+4-bit (NVFP4) copy of the 27B's layers, trained to go with the 1-bit one, reads the prompt instead:
+it streams off the SSD one layer at a time, so it takes no VRAM, and the 1-bit model only writes.
+By the paper this wins back 32.5 points on MMLU-Pro at 1 bit (about 7 at 2 bits, nothing at 3), so
+it still answers below the 3-bit 27B mode; it's for trying the idea, not for daily use. Every
+prompt streams all 12.8 GB of blocks once, so the first word takes a few seconds even for a short
+message (a fast NVMe SSD helps), and the MTP speed-up and vision are off.
+
+It needs IST-DASLab's own llama.cpp, which has no Windows build, so this repo's GitHub Actions
+builds one (the "ODP llama.cpp for Windows" job, which patches its file reading for Windows) and
+publishes it as a pre-release. The repo is private, so the first Start asks to download it with
+the GitHub token from Settings > GitHub (it needs read access to the repo's contents) into
+`odp-llama/` next to the app. The build uses CUDA 13, which needs NVIDIA driver 580 or newer. The
+fork is a research prototype tested by its makers on Linux only.
 
 | Model | Type | Sees images | On your PC | Pick it for |
 |---|---|---|---|---|

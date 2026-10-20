@@ -1,0 +1,84 @@
+# Builds IST-DASLab's disaggregated llama.cpp (ODP: a 1-bit Qwen3.8-27B decoder with its NVFP4 prefill
+# weights streamed from the SSD) for Windows with CUDA, for RTX 50 cards (sm_120a). The fork publishes no
+# Windows builds and reads its blocks with POSIX pread, which local-agent/odp/odp-windows.patch replaces.
+# The zip goes to a pre-release of this repo, where the Local Agent app downloads it.
+name: ODP llama.cpp for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - local-agent/odp/**
+      - .github/workflows/odp-llama-windows.yml
+
+permissions:
+  contents: write
+
+env:
+  FORK: IST-DASLab/disaggregated-llama.cpp
+  FORK_COMMIT: a0557fcf59e50a3bcd241e1a7de7b151d315720b
+  CUDA: "13.4"
+  ASSET: localagent-odp-llama-win-cuda-13.4-x64.zip
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the fork and patch it
+        shell: bash
+        run: |
+          git init -q fork
+          cd fork
+          git remote add origin "https://github.com/$FORK"
+          git fetch -q --depth 1 origin "$FORK_COMMIT"
+          git checkout -q FETCH_HEAD
+          git apply --verbose ../local-agent/odp/odp-windows.patch
+
+      - name: Install the CUDA toolkit
+        uses: ./fork/.github/actions/windows-setup-cuda
+        with:
+          cuda_version: ${{ env.CUDA }}
+          cuda_arch: x64
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Build llama-server
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S fork -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+            -DGGML_NATIVE=OFF -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120a ^
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+          if errorlevel 1 exit /b 1
+          set /A JOBS=%NUMBER_OF_PROCESSORS%
+          cmake --build build --config Release -j %JOBS% --target llama-server
+          if errorlevel 1 exit /b 1
+
+      - name: Pack it with the CUDA runtime
+        shell: pwsh
+        run: |
+          $out = "odp-llama"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item build\bin\*.exe, build\bin\*.dll $out
+          foreach ($d in "bin", "bin\x64", "lib") {
+            Get-ChildItem "$env:CUDA_PATH\$d" -Include cudart64_*.dll, cublas64_*.dll, cublasLt64_*.dll -Recurse -ErrorAction SilentlyContinue |
+              Copy-Item -Destination $out -Force
+          }
+          @{ fork = $env:FORK; commit = $env:FORK_COMMIT; cuda = $env:CUDA; built_from = $env:GITHUB_SHA } |
+            ConvertTo-Json | Set-Content "$out\BUILD.json"
+          Get-ChildItem $out | Format-Table Name, Length
+          if (-not (Test-Path "$out\llama-server.exe")) { throw "llama-server.exe is missing" }
+          Compress-Archive -Path "$out\*" -DestinationPath $env:ASSET
+
+      - name: Publish the pre-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="odp-llama-${FORK_COMMIT:0:7}-${GITHUB_SHA:0:7}"
+          gh release create "$tag" "$ASSET" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "ODP llama.cpp for Windows ($tag)" \
+            --notes "llama-server from $FORK at $FORK_COMMIT with local-agent/odp/odp-windows.patch, CUDA $CUDA, sm_120a (RTX 50). Downloaded by the Local Agent app's 1-bit 27B mode."
