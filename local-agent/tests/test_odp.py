@@ -116,16 +116,17 @@ class OdpTest(unittest.TestCase):
         self.assertNotIn("--odp-blocks", build_launch(s, Path("llama-server"), NEW_HELP).args)
 
     def test_pick_release(self):
-        rels = [release("odp-llama-a-1", "2026-10-01", "u1"), release("odp-llama-a-2", "2026-10-03", "u2"),
-                release("odp-llama-a-3", "2026-10-05", "u3", draft=True), release("b9000", "2026-10-09", "u4"),
-                release("odp-llama-a-4", "2026-10-04", "u5", name="other.zip")]
+        rels = [release("odp-llama-b2-a-1", "2026-10-01", "u1"), release("odp-llama-b2-a-2", "2026-10-03", "u2"),
+                release("odp-llama-b2-a-3", "2026-10-05", "u3", draft=True), release("b9000", "2026-10-09", "u4"),
+                release("odp-llama-b2-a-4", "2026-10-04", "u5", name="other.zip"),
+                release("odp-llama-a0557fc-7496aff", "2026-10-06", "u6")]       # build 1: no OpenSSL DLLs
         rel, asset = odp.pick_release(rels)
-        self.assertEqual((rel["tag_name"], asset["url"]), ("odp-llama-a-2", "u2"))
+        self.assertEqual((rel["tag_name"], asset["url"]), ("odp-llama-b2-a-2", "u2"))
         self.assertEqual(odp.pick_release([]), (None, None))
 
     def test_download_with_the_token(self):
-        data = zipped({odp.EXE: b"exe", "ggml-cuda.dll": b"dll", "BUILD.json": "{}"})
-        rels = [release("odp-llama-a-b", "2026-10-20", "")]
+        data = zipped({odp.EXE: b"exe", "ggml-cuda.dll": b"dll", "BUILD.json": json.dumps({"build": odp.BUILD})})
+        rels = [release(f"odp-llama-b{odp.BUILD}-a-b", "2026-10-20", "")]
         gh2 = FakeGitHub(rels, {"/asset/1": data})
         self.addCleanup(gh2.httpd.shutdown)
         rels[0]["assets"][0]["url"] = f"{gh2.url}/asset/1"      # the asset's API url, as GitHub lists it
@@ -139,6 +140,16 @@ class OdpTest(unittest.TestCase):
         odp.download(Settings(github_token="tok"), root=self.root, api=gh2.url)
         self.assertFalse((self.root / "stale.dll").exists())
 
+    def test_an_older_build_counts_as_missing(self):
+        self.root.mkdir(parents=True)
+        (self.root / odp.EXE).write_bytes(b"exe")
+        (self.root / "BUILD.json").write_text('{"fork": "x", "commit": "y"}', encoding="utf-8-sig")   # build 1
+        self.assertIsNone(odp.find_server(self.root))
+        self.assertTrue(odp.outdated(self.root))
+        (self.root / "BUILD.json").write_text(json.dumps({"build": odp.BUILD}), encoding="utf-8-sig")
+        self.assertEqual(odp.find_server(self.root), self.root / odp.EXE)
+        self.assertFalse(odp.outdated(self.root))
+
     def test_download_says_what_is_wrong(self):
         gh = FakeGitHub([], {})
         self.addCleanup(gh.httpd.shutdown)
@@ -146,7 +157,7 @@ class OdpTest(unittest.TestCase):
         os.environ.pop("GH_TOKEN", None)
         with self.assertRaisesRegex(RuntimeError, "refused"):
             odp.download(Settings(github_token="wrong"), root=self.root, api=gh.url)
-        with self.assertRaisesRegex(RuntimeError, "No build"):
+        with self.assertRaisesRegex(RuntimeError, "No working build"):
             odp.download(Settings(github_token="tok"), root=self.root, api=gh.url)
         self.assertIsNone(odp.find_server(self.root))
 

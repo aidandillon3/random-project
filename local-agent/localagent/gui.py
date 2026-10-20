@@ -1797,9 +1797,11 @@ class ServerPage(QWidget):
         if on_odp and not exe:
             self.launch = None
             self.cmd.setPlainText("")
-            self.plan_label.setText("This mode runs on its own build of llama.cpp (IST-DASLab's fork), which isn't on "
-                                    "this PC yet. Start model downloads it from your GitHub repo's releases first; "
-                                    "that needs the GitHub token in Settings.")
+            have = ("needs a newer build (the one here was missing some of its files)" if odp.outdated()
+                    else "isn't on this PC yet")
+            self.plan_label.setText(f"This mode runs on its own build of llama.cpp (IST-DASLab's fork), which {have}. "
+                                    "Start model downloads it from your GitHub repo's releases first; that needs the "
+                                    "GitHub token in Settings.")
             self._sync_start_btn()
             return
         if not (exe and s.model_path):
@@ -1866,9 +1868,12 @@ class ServerPage(QWidget):
             return
         self._cancel_strata()      # a stopped Strata start still downloading must not start anything later
         if odp.supports(p) and not odp.find_server():
-            if QMessageBox.question(self, "1-bit engine", "This mode runs on IST-DASLab's research build of llama.cpp, "
-                                    "which your GitHub repo builds for Windows. Download it from the repo's releases "
-                                    f"into\n{odp.ODP_DIR}\nnow, then start the model?") == QMessageBox.Yes:
+            why = ("The 1-bit engine on this PC is an older build that was missing some of its files. Download the "
+                   "fixed build" if odp.outdated() else
+                   "This mode runs on IST-DASLab's research build of llama.cpp, which your GitHub repo builds for "
+                   "Windows. Download it")
+            if QMessageBox.question(self, "1-bit engine", f"{why} from the repo's releases into\n{odp.ODP_DIR}\nnow, "
+                                    "then start the model?") == QMessageBox.Yes:
                 self._download(then_start=True, engine="odp")
             return
         if self.s.model_path and not self.exe and not odp.supports(p):
