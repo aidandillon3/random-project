@@ -1,0 +1,75 @@
+# Publishes each app as its own download on the Releases page, so one can be grabbed without the
+# rest of the repository. Every push to main that changes an app replaces that app's release, so
+# the link always gives the newest version:
+#   https://github.com/<owner>/<repo>/releases/download/local-agent/local-agent.zip
+#   https://github.com/<owner>/<repo>/releases/download/body-tracker/body-tracker.zip
+name: App releases
+
+on:
+  push:
+    branches: [main]
+    paths: ["local-agent/**", "body-tracker/**", ".github/workflows/app-releases.yml"]
+  workflow_dispatch:   # Actions tab > App releases > Run workflow: republishes every app
+
+permissions:
+  contents: write
+
+concurrency:
+  group: app-releases-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: local-agent
+            title: Local Agent
+          - app: body-tracker
+            title: Body Tracker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Did this app change?
+        id: changed
+        env:
+          BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
+          APP: ${{ matrix.app }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$EVENT" != "push" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+             || ! git diff --quiet "$BEFORE" HEAD -- "$APP" .github/workflows/app-releases.yml \
+             || ! gh release view "$APP" >/dev/null 2>&1; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$APP didn't change; its release stays as it is."
+          fi
+
+      - name: Zip the app
+        if: steps.changed.outputs.publish == 'true'
+        env:
+          APP: ${{ matrix.app }}
+        # Only committed files, inside a folder named after the app.
+        run: git archive --format=zip --prefix="$APP/" -o "$APP.zip" "HEAD:$APP"
+
+      - name: Replace the app's release
+        if: steps.changed.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP: ${{ matrix.app }}
+          TITLE: ${{ matrix.title }}
+        run: |
+          short=$(git rev-parse --short HEAD)
+          subject=$(git log -1 --format=%s)
+          gh release delete "$APP" --cleanup-tag --yes 2>/dev/null || true
+          printf '%s\n\n%s\n\n%s\n' \
+            "The newest $TITLE from main (commit $short, $(date -u +%Y-%m-%d))." \
+            "Download **$APP.zip** below and unzip it. To update, unzip it over your old folder; your settings and downloaded models in it are kept." \
+            "Last change: $subject" > notes.md
+          gh release create "$APP" "$APP.zip" --target "$GITHUB_SHA" --latest=false \
+            --title "$TITLE (newest, $short)" --notes-file notes.md

@@ -1,6 +1,11 @@
 # random-project
 doin stuff
 
+Each app has its own download on the Releases page, rebuilt whenever it changes on main:
+[Local Agent](https://github.com/aidandillon3/random-project/releases/download/local-agent/local-agent.zip) ·
+[Body Tracker](https://github.com/aidandillon3/random-project/releases/download/body-tracker/body-tracker.zip).
+Unzip it, or unzip a newer one over your old folder; your settings and models in it are kept.
+
 ## Snake
 
 A browser snake game in a single file, `index.html`. Open it in any browser to play.
