@@ -40,6 +40,8 @@ class Preset:
     subdir: str = ""                      # the model files' folder in the repo, when they aren't at its top
     extra: list[tuple[str, str]] = field(default_factory=list)   # (repo, file) from other repos, beside the model
     odp: dict | None = None               # the 1-bit engine's prefill blocks, when it runs on it (odp.py)
+    family: str = ""                      # the model, as the pickers list it (Qwen3.8 27B, Qwen3.8 Flash Next)
+    variant: str = ""                     # this quant or version of it, in the family's second list
 
     def remote(self, repo: str, name: str) -> str:
         """The file's path in its Hugging Face repo."""
@@ -57,6 +59,8 @@ class Preset:
 
 FLASH_REPO = "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
 FLASH_MMPROJ = "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf"
+FAMILY_27B = "Qwen3.8 27B"
+FLASH_FAMILY = "Qwen3.8 Flash Next"
 
 
 def _flash_next(key: str, size: str, note: str, blurb: str, shards: tuple[int, int],
@@ -66,6 +70,7 @@ def _flash_next(key: str, size: str, note: str, blurb: str, shards: tuple[int, i
     files = [f"Swift-Qwen3.8-Flash-Next-GSQ-RCO-{size}-0000{i}-of-00002.gguf" for i in (1, 2)]
     return Preset(
         key=key, title=f"Swift 1.5 Qwen3.8 Flash Next {size} ({note})", blurb=blurb, repo=FLASH_REPO, files=files,
+        family=FLASH_FAMILY, variant=f"{size} ({note})",
         mmproj=(FLASH_REPO, FLASH_MMPROJ), folder="Swift-1.5-Qwen3.8-Flash-Next",
         sizes={**dict(zip(files, shards)), FLASH_MMPROJ: 907543520},
         # no MTP layers in these files (Strata fetches its own draft layer); its sparse attention keeps
@@ -80,6 +85,7 @@ PRESETS = [
     Preset(
         key="swift-27b",
         title="Swift 1.5 Qwen3.8 27B (fast, fits on the GPU)",
+        family=FAMILY_27B, variant="IQ3_XXS (fast, fits on the GPU)",
         blurb="Dense 27B, IQ3_XXS with MTP layers. Everything stays on the GPU, so it's the quickest. "
               "Vision uses the base Qwen3.8-27B adapter.",
         repo="ukisai/Swift-1.5-Qwen3.8-27B-GSQ-RCO-GGUF",
@@ -118,6 +124,7 @@ PRESETS = [
     Preset(
         key="flash-next-coder",
         title="Qwen3.8 Flash Next Coder IQ1_M (for coding, half the RAM)",
+        family=FLASH_FAMILY, variant="Coder IQ1_M (for coding, less RAM)",
         blurb="The original Flash Next with half its experts removed, keeping the ones code, tools and images "
               "use. The rest are stored like IQ3_S, so it codes nearly as well as the full model (by its makers: "
               "99% on LiveCodeBench, 91% on SWE-bench Verified) but is weaker at everything else. Its 23 GB of "
@@ -141,6 +148,7 @@ PRESETS = [
     Preset(
         key="qwen27b-1bit-odp",
         title="Qwen3.8 27B 1-bit + NVFP4 prefill (experimental)",
+        family=FAMILY_27B, variant="1-bit + NVFP4 prefill (experimental)",
         blurb="Research mode from IST-DASLab: a 1-bit 27B (6 GB on the GPU) writes the answers, and a 4-bit "
               "copy of its layers trained to go with it reads your prompt, streamed from the SSD a layer at a "
               "time so it takes no VRAM. By its makers' tests that wins back much of what 1 bit loses, but it "
@@ -162,6 +170,14 @@ PRESETS = [
     ),
 ]
 BY_KEY = {p.key: p for p in PRESETS}
+
+
+def families() -> dict[str, list[Preset]]:
+    """The modes by model, in catalog order: the pickers list these, then each model's quants."""
+    out: dict[str, list[Preset]] = {}
+    for p in PRESETS:
+        out.setdefault(p.family, []).append(p)
+    return out
 
 
 def url(repo: str, file: str, base: str = HF) -> str:

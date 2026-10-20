@@ -629,9 +629,10 @@ class ChatPage(QWidget):
         # first run: one click to a working model
         self.setup_card = QGroupBox("No model running yet. Pick one to get started:")
         sc = QVBoxLayout(self.setup_card)
-        for p in catalog.PRESETS:
+        for fam, ps in catalog.families().items():
+            p = ps[0]       # other quants are on the Model server page
             gb = p.total_bytes() / catalog.GB
-            b = QPushButton(f"{p.title}  ({gb:.0f} GB download if you don't have it)")
+            b = QPushButton(f"{fam}, {p.variant}  ({gb:.0f} GB download if you don't have it)")
             b.setStyleSheet("text-align: left; padding: 8px 14px;")
             b.clicked.connect(lambda _=False, k=p.key: self.win.server.switch_to(k))
             sc.addWidget(b)
@@ -753,10 +754,14 @@ class ChatPage(QWidget):
         m, srv = self.model_menu, self.win.server
         m.clear()
         current = catalog.matching(self.s.model_path)
-        for p in catalog.PRESETS:
-            a = m.addAction(p.title, lambda k=p.key: srv.switch_to(k))
-            a.setCheckable(True)
-            a.setChecked(p is current)
+        for fam, ps in catalog.families().items():
+            sub = m.addMenu(fam)
+            sub.menuAction().setCheckable(True)
+            sub.menuAction().setChecked(current in ps)
+            for p in ps:
+                a = sub.addAction(p.variant, lambda k=p.key: srv.switch_to(k))
+                a.setCheckable(True)
+                a.setChecked(p is current)
         m.addSeparator()
         if srv.proc.running or srv._phase is not None:
             m.addAction("Stop the model", srv.stop)
@@ -1137,12 +1142,25 @@ class ServerPage(QWidget):
         g = QGroupBox("Mode")
         f = QFormLayout(g)
         row = QHBoxLayout()
-        self.preset_box = QComboBox()
+        # every mode in one list, which the rest of the page works from; it stays hidden behind two shorter
+        # pickers: the model, then its quant
+        self.preset_box = QComboBox(self)
+        self.preset_box.setVisible(False)
         for p in catalog.PRESETS:
             self.preset_box.addItem(p.title, p.key)
         self.preset_box.addItem("Another model file (pick it below)", "")
         self.preset_box.currentIndexChanged.connect(self._preset_picked)
-        row.addWidget(self.preset_box, 1)
+        self.family_box = QComboBox()
+        for fam in catalog.families():
+            self.family_box.addItem(fam, fam)
+        self.family_box.addItem("Another model file (pick it below)", "")
+        self.family_box.setToolTip("Which model")
+        self.family_box.currentIndexChanged.connect(self._family_picked)
+        row.addWidget(self.family_box, 2)
+        self.quant_box = QComboBox()
+        self.quant_box.setToolTip("Which size (quant) of it: bigger answers better but needs more memory")
+        self.quant_box.currentIndexChanged.connect(self._quant_picked)
+        row.addWidget(self.quant_box, 3)
         self.preset_btn = QPushButton("Use it")
         self.preset_btn.setObjectName("primary")
         self.preset_btn.clicked.connect(self._use_preset)
@@ -1530,8 +1548,35 @@ class ServerPage(QWidget):
         got = self._located[p.key] = catalog.model_path(p, self._dirs() + [self._models_root()])
         return got
 
+    def _family_picked(self):
+        """A model picked: its running quant if it's this model, else its first."""
+        ps = catalog.families().get(self.family_box.currentData() or "", [])
+        current = catalog.matching(self.s.model_path)
+        pick = current if current in ps else (ps[0] if ps else None)
+        self.preset_box.setCurrentIndex(max(0, self.preset_box.findData(pick.key if pick else "")))
+
+    def _quant_picked(self):
+        if self.quant_box.currentData():
+            self.preset_box.setCurrentIndex(max(0, self.preset_box.findData(self.quant_box.currentData())))
+
+    def _sync_pickers(self, p):
+        """Show the mode in the model and quant pickers (the mode changes from the chat and scans too)."""
+        fam = p.family if p else ""
+        ps = catalog.families().get(fam, [])
+        for box in (self.family_box, self.quant_box):
+            box.blockSignals(True)
+        self.family_box.setCurrentIndex(max(0, self.family_box.findData(fam)))
+        self.quant_box.clear()
+        for q in ps:
+            self.quant_box.addItem(f"{q.variant}  ·  {q.total_bytes() / catalog.GB:.0f} GB", q.key)
+        self.quant_box.setCurrentIndex(max(0, self.quant_box.findData(p.key if p else "")))
+        for box in (self.family_box, self.quant_box):
+            box.blockSignals(False)
+        self.quant_box.setVisible(len(ps) > 1)
+
     def _preset_picked(self):
         p = self._preset()
+        self._sync_pickers(p)
         if self._dl_state is not None:
             return
         active = p is not None and catalog.matching(self.s.model_path) is p
@@ -1625,7 +1670,8 @@ class ServerPage(QWidget):
 
         threading.Thread(target=work, daemon=True).start()
         self.preset_bar.setVisible(True)
-        self.preset_box.setEnabled(False)
+        for box in (self.preset_box, self.family_box, self.quant_box):
+            box.setEnabled(False)
         self.preset_btn.setText("Pause download")
 
         def tick():
@@ -1640,7 +1686,8 @@ class ServerPage(QWidget):
             else:
                 self._located.pop(p.key, None)
             self.preset_bar.setVisible(False)
-            self.preset_box.setEnabled(True)
+            for box in (self.preset_box, self.family_box, self.quant_box):
+                box.setEnabled(True)
             if st["error"] is not None:
                 self._preset_picked()
                 self.preset_info.setText(f"{st['error']}")

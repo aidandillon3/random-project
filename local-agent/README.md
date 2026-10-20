@@ -225,7 +225,8 @@ Ubuntu download, about 390 MB). If you got as far as setting it up, first run
 
 ## Models for a 5080 (16 GB) + 64 GB RAM
 
-**Ready-made modes** (Model server page > Mode): pick one and press the button. If the files
+**Ready-made modes** (Model server page > Mode): pick the model, then its size (quant) in the list
+beside it, and press the button. The chat bar's Model menu has the same, one sub-menu per model. If the files
 aren't on your PC it downloads them first (it can pause and resume), then switches the model,
 its vision file and the server settings, and restarts the model. Sampling and thinking levels
 follow whichever model is running.

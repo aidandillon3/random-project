@@ -322,6 +322,30 @@ class GuiTest(unittest.TestCase):
         self.assertNotIn("--mmproj", cmd)
         w.close()
 
+    def test_model_and_quant_pickers(self):
+        from localagent.config import Settings
+
+        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1"))
+        page = w.server
+        page._use_preset = lambda: None
+        page.preset_box.setCurrentIndex(page.preset_box.findData("swift-flash-next-iq3s"))    # e.g. from the chat
+        self.assertEqual(page.family_box.currentText(), "Qwen3.8 Flash Next")
+        self.assertEqual(page.quant_box.count(), 4)
+        self.assertEqual(page.quant_box.currentData(), "swift-flash-next-iq3s")
+        self.assertIn("85 GB", page.quant_box.currentText())
+        self.assertFalse(page.preset_box.isVisibleTo(page))
+        page.quant_box.setCurrentIndex(page.quant_box.findData("flash-next-coder"))
+        self.assertEqual(page.preset_box.currentData(), "flash-next-coder")
+        page.family_box.setCurrentIndex(page.family_box.findData("Qwen3.8 27B"))
+        self.assertEqual(page.preset_box.currentData(), "swift-27b")                         # its first quant
+        self.assertEqual([page.quant_box.itemData(i) for i in range(page.quant_box.count())],
+                         ["swift-27b", "qwen27b-1bit-odp"])
+        page.family_box.setCurrentIndex(page.family_box.findData(""))
+        self.assertEqual(page.preset_box.currentData(), "")
+        self.assertTrue(page.quant_box.isHidden())
+        self.assertFalse(page.file_group.isHidden())
+        w.close()
+
     def test_flash_next_runs_on_strata(self):
         from localagent import catalog, strata
         from localagent.config import Settings
@@ -474,8 +498,11 @@ class GuiTest(unittest.TestCase):
         picked = []
         w.server._use_preset = lambda: picked.append(w.server.preset_box.currentData())
         chat._fill_model_menu()
-        acts = [a for a in chat.model_menu.actions() if a.text().startswith("Swift 1.5 Qwen3.8 27B")]
-        acts[0].trigger()
+        menus = {a.text(): a.menu() for a in chat.model_menu.actions() if a.menu()}
+        self.assertEqual(list(menus), ["Qwen3.8 27B", "Qwen3.8 Flash Next"])       # one entry per model
+        self.assertEqual([a.text() for a in menus["Qwen3.8 Flash Next"].actions()][-1],
+                         "Coder IQ1_M (for coding, less RAM)")                  # and its quants inside
+        menus["Qwen3.8 27B"].actions()[0].trigger()
         self.assertEqual(picked, ["swift-27b"])
         self.assertEqual(w.nav.currentRow(), 1)
         told = []
@@ -484,7 +511,7 @@ class GuiTest(unittest.TestCase):
         self.addCleanup(setattr, self.gui.QMessageBox, "information", orig)
         w.server._dl_state = {"stop": __import__("threading").Event()}       # a mode downloading
         chat._fill_model_menu()
-        [a for a in chat.model_menu.actions() if a.text().startswith("Swift 1.5 Qwen3.8 Flash")][0].trigger()
+        [a for a in chat.model_menu.actions() if a.text() == "Qwen3.8 Flash Next"][0].menu().actions()[0].trigger()
         self.assertEqual(picked, ["swift-27b"])                              # not paused, not switched
         self.assertFalse(w.server._dl_state["stop"].is_set())
         self.assertTrue(told and "downloading" in told[0])
