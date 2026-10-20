@@ -13,7 +13,9 @@ repo is private, so the download needs the GitHub token from Settings (or the gh
 from __future__ import annotations
 
 import io
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,16 +34,37 @@ API = "https://api.github.com"
 TAG_PREFIX = "odp-llama-"
 ASSET = "localagent-odp-llama-win-cuda-13.4-x64.zip"
 CUDA13_DRIVER = 580     # the build uses CUDA 13
+# the oldest build that works: build 1 left out the DLLs it links (OpenSSL), so Windows wouldn't start it.
+# Matches BUILD in .github/workflows/odp-llama-windows.yml
+BUILD = 2
 
 
 def supports(preset) -> bool:
     return bool(preset and getattr(preset, "odp", None))
 
 
+def installed_build(root: Path) -> int:
+    try:
+        return int(json.loads((root / "BUILD.json").read_text(encoding="utf-8-sig")).get("build", 1))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 1
+
+
 def find_server(root: Path | None = None) -> Path | None:
+    """The engine, unless it's missing or an older build that doesn't work (then Start downloads it again)."""
     root = root or ODP_DIR
     hit = root / EXE
-    return hit if hit.is_file() else None
+    return hit if hit.is_file() and installed_build(root) >= BUILD else None
+
+
+def outdated(root: Path | None = None) -> bool:
+    root = root or ODP_DIR
+    return (root / EXE).is_file() and installed_build(root) < BUILD
+
+
+def _tag_build(tag: str) -> int:
+    m = re.match(rf"{TAG_PREFIX}b(\d+)-", tag)
+    return int(m.group(1)) if m else 1
 
 
 def blocks_path(preset, model: Path) -> Path:
@@ -68,9 +91,10 @@ def github_token(settings) -> str:
 
 
 def pick_release(releases: list) -> tuple[dict | None, dict | None]:
-    """The newest finished build: (release, its zip)."""
+    """The newest finished build that works: (release, its zip)."""
     ordered = sorted((r for r in releases if isinstance(r, dict) and not r.get("draft")
-                      and str(r.get("tag_name", "")).startswith(TAG_PREFIX)),
+                      and str(r.get("tag_name", "")).startswith(TAG_PREFIX)
+                      and _tag_build(str(r["tag_name"])) >= BUILD),
                      key=lambda r: r.get("published_at") or r.get("created_at") or "", reverse=True)
     for rel in ordered:
         asset = next((a for a in rel.get("assets", []) if a.get("name") == ASSET
@@ -102,8 +126,8 @@ def download(settings, progress=lambda msg, frac: None, root: Path | None = None
                            "GitHub: it needs read access to that repo's contents.")
     rel, asset = pick_release(data)
     if not asset:
-        raise RuntimeError(f"No build of the 1-bit engine in {REPO}'s releases yet. It's made by the "
-                           "'ODP llama.cpp for Windows' job under the repo's Actions tab.")
+        raise RuntimeError(f"No working build of the 1-bit engine (build {BUILD} or newer) in {REPO}'s releases "
+                           "yet. It's made by the 'ODP llama.cpp for Windows' job under the repo's Actions tab.")
     # the asset's API url with Accept: octet-stream redirects to the file; requests drops the token there
     progress(f"Downloading {asset['name']}...", 0.0)
     buf = io.BytesIO()
@@ -121,9 +145,10 @@ def download(settings, progress=lambda msg, frac: None, root: Path | None = None
     tmp.mkdir(parents=True)
     with zipfile.ZipFile(buf) as z:
         z.extractall(tmp)
-    if not (tmp / EXE).is_file():
+    if not (tmp / EXE).is_file() or installed_build(tmp) < BUILD:
         shutil.rmtree(tmp, ignore_errors=True)
-        raise RuntimeError(f"Downloaded {asset['name']}, but {EXE} wasn't in it.")
+        raise RuntimeError(f"Downloaded {asset['name']}, but it isn't a working build of the 1-bit engine "
+                           f"(no {EXE}, or older than build {BUILD}).")
     old = root.with_name(root.name + ".old")
     shutil.rmtree(old, ignore_errors=True)
     if root.exists():

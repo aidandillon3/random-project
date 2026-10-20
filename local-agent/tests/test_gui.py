@@ -314,6 +314,9 @@ class GuiTest(unittest.TestCase):
         odp.ODP_DIR.mkdir()
         engine = serving_llama(odp.ODP_DIR)
         page._changed()
+        self.assertIn("needs a newer build", page.plan_label.text())     # build 1 had DLLs missing
+        (odp.ODP_DIR / "BUILD.json").write_text('{"build": %d}' % odp.BUILD)
+        page._changed()
         self.assertTrue(self.wait_until(lambda: "--odp-blocks" in page.cmd.toPlainText(), 10))
         cmd = page.cmd.toPlainText()
         self.assertTrue(cmd.startswith(str(engine)))
