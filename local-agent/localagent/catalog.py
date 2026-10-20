@@ -61,6 +61,23 @@ FLASH_REPO = "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
 FLASH_MMPROJ = "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf"
 FAMILY_27B = "Qwen3.8 27B"
 FLASH_FAMILY = "Qwen3.8 Flash Next"
+ORNITH_REPO = "unsloth/Ornith-1.5-122B-GGUF"
+ORNITH_MMPROJ = "mmproj-BF16.gguf"
+
+
+def _ornith(key: str, quant: str, note: str, blurb: str, sizes: dict[str, int], subdir: str = "",
+            repo: str = ORNITH_REPO, speedup: str = "ngram") -> Preset:
+    """A size of Ornith 1.5 122B (ornith-ai, MIT): a coding and agent fine-tune of a 122B Qwen3.5-style MoE, on
+    llama.cpp (Strata runs only Flash Next), with its experts in RAM. All sizes share one folder and vision file.
+    sizes: the model files in load order (the first one is the one llama.cpp is given)."""
+    return Preset(
+        key=key, title=f"Ornith 1.5 122B {quant} ({note})", blurb=blurb, repo=repo, files=list(sizes), subdir=subdir,
+        family="Ornith 1.5 122B", variant=f"{quant} ({note})",
+        mmproj=(ORNITH_REPO, ORNITH_MMPROJ), folder="Ornith-1.5-122B",
+        sizes={**sizes, ORNITH_MMPROJ: 912263488},
+        # n-gram drafts reuse text already in the chat (code edits repeat a lot) and cost no memory
+        launch={"ctx_size": 65536, "kv_type": "q8_0", "speedup": speedup, "placement": "auto", "use_vision": True},
+    )
 
 
 def _flash_next(key: str, size: str, note: str, blurb: str, shards: tuple[int, int],
@@ -168,6 +185,34 @@ PRESETS = [
         launch={"ctx_size": 65536, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": False},
         odp={"blocks": "Qwen3.8-27B-ODP-IQ1_S-00001-of-00064.gguf"},
     ),
+    # Ornith 1.5 122B (2026-10-20, Unsloth's GGUFs): its makers' tests put it level with Flash Next (ahead on
+    # SWE-bench Pro, NL2Repo, HLE, behind on TerminalBench 2.1), but llama.cpp runs it with the experts in RAM
+    _ornith(
+        "ornith-iq3xxs", "UD-IQ3_XXS", "recommended",
+        "Ornith 1.5: a coding and agent model on a 122B MoE (Qwen3.5-style, MIT licence) that its makers' tests "
+        "put level with Flash Next: ahead on SWE-bench Pro, NL2Repo and HLE, behind on TerminalBench 2.1. Strata "
+        "can't run it, so it runs on llama.cpp with its experts in RAM: expect it well below Flash Next on Strata "
+        "(not measured on a 16 GB card yet). IQ3_XXS leaves about 25 GB of RAM free. Sees images.",
+        {"Ornith-1.5-122B-UD-IQ3_XXS.gguf": 49515667712}),
+    _ornith(
+        "ornith-q3kxl", "UD-Q3_K_XL", "better answers, more RAM",
+        "Ornith 1.5 at Unsloth's Q3_K_XL: closer to the full model than IQ3_XXS, and 10 GB bigger, which leaves a "
+        "64 GB PC little room for other programs. Runs on llama.cpp with its experts in RAM. Sees images.",
+        {f"Ornith-1.5-122B-UD-Q3_K_XL-0000{i}-of-00003.gguf": n
+         for i, n in ((1, 10942929), (2, 49791670080), (3, 9958641536))}, subdir="UD-Q3_K_XL"),
+    _ornith(
+        "ornith-q2kxl", "UD-Q2_K_XL", "smaller, a bit faster",
+        "Ornith 1.5 at 2 bits: 5 GB smaller and a little faster than IQ3_XXS, with noticeably weaker answers. "
+        "Runs on llama.cpp with its experts in RAM. Sees images.",
+        {"Ornith-1.5-122B-UD-Q2_K_XL.gguf": 44533952768}),
+    # prithivMLmods' upload keeps the model's MTP layers, which Unsloth's leave out
+    _ornith(
+        "ornith-q3kl-mtp", "Q3_K_L + MTP", "fastest writing, most RAM",
+        "Ornith 1.5 at Q3_K_L with its MTP layers kept, so llama.cpp's MTP speed-up guesses a few words ahead "
+        "(usually 1.3-2x faster writing on a model that fits the GPU; less certain with experts in RAM). At 65 GB "
+        "it is the most a 64 GB PC with 16 GB of VRAM can take: close other programs while it runs.",
+        {"Ornith-1.5-122B.Q3_K_L.gguf": 64661782528}, subdir="Q3_K_L", repo="prithivMLmods/Ornith-1.5-122B-MTP-GGUF",
+        speedup="mtp"),
 ]
 BY_KEY = {p.key: p for p in PRESETS}
 

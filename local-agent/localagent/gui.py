@@ -1961,9 +1961,12 @@ class ServerPage(QWidget):
             # every step that starts a program checks stop under the lock Stop takes: a cancelled start
             # never starts anything later (nor stops a model started since)
             try:
-                if not strata.installed():
+                if not strata.installed() or strata.outdated():
+                    if strata.installed():
+                        say(f"Updating Strata to v{strata.VERSION} (its setup runs again after)...")
                     strata.download(say, stop=stop)
-                    self.proc.lines.append(f"Strata {strata.COMMIT[:7]} downloaded to {strata.STRATA_DIR}")
+                    self.proc.lines.append(f"Strata v{strata.VERSION} ({strata.COMMIT[:7]}) downloaded to "
+                                           f"{strata.STRATA_DIR}")
                 if stop.is_set():
                     return
                 if strata.needs_setup(p, model, run):

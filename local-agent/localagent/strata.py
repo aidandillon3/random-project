@@ -26,11 +26,14 @@ from .config import APP_DIR
 
 WINDOWS = sys.platform == "win32"
 STRATA_DIR = APP_DIR / "strata"
-# Pinned to the version this app was checked against (2026-10-11); its setup fetches Strata's
-# ready-made engine and the draft layer itself.
-COMMIT = "7695859aa13afb248bdb4d36f9b2e95707db079d"
+# Pinned to the version this app was checked against: v0.1.45 (2026-10-16; was 7695859, v0.1.43, until
+# 2026-10-20). Its setup fetches the engine of the same version and the draft layer itself. An install of another
+# version is updated in place on the next start (download keeps .venv, the engine and the configs) and set up again.
+COMMIT = "477ac13cbe8e582c20484871ce459d20d82df09d"
+VERSION = "0.1.45"
 ZIP_URL = f"https://github.com/Niko1221/Strata/archive/{COMMIT}.zip"
 STAMP = "localagent-setup.json"
+INSTALLED = "localagent-commit.txt"     # the commit this app downloaded (installs before 2026-10-20 have none)
 
 
 def supports(preset) -> bool:
@@ -48,6 +51,16 @@ def active(settings, preset) -> bool:
 def installed(root: Path | None = None) -> bool:
     root = root or STRATA_DIR
     return (root / "setup.py").is_file() and (root / "serve" / "server.py").is_file()
+
+
+def outdated(root: Path | None = None) -> bool:
+    """Installed, but not the version this app is pinned to."""
+    root = root or STRATA_DIR
+    try:
+        have = (root / INSTALLED).read_text(encoding="utf-8").strip()
+    except OSError:
+        have = ""
+    return installed(root) and have != COMMIT
 
 
 def python(root: Path | None = None) -> Path:
@@ -102,6 +115,7 @@ def download(progress=lambda msg, frac: None, root: Path | None = None, url: str
     if not WINDOWS:
         for sh in root.glob("*.sh"):
             sh.chmod(0o755)
+    (root / INSTALLED).write_text(COMMIT, encoding="utf-8")
     progress("Strata downloaded.", 1.0)
     return root
 
@@ -112,9 +126,10 @@ def data_dir(model: Path) -> Path:
 
 
 def wanted(preset, model: Path, settings) -> dict:
-    """What setup is run with; when it changes, setup runs again (the port is given at each start)."""
+    """What setup is run with; when it changes, setup runs again (the port is given at each start). A new Strata
+    version too: its setup fetches the engine that goes with it."""
     return {"family": preset.strata["family"], "model": preset.strata["model"], "gguf_dir": str(model.parent),
-            "context": int(settings.ctx_size), "vision": bool(settings.use_vision)}
+            "context": int(settings.ctx_size), "vision": bool(settings.use_vision), "strata": COMMIT}
 
 
 def _stamps(root: Path) -> dict:
@@ -187,7 +202,14 @@ def mark_setup_done(preset, model: Path, settings, root: Path | None = None) -> 
 # keep up to 10 prompt checkpoints, and park conversations of 8K tokens or more (a helper's task in between
 # doesn't throw the main chat out) in 4 GiB of RAM. Not 8 GiB: IQ2_XS keeps about 48 GB of the 64 GB in RAM.
 # A mode's strata["engine_args"] changes them for its size (the 3-bit sizes park less).
-ENGINE_ARGS = {"--prompt-cache": "10", "--conversation-cache-mib": "4096", "--conversation-cache-min-tokens": "8192"}
+# --adapt-async 1: the expert cache swaps on a helper thread instead of pausing the answer (Strata's README, #1904,
+# v0.1.44+: +4-5% decode, +7-10% on code and long documents on an RTX 5070; answers can differ slightly from the
+# default but stay the same from run to run). The engine turns it off by itself, saying why, where it can't run.
+ENGINE_ARGS = {"--prompt-cache": "10", "--conversation-cache-mib": "4096", "--conversation-cache-min-tokens": "8192",
+               "--adapt-async": "1"}
+# Put into the config's "env" the same way. STRATA_PIN_BY_NEED: Windows lets a program lock only about half the RAM
+# for the graphics card; this locks the experts the card needs most first (#1905, v0.1.44+: +4.4% prompt reading).
+ENGINE_ENV = {"STRATA_PIN_BY_NEED": "1"}
 
 
 def tune_config(preset, root: Path | None = None) -> bool:
@@ -203,9 +225,13 @@ def tune_config(preset, root: Path | None = None) -> bool:
         return False
     want = {**ENGINE_ARGS, **preset.strata.get("engine_args", {})}
     add = [x for flag, value in want.items() if flag not in args for x in (flag, value)]
-    if not add:
+    env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    add_env = {k: v for k, v in ENGINE_ENV.items() if k not in env}
+    if not add and not add_env:
         return False
     cfg["args"] = args + add
+    if add_env:
+        cfg["env"] = {**env, **add_env}
     tmp = path.with_name(path.name + ".tmp")          # whole or not at all, as Strata's setup writes it
     try:
         tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
