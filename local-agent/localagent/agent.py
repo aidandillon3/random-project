@@ -21,6 +21,9 @@ from .tools.github import redact_all
 from .tools.shell import shell_kind
 
 IMAGE_TOKENS = 1200          # rough cost of one image, for estimates only
+MANY_IMAGES = 4             # pictures in one task after which the model is reminded to ask instead of polishing
+MANY_IMAGES_NOTE = ("\n(That's picture {n} of this task. If it already runs and shows what was asked, stop "
+                    "adjusting the look: show the user and ask what to change.)")
 CHARS_PER_TOKEN = 3.5
 SUMMARY_TOKENS = 3072        # room a summary made inside the conversation may take
 NO_VISION = "[image not shown: this model can't see images]"
@@ -137,6 +140,7 @@ class Agent:
         self._ctx_limit: int | None = None
         self._ctx_asked = 0.0
         self._known = (0, 0)          # (message count, tokens) from the server's last usage report
+        self._task_images = 0          # pictures from tools since the user's last message
         self._recent: deque = deque(maxlen=8)
         self.steps_used = 0
         self._efforts: list[str] | None = None
@@ -218,6 +222,7 @@ class Agent:
                 return ""
             self._ready, self._ctx_asked = True, 0.0
         self.messages.append(self._user_message(text, images))
+        self._task_images = 0
         final = ""
         tool_rounds = 0
         for step in range(int(self.settings.max_steps)):
@@ -524,6 +529,7 @@ class Agent:
         if any(r.images for _, r in results) and self._no_vision():
             note = "\n(The image isn't shown: this model can't see images.)"
             results = [(c, ToolResult(r.text + note, ok=r.ok) if r.images else r) for c, r in results]
+        results = self._note_many_images(results)
         images = [(c, png) for c, r in results for png in r.images]
         if self.prompt_mode:
             text = "\n".join(f'<tool_response name="{c.name}">\n{r.text}\n</tool_response>' for c, r in results)
@@ -539,6 +545,18 @@ class Agent:
         self._prune_images()
 
     # ------------------------------------------------------------------ images
+    def _note_many_images(self, results: list[tuple[ToolCall, ToolResult]]) -> list[tuple[ToolCall, ToolResult]]:
+        """From the MANY_IMAGES-th picture of one task on, remind the model that tweaking a look it isn't sure
+        about is the user's call (one model took ~20 screenshot-and-adjust rounds on a render that already ran)."""
+        out = []
+        for c, r in results:
+            if r.images:
+                self._task_images += len(r.images)
+                if self._task_images >= MANY_IMAGES:
+                    r = ToolResult(r.text + MANY_IMAGES_NOTE.format(n=self._task_images), ok=r.ok, images=r.images)
+            out.append((c, r))
+        return out
+
     def _no_vision(self) -> bool:
         """The server said it can't take images (llama.cpp or Strata without the vision file)."""
         if self._vision is None:
