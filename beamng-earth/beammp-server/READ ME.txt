@@ -33,5 +33,5 @@ Helper downloads: https://github.com/aidandillon3/random-project/releases/tag/be
 Either one works with the server, but it must be 1.5.4: the server runs BeamNG.Earth 1.5.4 since
 2026-10-21 (it fixes buildings from somewhere else showing up on the road at high speed). Close the old
 BeamNG.Earth window and run the new exe once; it updates your own copy too.
-The previous zip is in
-E:\BeamNG Earth server backups\2026-10-21 before high-speed patch.
+Backups: E:\BeamNG Earth server backups\2026-10-21 before 1.5.4 (the 1.5.3 zip) and
+E:\BeamNG Earth server backups\2026-10-21 before high-speed patch (the first one).
