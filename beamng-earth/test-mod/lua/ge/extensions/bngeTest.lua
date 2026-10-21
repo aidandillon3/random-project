@@ -8,6 +8,7 @@
 --   bngeTest.autoBudget()      experiment: raise BeamNG.Earth's streaming budget (2 ms per frame) up to 4 ms while
 --                              road meshes or far tiles queue up, back to 2 when they have caught up;
 --                              bngeTest.autoBudget(false) turns it off (budget 2 again). Works outside test drives too.
+--   bngeTest.budget(4)         a fixed streaming budget instead (1 to 4 ms; turns autoBudget off)
 --
 -- A stock test car (vivace) is spawned at your car, which is frozen meanwhile and given back at the end (BeamNG.Earth's
 -- tools/drive.py does the same: per-frame placement made a lifted car unstable). The car is moved along the line by
@@ -29,7 +30,7 @@ local MPH = 0.44704
 local TEST_VEHICLE = 'vivace'
 -- m the test car is held above the ground (the driver rays down onto the terrain and buildings): on the ground the car
 -- was ground up at 200 mph and hit buildings (in-game 2026-10-21). Far below the mod's altitude hold (300 m).
-local CLEARANCE_M = 6
+local CLEARANCE_M = 11  -- (6 clipped trees and traffic lights)
 
 local LAST = OUT .. 'last.json'  -- the last run's start, kept across game restarts (again() after switching versions)
 -- autoBudget: the governor's target (beamngEarth_core.setFarBudget, 1-4 ms) from the streaming backlog, every EVERY_S:
@@ -96,7 +97,7 @@ local function save(r)
   for i, p in ipairs(r.polls) do lines[i] = jsonEncode(p) end
   writeFile(folder .. 'polls.jsonl', table.concat(lines, '\n') .. '\n')
   local meta = { mph = r.mph, seconds = r.seconds, speed = r.speed, km = r.km, lat = r.lat, lon = r.lon,
-    heading = r.heading, install = r.install, autoBudget = AUTO.on, reason = r.reason, error = r.error, started = os.date('%Y-%m-%d %H:%M:%S', r.startedAt),
+    heading = r.heading, install = r.install, autoBudget = AUTO.on, budget = AUTO.on and 'auto' or AUTO.fixed or 2, reason = r.reason, error = r.error, started = os.date('%Y-%m-%d %H:%M:%S', r.startedAt),
     profile = r.profile }
   writeFile(folder .. 'meta.json', jsonEncode(meta))
   return (FS:getUserPath() .. folder):gsub('\\', '/')
@@ -233,12 +234,23 @@ end
 
 function M.autoBudget(on, hi)
   AUTO.on = on ~= false
+  AUTO.fixed = nil
   AUTO.hi = math.max(AUTO.lo, math.min(4, tonumber(hi) or 4))
   AUTO.ms, AUTO.wait = nil, 0
   local core = rawget(_G, 'beamngEarth_core')
   if not AUTO.on and core and core.setFarBudget then core.setFarBudget(AUTO.lo) end
   say(AUTO.on and string.format('Auto budget on: %g to %g ms per frame', AUTO.lo, AUTO.hi) or 'Auto budget off: 2 ms per frame')
   return AUTO.on
+end
+
+function M.budget(ms)
+  ms = math.max(1, math.min(4, tonumber(ms) or 2))
+  AUTO.on, AUTO.ms = false, nil
+  local core = rawget(_G, 'beamngEarth_core')
+  if not (core and core.setFarBudget) then say('BeamNG.Earth is not running') return nil end
+  AUTO.fixed = core.setFarBudget(ms) or ms
+  say(string.format('Budget: %g ms per frame (auto off)', AUTO.fixed))
+  return AUTO.fixed
 end
 
 function M.onUpdate(dtReal)
