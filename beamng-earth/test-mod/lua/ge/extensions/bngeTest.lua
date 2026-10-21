@@ -9,6 +9,8 @@
 --                              road meshes or far tiles queue up, back to 2 when they have caught up;
 --                              bngeTest.autoBudget(false) turns it off (budget 2 again). Works outside test drives too.
 --   bngeTest.budget(4)         a fixed streaming budget instead (1 to 4 ms; turns autoBudget off)
+--   bngeTest.compare()         again() with 2 ms, 4 ms and auto, two rounds in a shuffled order (6 runs, one after
+--                              the other, ~12 min); bngeTest.compare(3) for three rounds; bngeTest.stop() ends it
 --
 -- A stock test car (vivace) is spawned at your car, which is frozen meanwhile and given back at the end (BeamNG.Earth's
 -- tools/drive.py does the same: per-frame placement made a lifted car unstable). The car is moved along the line by
@@ -39,6 +41,7 @@ local LAST = OUT .. 'last.json'  -- the last run's start, kept across game resta
 -- it stayed under 40, at 48 instead of 55 fps.
 local AUTO = { on = false, lo = 2, hi = 4, qLo = 20, qHi = 80, every = 0.5, wait = 0, ms = nil }
 local run = nil     -- the run in progress
+local series = nil  -- compare(): { modes = {2, 4, 'auto', ...}, i = index of the run in progress, wait = s left }
 local last = nil    -- { mph, seconds, lat, lon, heading } of the last run started
 
 local function loadLast()
@@ -97,7 +100,7 @@ local function save(r)
   for i, p in ipairs(r.polls) do lines[i] = jsonEncode(p) end
   writeFile(folder .. 'polls.jsonl', table.concat(lines, '\n') .. '\n')
   local meta = { mph = r.mph, seconds = r.seconds, speed = r.speed, km = r.km, lat = r.lat, lon = r.lon,
-    heading = r.heading, install = r.install, autoBudget = AUTO.on, budget = AUTO.on and 'auto' or AUTO.fixed or 2, reason = r.reason, error = r.error, started = os.date('%Y-%m-%d %H:%M:%S', r.startedAt),
+    heading = r.heading, install = r.install, series = r.series, autoBudget = AUTO.on, budget = AUTO.on and 'auto' or AUTO.fixed or 2, reason = r.reason, error = r.error, started = os.date('%Y-%m-%d %H:%M:%S', r.startedAt),
     profile = r.profile }
   writeFile(folder .. 'meta.json', jsonEncode(meta))
   return (FS:getUserPath() .. folder):gsub('\\', '/')
@@ -119,6 +122,15 @@ local function finish(reason, err)
     say(string.format('Test drive saved (%s): %s', reason, where), err and 'warning' or 'success')
   else
     say('Test drive could not be saved: ' .. tostring(where), 'error')
+  end
+  if series then
+    if reason == 'stopped' or series.i >= #series.modes then
+      say(reason == 'stopped' and 'Comparison stopped' or 'Comparison done: all ' .. #series.modes .. ' runs saved', 'success')
+      series = nil
+      M.autoBudget(false)           -- back to the mod's own 2 ms
+    else
+      series.wait = 8
+    end
   end
 end
 
@@ -155,7 +167,37 @@ function M.again()
   return start(last.mph, last.seconds, last.heading, last.lat, last.lon)
 end
 
-function M.stop() if run then finish('stopped') end return true end
+function M.stop()
+  if run then finish('stopped') end
+  series = nil
+  return true
+end
+
+-- the order of each round of compare(): every mode first, middle and last once in three rounds (the first run on a
+-- route builds and caches the most)
+local ORDERS = { { 2, 4, 'auto' }, { 'auto', 2, 4 }, { 4, 'auto', 2 } }
+
+local function nextInSeries()
+  series.i = series.i + 1
+  local m = series.modes[series.i]
+  if m == 'auto' then M.autoBudget(true) else M.budget(m) end
+  say(string.format('Comparison run %d of %d: %s', series.i, #series.modes, m == 'auto' and 'auto budget' or m .. ' ms'))
+  if not M.again() then series = nil return end
+  if run then run.series = string.format('%d/%d %s', series.i, #series.modes, tostring(m)) end
+end
+
+function M.compare(rounds)
+  if run or series then say('A test drive is already running (bngeTest.stop() ends it)', 'warning') return false end
+  last = last or loadLast()
+  if not last then say('No test drive yet: start one with bngeTest.run(200)', 'warning') return false end
+  local modes = {}
+  for k = 1, math.max(1, math.min(5, tonumber(rounds) or 2)) do
+    for _, m in ipairs(ORDERS[(k - 1) % #ORDERS + 1]) do modes[#modes + 1] = m end
+  end
+  series = { modes = modes, i = 0 }
+  nextInSeries()
+  return true
+end
 
 function M.status() return run and run.phase or 'idle' end
 
@@ -255,6 +297,14 @@ end
 
 function M.onUpdate(dtReal)
   if AUTO.on then pcall(updateBudget, dtReal or 0) end
+  if series and series.wait and not run then
+    series.wait = series.wait - (dtReal or 0)
+    if series.wait <= 0 then
+      series.wait = nil
+      local ok, err = pcall(nextInSeries)
+      if not ok then say('Comparison stopped: ' .. tostring(err), 'error') series = nil end
+    end
+  end
   local r = run
   if not r then return end
   r.clock = r.clock + (dtReal or 0)
