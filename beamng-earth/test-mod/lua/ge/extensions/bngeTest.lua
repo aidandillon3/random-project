@@ -9,7 +9,7 @@
 -- A stock test car (vivace) is spawned at your car, which is frozen meanwhile and given back at the end (BeamNG.Earth's
 -- tools/drive.py does the same: per-frame placement made a lifted car unstable). The car is moved along the line by
 -- BeamNG.Earth's own test driver (beamng_earth_test/drive_driver.lua, from TecnaGamer/BeamNG.Earth tools/, MIT), so
--- the speed and the path never depend on driving. Every second this records the driver's frames and the mod's state
+-- the speed and the path never depend on driving; it hovers CLEARANCE_M above the ground and buildings. Every second this records the driver's frames and the mod's state
 -- (as tools/drive.py does), plus how far the terrain block reaches ahead of the car each frame.
 -- Saved at the end in <user folder>/beamngearth/tests/<date>_<time>_<mph>mph/: polls.jsonl and meta.json.
 
@@ -23,6 +23,9 @@ local ARRIVE_MAX_S = 300        -- again(): the teleport's new anchor within thi
 local TELEPORT_SETTLE_S = 45    -- ... then the world around it loads (tools/autodrive_perf.py --settle)
 local MPH = 0.44704
 local TEST_VEHICLE = 'vivace'
+-- m the test car is held above the ground (the driver rays down onto the terrain and buildings): on the ground the car
+-- was ground up at 200 mph and hit buildings (in-game 2026-10-21). Far below the mod's altitude hold (300 m).
+local CLEARANCE_M = 6
 
 local LAST = OUT .. 'last.json'  -- the last run's start, kept across game restarts (again() after switching versions)
 local run = nil     -- the run in progress
@@ -167,7 +170,7 @@ local function installDriver(r)
   if not fn then return 'driver: ' .. tostring(err) end
   fn()
   if not rawget(_G, 'beamngEarth_perfmon') then extensions.load('beamngEarth_perfmon') end
-  r.profile = { points = { { s = 0, speed = r.speed, heading = r.heading } }, km = r.km }
+  r.profile = { points = { { s = 0, speed = r.speed, heading = r.heading } }, km = r.km, clearance = CLEARANCE_M }
   local res = jsonDecode(BNGE_DRIVE.install(jsonEncode(r.profile)))
   if res.error then return 'install: ' .. res.error end
   r.install = res
