@@ -27,7 +27,9 @@ local OUT = 'beamngearth/tests/'
 local POLL_S = 1.0
 local SPAWN_SETTLE_S = 3.0      -- the test car spawned and on the ground
 local ARRIVE_MAX_S = 300        -- again(): the teleport's new anchor within this
-local TELEPORT_SETTLE_S = 45    -- ... then the world around it loads (tools/autodrive_perf.py --settle)
+local TELEPORT_SETTLE_S = 45    -- ... then the world around it loads (tools/autodrive_perf.py --settle), at most this
+local SETTLE_MIN_S = 5          -- ... and at least this; it starts once everything around has been loaded and nothing
+local SETTLE_HOLD_S = 2         -- ... new came in for this long (worldLoaded)
 local MPH = 0.44704
 local TEST_VEHICLE = 'vivace'
 -- m the test car is held above the ground (the driver rays down onto the terrain and buildings): on the ground the car
@@ -100,7 +102,7 @@ local function save(r)
   for i, p in ipairs(r.polls) do lines[i] = jsonEncode(p) end
   writeFile(folder .. 'polls.jsonl', table.concat(lines, '\n') .. '\n')
   local meta = { mph = r.mph, seconds = r.seconds, speed = r.speed, km = r.km, lat = r.lat, lon = r.lon,
-    heading = r.heading, install = r.install, series = r.series, autoBudget = AUTO.on, budget = AUTO.on and 'auto' or AUTO.fixed or 2, reason = r.reason, error = r.error, started = os.date('%Y-%m-%d %H:%M:%S', r.startedAt),
+    heading = r.heading, install = r.install, series = r.series, settleS = r.settleS, settleLoaded = r.settleLoaded, autoBudget = AUTO.on, budget = AUTO.on and 'auto' or AUTO.fixed or 2, reason = r.reason, error = r.error, started = os.date('%Y-%m-%d %H:%M:%S', r.startedAt),
     profile = r.profile }
   writeFile(folder .. 'meta.json', jsonEncode(meta))
   return (FS:getUserPath() .. folder):gsub('\\', '/')
@@ -154,7 +156,7 @@ local function start(mph, seconds, heading, lat, lon)
   if lat then
     run.anchor0 = (coreState() or {}).anchorId
     beamngEarth_core.teleport(lat, lon, 'test drive start', { record = false })
-    say(string.format('Teleporting to the test start, then %d s for the world to load', TELEPORT_SETTLE_S))
+    say(string.format('Teleporting to the test start; it drives once the world there has loaded (at most %d s)', TELEPORT_SETTLE_S))
   end
   return true
 end
@@ -257,6 +259,19 @@ local function onDriveFrame(r, dt)
   end
 end
 
+-- The world around the start loaded: the terrain block in, no block or anchor request out, the car over full detail
+-- ground, no far tile or road mesh queued and no road tile arriving for SETTLE_HOLD_S.
+local function worldLoaded()
+  local st = coreState()
+  if not st or not st.block or st.pending or st.terrainPending then return false end
+  local okF, fs = pcall(function() return require('beamngEarth/farfield').stats() end)
+  if not okF or not fs or (fs.queued or 0) > 0 or (fs.groups or 0) > 0 then return false end
+  if fs.exactLevel ~= nil and fs.underLevel ~= fs.exactLevel then return false end
+  local okR, rs = pcall(function() return require('beamngEarth/roads').status() end)
+  if not okR or not rs then return false end
+  return (rs.walksQueued or 0) == 0 and (rs.queued or 0) == 0 and (rs.quietS or 0) >= SETTLE_HOLD_S
+end
+
 local function backlog()
   local okR, rs = pcall(function() return require('beamngEarth/roads').status() end)
   local okF, fs = pcall(function() return require('beamngEarth/farfield').stats() end)
@@ -311,10 +326,16 @@ function M.onUpdate(dtReal)
   local ok, err = pcall(function()
     if r.phase == 'teleport' then
       local a = (coreState() or {}).anchorId
-      if a ~= nil and a ~= r.anchor0 then r.phase, r.waitUntil = 'settle', r.clock + TELEPORT_SETTLE_S
+      if a ~= nil and a ~= r.anchor0 then
+        r.phase, r.settleFrom, r.waitUntil, r.loadedFor = 'settle', r.clock, r.clock + TELEPORT_SETTLE_S, 0
       elseif r.clock > ARRIVE_MAX_S then finish('error', 'the teleport did not happen') end
     elseif r.phase == 'settle' then
-      if r.clock >= r.waitUntil then r.phase = 'spawn' end
+      if r.clock >= r.settleFrom + SETTLE_MIN_S and worldLoaded() then r.loadedFor = r.loadedFor + (dtReal or 0)
+      else r.loadedFor = 0 end
+      if r.loadedFor >= SETTLE_HOLD_S or r.clock >= r.waitUntil then
+        r.settleS, r.settleLoaded = math.floor((r.clock - r.settleFrom) * 10 + 0.5) / 10, r.loadedFor >= SETTLE_HOLD_S
+        r.phase = 'spawn'
+      end
     elseif r.phase == 'spawn' then
       local e = spawnTestCar(r)
       if e then finish('error', e) return end
