@@ -1,6 +1,6 @@
---- upstream v1.5.3-beta/core.lua
+--- upstream v1.5.4-beta/core.lua
 +++ beamng_earth_mp/core.lua
-@@ -98,6 +98,7 @@
+@@ -100,6 +100,7 @@
  local rebaseLag = 0 -- frames between a vehicle move request and its visibility (measured, see commitRebase)
  local roadsSession = nil -- the server session whose road tiles are shown (roads.lua)
  local gov = governor.new() -- outlives levels (keeps its target and cost estimates)
@@ -8,7 +8,7 @@
  local warned = {}          -- one-time warnings
  local nearVisual = 'terrain' -- from the server's hello; outlives levels like the connection
  local serverAttribution = nil -- hello.attribution (protocol 4): the credits for the sources it uses
-@@ -112,6 +113,7 @@
+@@ -114,6 +115,7 @@
  local cacheClears = 0         -- answers to a clear so far (the settings page waits for the next one)
  
  local function resetState()
@@ -16,7 +16,7 @@
    st = {
      inOurLevel = false,
      active = false,          -- world logic running (rebase, far field, sky, pose)
-@@ -413,7 +415,20 @@
+@@ -431,7 +433,20 @@
    -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
    -- is the new session's): they go once the new session's tiles cover them
    farfield.switchAnchor(msg.anchorId, true, { cx = tr.cx, cy = tr.cy }, st.sessionId)
@@ -38,7 +38,7 @@
    be:reloadCollision()
  
    st.anchor, st.anchorId, st.anchorKey = rb.newAnchor, msg.anchorId, msg.anchorKey
-@@ -488,8 +503,15 @@
+@@ -509,8 +524,15 @@
  
  local function commitAnchor(msg, purpose)
    if st.rebasing then finishRebase() end -- never mix two frame changes
@@ -56,7 +56,7 @@
  end
  
  -- Terrain-follow commit (V1_1_SPEC 1a, V1_2_DESIGN 2.3), in a governor heavy slot, atomic in one
-@@ -680,7 +702,7 @@
+@@ -703,7 +725,7 @@
    elseif t == 'anchor_ready' then
      local p = st.pending
      if not p or msg.requestId ~= p.requestId then return end -- stale answer
@@ -65,7 +65,7 @@
        p.ready, p.msg = true, msg -- committed in updateWorld() (distance rule / when not paused)
        if p.purpose == 'rebase' and p.sentAt then st.anchorLatency = st.clock - p.sentAt end
      else
-@@ -952,6 +974,132 @@
+@@ -997,6 +1019,132 @@
    return st.anchorId ~= nil and st.anchorSession == st.sessionId
  end
  
@@ -198,7 +198,7 @@
  local function updateWorld(dt)
    if st.floorZ and not st.placeFrames then M.floorCheck() end
    if st.placeFrames then
-@@ -964,6 +1112,7 @@
+@@ -1009,6 +1157,7 @@
    end
    local pl = st.player
    if not pl then return end
@@ -206,7 +206,7 @@
  
    st.poseTimer = st.poseTimer + dt
    -- no pose before the resync with a restarted server commits (anchorKnown; hello named the
-@@ -1002,6 +1151,21 @@
+@@ -1047,6 +1196,21 @@
      local x0, y0, x1, y1 = lattice.groundBox(tr.cx or 0, tr.cy or 0)
      edgeDist = math.min(nx - x0, x1 - nx, ny - y0, y1 - ny)
    end
@@ -228,7 +228,7 @@
    local action = rebase.decide(pl.dist, p, staleDist, st.clock, st.retryAt, edgeDist)
    if p and p.ready and p.purpose == 'resync' then
      -- the player may have driven off the terrain the server prepared meanwhile: ask again
-@@ -1114,7 +1278,7 @@
+@@ -1159,7 +1323,7 @@
    -- a rebase / resync ready to commit moves the car with physics running: a guard pause gives way to it (it re-centres
    -- the block on the car), and no new pause for RESUME_GRACE_S (the commit waits for the next unpaused frame)
    local p = st.pending
@@ -237,7 +237,7 @@
      edgeguard.release(g)
      g.resumedAt = st.clock
    end
---- upstream v1.5.3-beta/camshift.lua
+--- upstream v1.5.4-beta/camshift.lua
 +++ beamng_earth_mp/camshift.lua
 @@ -71,8 +71,12 @@
  end
@@ -265,7 +265,7 @@
    local stats = { contexts = 0, viaDebug = false }
    local contexts = findContexts()
    if contexts then
---- upstream v1.5.3-beta/rebase.lua
+--- upstream v1.5.4-beta/rebase.lua
 +++ beamng_earth_mp/rebase.lua
 @@ -17,8 +17,10 @@
  -- 15 km: float32 positions have the same 0.98 mm step everywhere in [8192, 16384) m, so 15 km
@@ -280,7 +280,7 @@
  M.distance = M.DEFAULT_DISTANCE -- switch anchors at or beyond this horizontal distance
  M.PREFETCH_MARGIN = 300  -- prepare_anchor this much earlier, so the anchor is ready by `distance`
  M.STALE_DIST = 450       -- a prepared anchor whose terrain centre is this far (Chebyshev, new
---- upstream v1.5.3-beta/follow.lua
+--- upstream v1.5.4-beta/follow.lua
 +++ beamng_earth_mp/follow.lua
 @@ -47,7 +47,7 @@
                                               -- move is a ~50 ms frame, the new block's first draw; 2026-10-15)

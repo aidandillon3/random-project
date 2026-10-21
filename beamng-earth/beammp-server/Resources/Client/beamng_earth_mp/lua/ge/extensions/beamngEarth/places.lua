@@ -23,21 +23,49 @@ M.DEDUP_M = 200   -- a recent place this close to a newer one is the same place
 M.NAME_MAX = 60
 M.ID_MAX = 2 ^ 31 -- ids (and nextId) from the file at or above this are renumbered
 
--- The first run's list (docs/PLACES.md first table, then well-known drives; approximate points).
+-- The first run's list (docs/PLACES.md first table, then well-known drives): each on a public road, on the ground
+-- (2026-10-20, the user: "some teleport the player in a building or on a hill": Fells Point's point was inside a
+-- building, Echo Point's on the cliff edge at 74 %, Mount Whitney's summit and the Kern River ravine 3 km from any
+-- road; each was moved to the nearest road, server randomplace.road_spot, or to a road nearby with the same view).
 M.SEED = {
-  { name = 'Fells Point, Baltimore MD', lat = 39.2834, lon = -76.5934 },
-  { name = 'Mount Whitney summit', lat = 36.5785, lon = -118.2923 },
-  { name = 'Kern River ravine (Sierra Nevada)', lat = 36.506422, lon = -118.402437 },
-  { name = 'Monument Valley mesas', lat = 36.7818, lon = -110.1393 },
-  { name = 'Arizona / Utah state line, Monument Valley', lat = 36.998218, lon = -110.102293 },
-  { name = 'Kayenta PV Solar Plant, Arizona', lat = 36.7874, lon = -110.2382 },
-  { name = 'El Capitan Meadow, Yosemite', lat = 37.7225, lon = -119.6385 },
-  { name = 'Pikes Peak summit, Colorado', lat = 38.8405, lon = -105.0442 },
-  { name = 'Mount Fuji, Subaru Line 5th station', lat = 35.3953, lon = 138.7330 },
-  { name = 'Everest North Base Camp, Tibet', lat = 28.1414, lon = 86.8514 },
-  { name = 'Stelvio Pass, Italy', lat = 46.5286, lon = 10.4532 },
-  { name = 'Blue Mountains, Echo Point NSW', lat = -33.7320, lon = 150.3115 },
+  { name = 'Fells Point, Baltimore MD', lat = 39.283309, lon = -76.593484 },
+  { name = 'Mount Whitney, Whitney Portal Road', lat = 36.596718, lon = -118.169991 },
+  { name = 'Kern River Canyon, CA-178', lat = 35.460552, lon = -118.771223 },
+  { name = 'Monument Valley mesas', lat = 36.78624, lon = -110.139875 },
+  { name = 'Arizona / Utah state line, US-163', lat = 36.99664, lon = -110.176367 },
+  { name = 'El Capitan Meadow, Yosemite', lat = 37.72098, lon = -119.638981 },
+  { name = 'Pikes Peak summit, Colorado', lat = 38.840612, lon = -105.044051 },
+  { name = 'Mount Fuji, Subaru Line 5th station', lat = 35.395301, lon = 138.732839 },
+  { name = 'Everest North Base Camp, Tibet', lat = 28.14141, lon = 86.851111 },
+  { name = 'Stelvio Pass, Italy', lat = 46.528634, lon = 10.453422 },
+  { name = 'Blue Mountains, Echo Point NSW', lat = -33.731908, lon = 150.312007 },
+  -- (the user, 2026-10-21: "remove that solar panel farm from the default places and add my current location")
+  { name = 'Entz Béla út, Pécs, Hungary', lat = 46.099176, lon = 18.218798 },
 }
+
+-- The earlier first-run list's places as they were (a player's list keeps them until they edit them): one still at
+-- its old name and position moves to its new entry (`to`: the name of its entry in M.SEED; false: left as it is,
+-- the place no longer in the first-run list) when the file is read.
+M.OLD_SEED = {
+  { name = 'Fells Point, Baltimore MD', lat = 39.2834, lon = -76.5934, to = 'Fells Point, Baltimore MD' },
+  { name = 'Mount Whitney summit', lat = 36.5785, lon = -118.2923, to = 'Mount Whitney, Whitney Portal Road' },
+  { name = 'Kern River ravine (Sierra Nevada)', lat = 36.506422, lon = -118.402437, to = 'Kern River Canyon, CA-178' },
+  { name = 'Monument Valley mesas', lat = 36.7818, lon = -110.1393, to = 'Monument Valley mesas' },
+  { name = 'Arizona / Utah state line, Monument Valley', lat = 36.998218, lon = -110.102293,
+    to = 'Arizona / Utah state line, US-163' },
+  { name = 'Kayenta PV Solar Plant, Arizona', lat = 36.7874, lon = -110.2382, to = false },
+  { name = 'El Capitan Meadow, Yosemite', lat = 37.7225, lon = -119.6385, to = 'El Capitan Meadow, Yosemite' },
+  { name = 'Pikes Peak summit, Colorado', lat = 38.8405, lon = -105.0442, to = 'Pikes Peak summit, Colorado' },
+  { name = 'Mount Fuji, Subaru Line 5th station', lat = 35.3953, lon = 138.7330,
+    to = 'Mount Fuji, Subaru Line 5th station' },
+  { name = 'Everest North Base Camp, Tibet', lat = 28.1414, lon = 86.8514, to = 'Everest North Base Camp, Tibet' },
+  { name = 'Stelvio Pass, Italy', lat = 46.5286, lon = 10.4532, to = 'Stelvio Pass, Italy' },
+  { name = 'Blue Mountains, Echo Point NSW', lat = -33.7320, lon = 150.3115, to = 'Blue Mountains, Echo Point NSW' },
+}
+
+local function seedNamed(name)
+  for _, s in ipairs(M.SEED) do if s.name == name then return s end end
+end
 
 local places, recent, nextId = {}, {}, 1
 local loaded = false
@@ -187,9 +215,25 @@ local function save(path)
   for i, r in ipairs(recent) do out.recent[i] = { lat = r.lat, lon = r.lon, name = r.name, kind = r.kind } end
   local ok, err = pcall(write, path or M.FILE, out, true)
   if not ok then log('W', 'beamngEarth', 'places: write failed: ' .. tostring(err)) end
+  if ok and err ~= false and (path or M.FILE) == M.FILE then M.syncLevel() end
   return ok and err ~= false
 end
 M.save = save
+
+-- The level select's spawn points follow the list (levelinfo.lua): after each save, at load and when the file
+-- changes on disk (core's onFileChanged).
+function M.syncLevel()
+  local ok, li = pcall(require, 'beamngEarth/levelinfo')
+  if ok and li and li.write then
+    local ok2, err = pcall(li.write, places)
+    if not ok2 then log('W', 'beamngEarth', 'places: level info: ' .. tostring(err)) end
+    -- each place's picture, made by the server (placepreview.py): its answer runs this again (core)
+    if net.isConnected() then
+      local miss = li.missing(places)
+      if #miss > 0 then net.send({ type = 'place_previews', places = miss }) end
+    end
+  end
+end
 
 local function seed()
   places, recent, nextId = {}, {}, 1
@@ -253,6 +297,17 @@ function M.load(path)
   for _, p in ipairs(places) do
     if not p.id then p.id = nextId; nextId = nextId + 1 end
   end
+  -- an earlier first-run place still as it was: to its new spot (M.OLD_SEED)
+  local moved = false
+  for _, p in ipairs(places) do
+    for _, o in ipairs(M.OLD_SEED) do
+      local s = o.to and seedNamed(o.to)
+      if s and p.name == o.name and math.abs(p.lat - o.lat) < 1e-6 and math.abs(p.lon - o.lon) < 1e-6 then
+        p.name, p.lat, p.lon = s.name, s.lat, s.lon
+        moved = true
+      end
+    end
+  end
   for _, r in ipairs(type(data.recent) == 'table' and data.recent or {}) do
     local lat, lon = validLatLon(type(r) == 'table' and r.lat, type(r) == 'table' and r.lon)
     if lat and #recent < M.RECENT_MAX then
@@ -260,6 +315,7 @@ function M.load(path)
         kind = r.kind == 'start' and 'start' or 'teleport' }
     end
   end
+  if moved and #warnings == 0 then save(path) end
   if #warnings > 0 then
     -- the next save drops them: keep the file as it was first
     local copied = backup(path)

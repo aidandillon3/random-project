@@ -64,6 +64,20 @@ local function str(v)
   return tostring(v)
 end
 
+-- Engine.getCurrentFpsLimitReason(): a string, or (0.40) a table of caps and flags
+-- ({ vsync, fpsCap, foregroundCap, foregroundActive, backgroundCap, backgroundActive, ... }); the issue showed
+-- "table: 0x..." (GitHub issue #38)
+local function fpsLimit(v)
+  if type(v) ~= 'table' then return str(v) end
+  local parts = {}
+  if v.vsync == true then parts[#parts + 1] = 'vsync' end
+  if (num(v.fpsCap) or 0) > 0 then parts[#parts + 1] = string.format('fps cap %d', num(v.fpsCap)) end
+  if v.foregroundActive == true then parts[#parts + 1] = string.format('foreground cap %d', num(v.foregroundCap) or 0) end
+  if v.backgroundActive == true then parts[#parts + 1] = string.format('unfocused cap %d', num(v.backgroundCap) or 0) end
+  if v.vr == true then parts[#parts + 1] = 'VR' end
+  return #parts > 0 and table.concat(parts, ', ') or 'nothing'
+end
+
 local function first(t, keys)
   if type(t) ~= 'table' then return nil end
   for _, k in ipairs(keys) do
@@ -233,7 +247,7 @@ function M.buildIssue(data, hw)
   if k.id == 'bug' or k.id == 'perf' then
     if str(mod.status) then p('**Mod status:** ' .. str(mod.status)) end
     if str(mod.lastError) then p('**Last connection error:** ' .. str(mod.lastError)) end
-    if str(data.fpsLimit) then p('**FPS limited by:** ' .. str(data.fpsLimit)) end
+    if fpsLimit(data.fpsLimit) then p('**FPS limited by:** ' .. fpsLimit(data.fpsLimit)) end
   end
   p('')
   p('### Screenshot')

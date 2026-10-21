@@ -12,6 +12,11 @@ M.ROWS_PER_FRAME = 12000 -- rows of changing tiles looked at per frame at most (
 -- 2026-10-14: was { 300, 1 }, { 550, 0.5 }, { 900, 0.25 }, { 1e9, 0.12 }; the engine already draws far trees as
 -- billboards (their LODs), so our extra thinning made far forest sparse. Columbia: 48k -> 78k items, no frame cost seen.
 M.RINGS = { { 300, 1.0 }, { 700, 0.6 }, { 1500, 0.35 }, { 1e9, 0.2 } }   -- tile distance (m): the rank shown below
+-- ... and at most this many items a tile (the lowest ranks: the hashed ranks thin it evenly). Dense forest has 10-20k
+-- a tile: Bodø's 145 tiles made 1.66 M items (GitHub #66: 28 fps standing on a Steam Deck, 23 ms of each frame waiting
+-- on the GPU, and the engine's tick hitched at every tile change while driving: 19.8 fps over a drive, 38.4 with trees
+-- off; 2026-10-20). Cities and farmland stay under it (Columbia: ~540 a tile).
+M.TILE_CAP = { { 300, 6000 }, { 700, 2400 }, { 1500, 900 }, { 1e9, 400 } }
 -- small props only near the player (2026-10-14, Fells Point at street level: ~10 ms a frame for the Forest
 -- with a door on every house out to 300 m): the tile distance (m) beyond which a group is not shown
 -- rocks only over the fine ground (farfield.NEAR_RADII: L0 within 400 m): beyond it the coarser tiles round off the
@@ -367,6 +372,27 @@ local function threshold(d)
   return 0
 end
 
+-- The rank tile t shows below at distance d: threshold(d), lowered to keep it within M.TILE_CAP (the cap-th lowest
+-- of its rows' ranks: exact whatever share of the area's items the server sent, vegetation.TILE_ROWS_MAX).
+local function tileThreshold(d, t)
+  local want = threshold(d)
+  local rows = t.rows or {}
+  for _, r in ipairs(M.TILE_CAP) do
+    if d <= r[1] then
+      if #rows <= r[2] then return want end
+      if not t.ranks then
+        local rk = {}
+        for i, row in ipairs(rows) do rk[i] = row[8] or 0 end
+        table.sort(rk)
+        t.ranks = rk
+      end
+      return math.min(want, t.ranks[r[2] + 1])
+    end
+  end
+  return want
+end
+M.tileThreshold = tileThreshold
+
 -- M.suppress(group, x, y) -> true hides that item (set by navgraph.lua); M.refresh() re-runs every tile's rows
 -- after it changes.
 M.suppress = nil
@@ -458,7 +484,9 @@ end
 -- ms whatever the count (2026-10-15, 100 mph forest drive: tick 3.5 -> 1.65 ms a frame on average, 50 -> 54 fps)
 M.EVERY_N = 3
 local frameN = 0
-function M.update(anchorId, player)
+-- view: the camera's {x, y} when it is away from the car (core: VIEW_AWAY_M), else nil: what is shown follows what the
+-- player looks at, the colliding items stay round the car (the user, 2026-10-20: "the LODs still all follow the car").
+function M.update(anchorId, player, view)
   if not next(tiles) then return end
   if not setup() then return end
   frameN = frameN + 1
@@ -488,13 +516,17 @@ function M.update(anchorId, player)
     end
   end
   if not player then return end
-  -- nearest tiles first
+  -- nearest tiles first (to the camera when it is away: view); [3] the distance to the car (the colliding items)
   local order = {}
+  local function boxDist(p, t)
+    local dx = math.max(math.abs(p.x - t.cx) - 128, 0)
+    local dy = math.max(math.abs(p.y - t.cy) - 128, 0)
+    return math.sqrt(dx * dx + dy * dy)
+  end
   for key, t in pairs(tiles) do
     if t.anchor ~= anchorId or t.drop then goto continue end     -- still being emptied
-    local dx = math.max(math.abs(player.x - t.cx) - 128, 0)
-    local dy = math.max(math.abs(player.y - t.cy) - 128, 0)
-    order[#order + 1] = { key, math.sqrt(dx * dx + dy * dy) }
+    local dCar = boxDist(player, t)
+    order[#order + 1] = { key, view and math.min(boxDist(view, t), dCar) or dCar, dCar }
     ::continue::
   end
   table.sort(order, function(a, b) return a[2] < b[2] end)
@@ -510,9 +542,9 @@ function M.update(anchorId, player)
     local t = tiles[o[1]]
     local fd = nil                          -- the tile's Forest data, made when it first needs an item
     local function data() fd = fd or forest(t):getData(); return fd end
-    local want = threshold(o[2])
+    local want = tileThreshold(o[2], t)
     local band = groupBand(t, o[2])
-    local near = o[2] <= M.SOLID_M or (t.near and o[2] <= M.SOLID_M + M.SOLID_HYST_M) or false
+    local near = o[3] <= M.SOLID_M or (t.near and o[3] <= M.SOLID_M + M.SOLID_HYST_M) or false
     if want ~= t.shown or band ~= t.band or near ~= t.near or t.pending then
       t.pending = false
       if rowsScanned > M.ROWS_PER_FRAME then finish(); return end
@@ -561,7 +593,7 @@ function M.clear()
     for i, it in pairs(t.made) do if fd then removeItem(fd, it, t.madeShape[i]) end end
     releaseForest(t)
   end
-  tiles = {}
+  tiles, frameN = {}, 0
 end
 
 -- Level end: the level deletes its objects itself.

@@ -17,6 +17,15 @@ local M = {}
 M.dependencies = { 'ui_imgui' }
 
 M.BENCH_S = 30
+-- Only on the BeamNG.Earth level: the hotkeys, the settings page's Feedback buttons and the frame-time ring do nothing
+-- elsewhere (the user, 2026-10-20: the mod should be effectively off on other maps)
+M.LEVEL_ID = 'beamng_earth'
+local ourLevel = false
+local function onLevel() ourLevel = rawget(_G, 'getCurrentLevelIdentifier') ~= nil and getCurrentLevelIdentifier() == M.LEVEL_ID end
+M.onClientStartMission = onLevel
+function M.onClientEndMission() ourLevel = false end
+function M.onExtensionLoaded() if scenetree and scenetree.MissionGroup then onLevel() end end
+function M.inOurLevel() return ourLevel end
 M.RING = 900            -- frames kept for the "recent" statistics in a report (~10 s at 90 fps)
 M.DIR = 'beamngEarth/reports/'
 M.SAVED_S = 30          -- the "report saved" window closes itself after this long
@@ -211,7 +220,7 @@ end
 
 -- Ctrl+Shift+E: capture now, open the report window.
 function M.note()
-  if form then return end
+  if form or not ourLevel then return end
   if prof then M.profilerAttach() return end
   local rel = newDir('report')
   local data = capture()
@@ -223,7 +232,7 @@ end
 -- Ctrl+Shift+Y: the performance profiler over the next BENCH_S seconds. With the report window open,
 -- the profile goes into that report (kind Performance issue).
 function M.profiler(seconds)
-  if prof then return end
+  if prof or not ourLevel then return end
   local rel, start, pending
   if form then
     rel, start, pending = form.dir, form.data, form
@@ -322,7 +331,7 @@ function M.status()
 end
 
 function M.onPreRender(dtReal)
-  if not dtReal or dtReal <= 0 then return end
+  if not ourLevel or not dtReal or dtReal <= 0 then return end
   local ms = dtReal * 1000
   ringN = ringN + 1
   ring[(ringN - 1) % M.RING + 1] = ms

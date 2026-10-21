@@ -1,5 +1,6 @@
 <template>
-  <div class="earth-map" :class="{ embedded }" @keydown.esc.stop="onEscape" tabindex="-1" ref="rootEl">
+  <div class="earth-map" :class="{ embedded }" @keydown.esc.stop="onEscape" tabindex="-1" ref="rootEl"
+       v-bng-on-ui-nav:action_2,context="onNavDeclared">
     <!-- the map itself: tiles, the lat/lon grid, markers -->
     <div
       class="map-view"
@@ -30,6 +31,11 @@
           @error="onTileError($event, t)"
         />
       </template>
+      <!-- a controller: the point A picks (the centre; padTick) -->
+      <div v-if="padMode" class="pad-cross" />
+      <div v-if="padMode" class="pad-hint" :class="{ 'below-gps': !!state.gps }">Right stick: move &middot; LT / RT: zoom
+        &middot; A: {{ state.gps ? "clear GPS" : "set GPS here" }} &middot; X: teleport &middot; Y: {{ state.gps &&
+        state.gps.autodrive ? "stop autodrive" : "autodrive" }} &middot; B: back</div>
       <svg class="map-grid" :width="w" :height="h">
         <g v-if="layersOn" :transform="lineTransform">
           <polyline v-for="(p, i) in stateLines" :key="'s' + i" class="layer-state" :points="p" />
@@ -228,15 +234,19 @@
     </div>
 
     <!-- bottom: cursor position, scale, attribution -->
-    <div class="map-bottom">
+    <div class="map-bottom" :class="{ 'beside-panel': panelOpen }">
       <span class="cursor-pos">{{ cursorText }}</span>
-      <span class="attribution">{{ attributionText }}</span>
+      <!-- two lines, the whole text on hover or a click (it grew to five lines over the Places panel, 2026-10-20) -->
+      <span class="attribution" :class="{ full: creditsFull }" :title="attributionText"
+            @click.stop="creditsFull = !creditsFull" @mousedown.stop>{{ attributionText }}</span>
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue"
+import { useEvents } from "@/services/events"
+import { vBngOnUiNav } from "@/common/directives"
 import * as mm from "./mapmath.js"
 import layerData from "./maplayers.js"
 
@@ -369,6 +379,7 @@ const notice = computed(() => {
   return ""
 })
 
+const creditsFull = ref(false)          // the credits' whole text (else two lines)
 const attributionText = computed(() => {
   if (!state.value.mapPort) return ""
   const sat = baseLayer.value === "sat"
@@ -587,6 +598,141 @@ function centreOnMe() {
   if (p) view.value = { ...view.value, lat: p.lat, lon: p.lon, z: Math.max(view.value.z, 12) }
 }
 
+// ---- controller (settings.lua mapControls: the stock big map's actions and bindings while this map is open) ---------
+// The stock map's layout (the user, 2026-10-21: "copy the stock map controlls so players can use their muscle memory"):
+// its pan (bigMapMove*: the right stick on a pad) moves the view (squared: fine near the centre), the triggers zoom,
+// the left stick and d-pad walk the buttons as in any menu; A on the map sets the GPS route to the centre crosshair
+// and again clears it (as the stock map's set / clear route), X teleports (the stock map's quick travel), Y starts or
+// stops the autodrive, B goes back. A on a focused button is the button's.
+const padMode = ref(false)
+const PAD_PAN_PX_S = 900          // px a second at a full stick
+const PAD_ZOOM_S = 2.5            // zoom levels a second at a full trigger
+const PAD_DEAD = 0.08
+const pad = { lr: 0, ud: 0, zin: 0, zout: 0, zaxis: 0, keys: [0, 0, 0, 0] }
+let padFrame = 0, padLast = 0
+
+function padActive() {
+  return Math.abs(pad.lr) > PAD_DEAD || Math.abs(pad.ud) > PAD_DEAD || pad.zin > PAD_DEAD || pad.zout > PAD_DEAD ||
+    Math.abs(pad.zaxis) > PAD_DEAD || pad.keys.some(k => k > 0)
+}
+
+function padTick(ts) {
+  padFrame = 0
+  const dt = padLast ? Math.min(0.1, (ts - padLast) / 1000) : 1 / 60
+  padLast = ts
+  const sq = v => (Math.abs(v) > PAD_DEAD ? Math.sign(v) * v * v : 0)
+  const kx = pad.keys[3] - pad.keys[2], ky = pad.keys[0] - pad.keys[1]       // (camMoveKey: 1 fwd, 2 back, 3 left, 4 right)
+  const sx = sq(pad.lr) + kx, sy = sq(pad.ud) + ky
+  const dz = (pad.zin > PAD_DEAD ? pad.zin : 0) - (pad.zout > PAD_DEAD ? pad.zout : 0) + sq(pad.zaxis)
+  if (sx || sy || dz) {
+    follow.value = false
+    const v = view.value
+    let nv = v
+    if (sx || sy) {
+      const c = mm.pan(v.lat, v.lon, v.z, -sx * PAD_PAN_PX_S * dt, sy * PAD_PAN_PX_S * dt)
+      nv = { ...nv, lat: c.lat, lon: c.lon }
+    }
+    if (dz) nv = { ...nv, z: Math.max(mm.MIN_Z, Math.min(mm.MAX_Z, nv.z + dz * PAD_ZOOM_S * dt)) }
+    view.value = nv
+  }
+  if (padActive()) padFrame = nextFrame(padTick) || 1
+  else padLast = 0
+}
+
+// moving the map takes the controls back from the panels: the selected button lets go (the user, 2026-10-21: "if you
+// move the map refocus the controls on it and deselect any UI elements")
+function releaseButtons() {
+  const root = rootEl.value
+  if (!root) return
+  root.querySelectorAll(".focus-visible").forEach(el => { el.classList.remove("focus-visible"); if (el.blur) el.blur() })
+  if (document.activeElement && root.contains(document.activeElement) && document.activeElement !== root) document.activeElement.blur()
+  root.focus({ preventScroll: true })
+}
+
+function padStart() {
+  padMode.value = true
+  if (padActive()) releaseButtons()
+  if (!padFrame && padActive()) padFrame = nextFrame(padTick) || 1
+}
+
+// the d-pad / left stick walk the buttons: the selected one scrolled into its panel's view (the saved places below
+// the panel's edge could not be reached, the user 2026-10-21)
+function showSelected() {
+  nextTick(() => {
+    const el = rootEl.value && rootEl.value.querySelector(".focus-visible")
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", inline: "nearest" })
+  })
+}
+const FOCUS_MOVES = new Set(["focus_u", "focus_d", "focus_l", "focus_r", "focus_ud", "focus_lr"])
+
+function buttonFocused() {
+  return !!(rootEl.value && rootEl.value.querySelector(".focus-visible"))
+}
+
+function padSelect() {
+  // A on a focused button is the button's (the menu's own 'ok')
+  if (buttonFocused()) return
+  if (!padMode.value) { padMode.value = true; return }      // the first A shows the crosshair
+  if (state.value.gps) { clearGps(); return }                // again: clears it (the stock map's set / clear route)
+  const v = view.value
+  setGps(v.lat, v.lon, "")
+}
+
+// X: teleport to the GPS destination, else to the crosshair (the stock map's quick travel)
+function padTeleport() {
+  if (state.value.cannotGo || busy.value) return
+  const g = state.value.gps
+  if (g) teleportNow(g.lat, g.lon, g.name)
+  else if (padMode.value) teleportNow(view.value.lat, view.value.lon, "")
+}
+
+// Y: the autodrive on or off; with no destination, to the crosshair
+function padAutodrive() {
+  const g = state.value.gps
+  if (g) setAutodrive(!g.autodrive)
+  else if (padMode.value) setGps(view.value.lat, view.value.lon, "", () => setAutodrive(true))
+}
+
+// X and Y: as the menus get them (core/input/actions/menu.json: guihooks 'UINavigation' name, value; X is action_2,
+// Y context), or from the vehicle triggers they are also bound to (settings.lua mapControls: pad_x / pad_y), which
+// take the press first on stock pads. A press is 1; one press may come both ways: once within PAD_BUTTON_MS
+const PAD_BUTTONS = { action_2: padTeleport, context: padAutodrive, pad_x: padTeleport, pad_y: padAutodrive }
+const PAD_BUTTON_MS = 300
+const padPressedAt = new Map()
+function padButton(name, value) {
+  const fn = PAD_BUTTONS[name]
+  if (embedded || !fn || Number(value) !== 1) return
+  const now = Date.now()
+  if (now - (padPressedAt.get(fn) || 0) < PAD_BUTTON_MS) return
+  padPressedAt.set(fn, now)
+  fn()
+}
+
+const mapEvents = useEvents()
+mapEvents.on("BeamNGEarthMapInput", d => {
+  if (!d) return
+  const a = Number(d.a) || 0
+  switch (d.kind) {
+    case "move_lr": pad.lr = a; padStart(); break
+    case "move_ud": pad.ud = a; padStart(); break
+    case "zoom_trigger": if (d.b) pad.zin = Math.abs(a) * 2; else pad.zout = Math.abs(a) * 2; padStart(); break
+    case "zoom_axis": pad.zaxis = -a * 2; padStart(); break
+    case "move_key": if (d.b >= 1 && d.b <= 4) pad.keys[d.b - 1] = a; if (a) padStart(); break
+    case "select": padSelect(); break
+    case "pad_x": case "pad_y": padButton(d.kind, a); break
+  }
+})
+mapEvents.on("UINavigation", (name, value) => {
+  if (FOCUS_MOVES.has(name)) { if (Number(value)) showSelected(); return }
+  padButton(name, value)
+})
+// declared to the menus (v-bng-on-ui-nav on the root) so the UI keeps X / Y on while the map is open; the presses
+// themselves are taken from 'UINavigation' above (padButton: once a press)
+function onNavDeclared() { return false }
+// the mouse takes over again: no crosshair
+watch(cursor, () => { if (padMode.value && !padActive()) padMode.value = false })
+
+
 // ---- Places panel (settings.lua uiPlace* -> places.lua; every call answers with both lists) ---------
 // the places panel; closed, the saved places' pins leave the map too (the user, 2026-10-14). Remembered.
 const PANEL_KEY = "beamngEarth.map.placesOpen"
@@ -703,12 +849,13 @@ function ctxGps() {
   closeCtx()
   setGps(c.lat, c.lon, "")
 }
-function setGps(lat, lon, name) {
+function setGps(lat, lon, name, then) {
   engineLua(`beamngEarth_settings and beamngEarth_settings.uiMapGps(${luaNum(lat)}, ${luaNum(lon)}, ${luaStr(name || "")}) or nil`, r => {
     if (r && r.ok) {
       state.value = { ...state.value, gps: { lat, lon, name, planning: true } }
       routePts.value = []
       routeVersion = 0
+      if (then) then()
     }
   })
 }
@@ -924,6 +1071,8 @@ onUnmounted(() => {
   if (resizeObs) resizeObs.disconnect()
   window.removeEventListener("mousemove", onMove)
   window.removeEventListener("mouseup", onUp)
+  if (padFrame && window.cancelAnimationFrame) window.cancelAnimationFrame(padFrame)
+  padFrame = 0
   engineLua("if beamngEarth_settings and beamngEarth_settings.mapOpened then beamngEarth_settings.mapOpened(false) end")
 })
 
@@ -931,6 +1080,29 @@ const fmtLatLon = mm.fmtLatLon
 </script>
 
 <style scoped>
+.pad-cross {
+  position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+  border: 2px solid rgba(255, 255, 255, 0.95); border-radius: 50%; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  pointer-events: none; z-index: 5;
+}
+.pad-cross::before, .pad-cross::after {
+  content: ""; position: absolute; background: rgba(255, 255, 255, 0.95); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+.pad-cross::before { left: 15px; top: -9px; width: 2px; height: 50px; }
+.pad-cross::after { top: 15px; left: -9px; height: 2px; width: 50px; }
+.pad-hint {
+  position: absolute; left: 50%; top: 3.4em; transform: translateX(-50%); padding: 0.35em 0.9em;
+  background: rgba(0, 0, 0, 0.6); color: #fff; border-radius: 4px; font-size: 0.9em; pointer-events: none;
+  white-space: nowrap; z-index: 5;
+}
+/* the element a controller has selected (the menu's focus: the game marks it .focus-visible), plain to see (the user,
+   2026-10-21: "it can be hard to see what is selected using the menu buttons") */
+.earth-map .focus-visible, .earth-map :focus-visible {
+  outline: 3px solid #ffb54a !important; outline-offset: 2px; box-shadow: 0 0 0 6px rgba(0, 0, 0, 0.55), 0 0 14px 4px rgba(255, 181, 74, 0.7) !important;
+}
+.earth-map .map-btn.focus-visible { background: rgba(224, 118, 28, 0.9); border-color: #ffb54a; }
+/* under the GPS box (left: 10px, top: 56px, one row of buttons), which it partly covered (the user, 2026-10-21) */
+.pad-hint.below-gps { top: 100px; }
 .earth-map {
   position: absolute;
   inset: 0;
@@ -1045,7 +1217,8 @@ const fmtLatLon = mm.fmtLatLon
 
 .places-panel {
   position: absolute; right: 10px; top: 56px; z-index: 6; display: flex; flex-direction: column; align-items: flex-end;
-  max-height: calc(100% - 100px);
+  /* ends above the game's info bar (controller hints: 6.5vh, as .map-bottom) */
+  max-height: calc(100% - 56px - 6.5vh - 24px);
 }
 .panel-toggle { margin-bottom: 6px; }
 .panel-body {
@@ -1113,14 +1286,21 @@ const fmtLatLon = mm.fmtLatLon
 /* above the game's own footer bars (player / version bottom left, button hints bottom right: ~5 % of the height,
    scaling with it), which covered the cursor readout and the credits (the user, 2026-10-14) */
 .map-bottom {
-  position: absolute; left: 10px; right: 10px; bottom: calc(6.5vh + 4px); z-index: 10; display: flex;
+  position: absolute; left: 10px; right: 10px; bottom: calc(6.5vh + 10px); z-index: 10; display: flex;
   justify-content: space-between; align-items: flex-end; gap: 16px; pointer-events: none; font-size: 11px;
 }
 .cursor-pos, .attribution {
   padding: 3px 8px; background: rgba(0, 0, 0, 0.65); border-radius: 4px;
 }
 .cursor-pos { white-space: nowrap; }
-.attribution { text-align: right; opacity: 0.9; max-width: 60%; }
+.attribution {
+  text-align: right; opacity: 0.9; max-width: 60%; pointer-events: auto; cursor: pointer;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+.attribution.full, .attribution:hover { -webkit-line-clamp: unset; display: block; }
+/* the Places panel open (340 px + its padding and margin): the credits keep left of it */
+.map-bottom.beside-panel { right: 376px; }
+.map-bottom.beside-panel .attribution { max-width: 100%; }
 .map-view { bottom: 0; }
 .earth-map.embedded .map-bottom { bottom: 6px; }
 </style>

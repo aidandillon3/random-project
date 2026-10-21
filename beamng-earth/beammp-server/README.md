@@ -2,11 +2,11 @@
 
 What runs on the Misty BeamMP server (BeamMP-Server v3.9.3), without ServerConfig.toml (it holds the server key).
 
-- `Resources/Client/beamng_earth_mp/`: the mod BeamMP sends to players, BeamNG.Earth 1.5.3-beta (TecnaGamer, MIT,
+- `Resources/Client/beamng_earth_mp/`: the mod BeamMP sends to players, BeamNG.Earth 1.5.4-beta (TecnaGamer, MIT,
   see LICENSE-BeamNG.Earth.txt) with this server's changes. `python make_zip.py` packs it into
   `Resources/Client/beamng_earth_mp.zip`, byte for byte the zip on the server.
 - `Resources/Server/BeamNGEarthSync/main.lua`: the server side of the position sync.
-- `changes-from-upstream.diff`: everything changed from upstream 1.5.3-beta:
+- `changes-from-upstream.diff`: everything changed from upstream 1.5.4-beta:
   - core.lua: the position sync (players near each other share one world centre) and the camera fix after an adopt;
   - camshift.lua: the camera shift's minimum radius (the third-person camera broke after a teleport);
   - rebase.lua: the world centre moves every 25 km (fixed);

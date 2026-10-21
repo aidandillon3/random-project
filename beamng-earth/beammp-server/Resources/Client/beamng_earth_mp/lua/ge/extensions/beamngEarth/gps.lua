@@ -295,12 +295,17 @@ function M.pathNodes(path)
   return out
 end
 
+-- Tests only (tools/autodrive_perf.py --ai-mph): drive at this speed (m/s) instead of the legal one.
+M.speedOverride = nil
+
 -- Pure: the vehicle Lua that sets its AI on a path of node ids (nil: off).
 function M.aiCommand(ids, aggression)
   if not ids then return 'ai.setMode("disabled")' end
   local q = {}
   for i, id in ipairs(ids) do q[i] = string.format('%q', tostring(id)) end
-  return 'ai.driveUsingPath({path = {' .. table.concat(q, ',') .. '}, driveInLane = "on", routeSpeedMode = "legal", '
+  local speed = tonumber(M.speedOverride)
+  local mode = speed and string.format('routeSpeedMode = "set", routeSpeed = %.2f, ', speed) or 'routeSpeedMode = "legal", '
+  return 'ai.driveUsingPath({path = {' .. table.concat(q, ',') .. '}, driveInLane = "on", ' .. mode
     .. 'avoidCars = "on", aggression = ' .. string.format('%.2f', aggression or M.AUTO_AGGRESSION) .. '})'
 end
 
