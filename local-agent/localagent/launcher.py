@@ -359,13 +359,37 @@ class ServerProcess:
             proc = self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                                 stdin=subprocess.DEVNULL, cwd=str(cwd),
                                                 creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
-        for raw in iter(proc.stdout.readline, b""):
-            self.lines.append(raw.decode("utf-8", "replace").rstrip())
+        self._read(proc.stdout)
         return proc.wait()
 
+    def _read(self, stream):
+        """The output into lines. A download's progress line ("\r  file: 1.2 / 3 GB") rewrites itself with
+        carriage returns and no newline until it's done: it shows as one line that keeps changing."""
+        buf, progress = b"", False
+        while True:
+            chunk = stream.read1(1 << 16) if hasattr(stream, "read1") else stream.read(1 << 16)
+            buf += chunk
+            while True:
+                i = min((j for j in (buf.find(b"\r"), buf.find(b"\n")) if j >= 0), default=-1)
+                if i < 0 or (buf[i:i + 1] == b"\r" and i + 1 == len(buf) and chunk):
+                    break                                       # a \r whose \n may be in the next chunk
+                end = 2 if buf[i:i + 2] == b"\r\n" else 1
+                text, ended = buf[:i].decode("utf-8", "replace").rstrip(), buf[i:i + end] != b"\r"
+                buf = buf[i + end:]
+                if not ended and not text:
+                    continue
+                if progress and self.lines:
+                    self.lines[-1] = text
+                else:
+                    self.lines.append(text)
+                progress = not ended
+            if not chunk:
+                break
+        if buf.strip():
+            self.lines.append(buf.decode("utf-8", "replace").rstrip())
+
     def _pump(self, proc):
-        for raw in iter(proc.stdout.readline, b""):
-            self.lines.append(raw.decode("utf-8", "replace").rstrip())
+        self._read(proc.stdout)
         code = proc.wait()
         self.lines.append(f"[server stopped, exit code {code}]")
 
