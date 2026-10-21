@@ -5,6 +5,9 @@
 --   bngeTest.run(200, 90)      ... for 90 s
 --   bngeTest.again()           teleport to the last run's start and drive it again (same heading, speed, time)
 --   bngeTest.stop()            end the run now (it is still saved)
+--   bngeTest.autoBudget()      experiment: raise BeamNG.Earth's streaming budget (2 ms per frame) up to 4 ms while
+--                              road meshes or far tiles queue up, back to 2 when they have caught up;
+--                              bngeTest.autoBudget(false) turns it off (budget 2 again). Works outside test drives too.
 --
 -- A stock test car (vivace) is spawned at your car, which is frozen meanwhile and given back at the end (BeamNG.Earth's
 -- tools/drive.py does the same: per-frame placement made a lifted car unstable). The car is moved along the line by
@@ -28,6 +31,11 @@ local TEST_VEHICLE = 'vivace'
 local CLEARANCE_M = 6
 
 local LAST = OUT .. 'last.json'  -- the last run's start, kept across game restarts (again() after switching versions)
+-- autoBudget: the governor's target (beamngEarth_core.setFarBudget, 1-4 ms) from the streaming backlog, every EVERY_S:
+-- LO ms at QLO queued units or fewer, HI at QHI or more, linear between (0.25 ms steps). A test drive at 200 mph
+-- (2026-10-21): with 2 ms the road mesh queue (decks, sidewalks, building collision) grew to 391 in a minute; with 4 ms
+-- it stayed under 40, at 48 instead of 55 fps.
+local AUTO = { on = false, lo = 2, hi = 4, qLo = 20, qHi = 80, every = 0.5, wait = 0, ms = nil }
 local run = nil     -- the run in progress
 local last = nil    -- { mph, seconds, lat, lon, heading } of the last run started
 
@@ -87,7 +95,7 @@ local function save(r)
   for i, p in ipairs(r.polls) do lines[i] = jsonEncode(p) end
   writeFile(folder .. 'polls.jsonl', table.concat(lines, '\n') .. '\n')
   local meta = { mph = r.mph, seconds = r.seconds, speed = r.speed, km = r.km, lat = r.lat, lon = r.lon,
-    heading = r.heading, install = r.install, reason = r.reason, error = r.error, started = os.date('%Y-%m-%d %H:%M:%S', r.startedAt),
+    heading = r.heading, install = r.install, autoBudget = AUTO.on, reason = r.reason, error = r.error, started = os.date('%Y-%m-%d %H:%M:%S', r.startedAt),
     profile = r.profile }
   writeFile(folder .. 'meta.json', jsonEncode(meta))
   return (FS:getUserPath() .. folder):gsub('\\', '/')
@@ -205,7 +213,35 @@ local function onDriveFrame(r, dt)
   end
 end
 
+local function backlog()
+  local okR, rs = pcall(function() return require('beamngEarth/roads').status() end)
+  local okF, fs = pcall(function() return require('beamngEarth/farfield').stats() end)
+  return ((okR and rs and rs.walksQueued) or 0) + ((okF and fs and fs.queued) or 0)
+end
+
+local function updateBudget(dt)
+  AUTO.wait = AUTO.wait - dt
+  if AUTO.wait > 0 then return end
+  AUTO.wait = AUTO.every
+  local core = rawget(_G, 'beamngEarth_core')
+  if not (core and core.setFarBudget) then return end
+  local f = math.max(0, math.min(1, (backlog() - AUTO.qLo) / (AUTO.qHi - AUTO.qLo)))
+  local ms = math.floor((AUTO.lo + (AUTO.hi - AUTO.lo) * f) * 4 + 0.5) / 4
+  if ms ~= AUTO.ms then AUTO.ms = core.setFarBudget(ms) or ms end
+end
+
+function M.autoBudget(on, hi)
+  AUTO.on = on ~= false
+  AUTO.hi = math.max(AUTO.lo, math.min(4, tonumber(hi) or 4))
+  AUTO.ms, AUTO.wait = nil, 0
+  local core = rawget(_G, 'beamngEarth_core')
+  if not AUTO.on and core and core.setFarBudget then core.setFarBudget(AUTO.lo) end
+  say(AUTO.on and string.format('Auto budget on: %g to %g ms per frame', AUTO.lo, AUTO.hi) or 'Auto budget off: 2 ms per frame')
+  return AUTO.on
+end
+
 function M.onUpdate(dtReal)
+  if AUTO.on then pcall(updateBudget, dtReal or 0) end
   local r = run
   if not r then return end
   r.clock = r.clock + (dtReal or 0)
