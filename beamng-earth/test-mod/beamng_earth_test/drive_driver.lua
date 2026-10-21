@@ -54,6 +54,13 @@ D.NO_TILE = 99           -- `under` value of a frame with no shown tile under th
 D.EXACT_LEVEL = -2       -- fallback exact level (v1.3.1 layout) when the mod has no exactState
 D.MAX_LEVEL = 9
 D.L0 = 256
+-- (random-project test mod addition) a ground profile with cfg.lookAhead also rays the path ahead and
+-- beside the car and hovers over the highest hit, so it rises over a building before it reaches the wall
+D.LOOK_S = 0.6           -- s of travel ahead that is rayed (at least LOOK_MIN m)
+D.LOOK_MIN = 15
+D.LOOK_BACK = 3          -- m behind the centre (the tail, leaving a roof)
+D.LOOK_STEP = 8          -- m between rayed points along the path
+D.LOOK_SIDE = 1.5        -- m to each side of the path
 -- frame flags (bit values)
 D.FLAG_HEAVY = 1         -- the mod's governor ran a heavy op this frame (terrain commit, rebase, teleport)
 D.FLAG_REBASE = 2        -- rebase phase 1 (the vehicle move) ran this frame
@@ -324,7 +331,18 @@ function D.tick(dtReal, dtSim)
         s.falls = s.falls + 1
         flags = flags + D.FLAG_FALL
       end
-      z = s.ground + s.clearance
+      local top = s.ground
+      if s.lookAhead then
+        local L, d = max(D.LOOK_MIN, speed * D.LOOK_S), -D.LOOK_BACK
+        while d <= L do
+          for o = -1, 1 do
+            local gx = groundAt(s.x + hx * d + hy * o * D.LOOK_SIDE, s.y + hy * d - hx * o * D.LOOK_SIDE, s.ground + D.RAY_UP)
+            if gx and gx > top then top = gx end
+          end
+          d = d + D.LOOK_STEP
+        end
+      end
+      z = top + s.clearance
       vz = max(-D.MAX_VZ, min(D.MAX_VZ, (z - s.z) / dtSim))
     end
     s.z = z
@@ -380,7 +398,8 @@ end
 local function fail(text) return toJson({ error = text }) end
 
 -- cfg (JSON text or a table): { points = {...} (see makeProfile), km = total km (optional: else the
--- profile's end), clearance = m (optional: measured), exactLevel = n (optional, v1.3.1 mod only) }
+-- profile's end), clearance = m (optional: measured), exactLevel = n (optional, v1.3.1 mod only),
+-- lookAhead = true (optional: hover over buildings ahead too) }
 function D.install(cfg)
   if D.installed then return fail('already installed') end
   if type(cfg) == 'string' then cfg = jsonDecode(cfg) end
@@ -403,7 +422,7 @@ function D.install(cfg)
     ground = g, base = g, clearance = tonumber(cfg.clearance) or max(0.05, min(5, p.z - g)),
     cmd = h0, hOff = 0, frame = 0, lastTick = D.clock(), installMs = D.clock(), lastPoll = D.clock(),
     falls = 0, resets = 0, rebases = 0, resyncs = 0, vSum = 0, vProfSum = 0, vN = 0, placed = 0, lastSpeed = 0,
-    vehId = veh:getID(), done = false, reason = nil, skip = false, rebaseFrame = nil,
+    lookAhead = cfg.lookAhead == true, vehId = veh:getID(), done = false, reason = nil, skip = false, rebaseFrame = nil,
   }
   -- from here on uninstall() undoes every step, also when one of them fails
   D.installed = true

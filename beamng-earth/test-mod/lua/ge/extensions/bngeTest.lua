@@ -12,7 +12,8 @@
 -- A stock test car (vivace) is spawned at your car, which is frozen meanwhile and given back at the end (BeamNG.Earth's
 -- tools/drive.py does the same: per-frame placement made a lifted car unstable). The car is moved along the line by
 -- BeamNG.Earth's own test driver (beamng_earth_test/drive_driver.lua, from TecnaGamer/BeamNG.Earth tools/, MIT), so
--- the speed and the path never depend on driving; it hovers CLEARANCE_M above the ground and buildings. Every second this records the driver's frames and the mod's state
+-- the speed and the path never depend on driving; it hovers CLEARANCE_M above the highest ground or building on the
+-- next 0.6 s of its path, so it rises over buildings before it gets to them. Every second this records the driver's frames and the mod's state
 -- (as tools/drive.py does), plus how far the terrain block reaches ahead of the car each frame.
 -- Saved at the end in <user folder>/beamngearth/tests/<date>_<time>_<mph>mph/: polls.jsonl and meta.json.
 
@@ -178,7 +179,7 @@ local function installDriver(r)
   if not fn then return 'driver: ' .. tostring(err) end
   fn()
   if not rawget(_G, 'beamngEarth_perfmon') then extensions.load('beamngEarth_perfmon') end
-  r.profile = { points = { { s = 0, speed = r.speed, heading = r.heading } }, km = r.km, clearance = CLEARANCE_M }
+  r.profile = { points = { { s = 0, speed = r.speed, heading = r.heading } }, km = r.km, clearance = CLEARANCE_M, lookAhead = true }
   local res = jsonDecode(BNGE_DRIVE.install(jsonEncode(r.profile)))
   if res.error then return 'install: ' .. res.error end
   r.install = res
