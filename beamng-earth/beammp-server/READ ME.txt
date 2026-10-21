@@ -1,0 +1,34 @@
+BeamNG.Earth BeamMP server
+
+Start it: double-click BeamMP-Server.exe (v3.9.3). Port 25565, same as your other servers.
+
+Everyone who joins (you too) needs, BEFORE joining:
+1. BeamNG.Earth installed: https://github.com/TecnaGamer/BeamNG.Earth/releases
+   (the Windows installer, or download the project and run install.py)
+2. Its helper running: run_server.bat from the BeamNG.Earth folder. Leave that window open while playing.
+
+Resources\Client\beamng_earth_mp.zip is the mod, so BeamMP sends it when you join (BeamMP turns off your own mods
+while you're on a server). The helper (run_server.bat) still has to be installed and running on each PC.
+
+Untested: BeamNG.Earth isn't made for multiplayer. Other players' cars may show in the wrong place
+once you've driven far apart. Test by meeting at spawn, driving a few km apart, then meeting up again.
+
+Position sync (added 2026-10-21)
+--------------------------------
+BeamNG.Earth moves the world's centre as you drive (every 25 km here). Resources\Server\BeamNGEarthSync
+makes every player near each other use the same centre, so positions stay matched after a move.
+If you re-zip beamng_earth_mp.zip from your own copy of BeamNG.Earth, this sync is lost (it is only in
+the copy that is in Resources\Client now).
+
+High-speed patch and new mod name (added 2026-10-21)
+----------------------------------------------------
+The server's mod is now Resources\Client\beamng_earth_mp.zip (was beamng_earth.zip). The new name makes BeamMP
+turn off each player's own BeamNG.Earth copy while on the server, so everyone runs the server's version with
+the sync. Afterwards, for single player, turn BeamNG.Earth back on in BeamNG's Mods menu.
+The mod also asks for the next ground block earlier above 179 mph.
+
+Helper downloads: https://github.com/aidandillon3/random-project/releases/tag/beamng-earth
+  BeamNG.Earth-1.5.3-beta-fast.exe  sharper ground ahead at high speed (only changes your own game)
+  BeamNG.Earth-1.5.3-beta.exe       the unchanged original
+Either one works with the server. The previous zip is in
+E:\BeamNG Earth server backups\2026-10-21 before high-speed patch.

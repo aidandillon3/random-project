@@ -1,0 +1,17 @@
+{
+  "title": "BeamNG.Earth",
+  "description": "The whole Earth, streamed around you by the BeamNG.Earth companion server. Start the server, then teleport from the BeamNG.Earth window.",
+  "previews": [
+    "beamng_earth_preview.jpg"
+  ],
+  "size": [
+    -1,
+    -1
+  ],
+  "biome": "Earth",
+  "roads": "None (v1)",
+  "authors": "BeamNG.Earth",
+  "defaultSpawnPointName": "spawn_default",
+  "supportsTraffic": true,
+  "supportsTimeOfDay": true
+}
