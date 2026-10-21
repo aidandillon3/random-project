@@ -24,8 +24,14 @@ local TELEPORT_SETTLE_S = 45    -- ... then the world around it loads (tools/aut
 local MPH = 0.44704
 local TEST_VEHICLE = 'vivace'
 
+local LAST = OUT .. 'last.json'  -- the last run's start, kept across game restarts (again() after switching versions)
 local run = nil     -- the run in progress
 local last = nil    -- { mph, seconds, lat, lon, heading } of the last run started
+
+local function loadLast()
+  local ok, t = pcall(function() local s = readFile(LAST) return s and jsonDecode(s) end)
+  return ok and type(t) == 'table' and t.lat and t or nil
+end
 
 local function say(msg, kind)
   log(kind == 'error' and 'E' or 'I', 'bngeTest', msg)
@@ -119,6 +125,7 @@ local function start(mph, seconds, heading, lat, lon)
     km = mph * MPH * seconds / 1000, heading = heading, lat = lat or (s.player or {}).lat, lon = lon or (s.player or {}).lon,
     polls = {}, clock = 0, startedAt = os.time(), carId = car:getID() }
   last = { mph = mph, seconds = seconds, heading = heading, lat = run.lat, lon = run.lon }
+  pcall(writeFile, LAST, jsonEncode(last))
   if lat then
     run.anchor0 = (coreState() or {}).anchorId
     beamngEarth_core.teleport(lat, lon, 'test drive start', { record = false })
@@ -130,6 +137,7 @@ end
 function M.run(mph, seconds, heading) return start(mph, seconds, heading) end
 
 function M.again()
+  last = last or loadLast()
   if not last then say('No test drive yet: start one with bngeTest.run(200)', 'warning') return false end
   return start(last.mph, last.seconds, last.heading, last.lat, last.lon)
 end

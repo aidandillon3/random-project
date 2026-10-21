@@ -5,7 +5,7 @@ BeamNG.Earth running, open the console (~) and type:
 
 - `bngeTest.run(200)`: drive straight ahead at 200 mph for 60 s from where you are, the way the car faces
 - `bngeTest.run(200, 90)`: the same for 90 s
-- `bngeTest.again()`: teleport to the last start and drive it again
+- `bngeTest.again()`: teleport to the last start and drive it again (also after restarting the game)
 - `bngeTest.stop()`: end the run now (it is still saved)
 
 Results go to `<user folder>/current/beamngearth/tests/<date>_<time>_<mph>mph/` (polls.jsonl, meta.json).
