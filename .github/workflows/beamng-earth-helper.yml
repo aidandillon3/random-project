@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - beamng-earth/**
+      - beamng-earth/apply_patch.py
       - .github/workflows/beamng-earth-helper.yml
 
 permissions:
