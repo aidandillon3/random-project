@@ -965,8 +965,9 @@ class ChatPage(QWidget):
         self.s.chat_text_pt = max(MIN_TEXT_PT, min(MAX_TEXT_PT, pt))
         self.s.save()
         self.apply_text_size()
-        self.status.setText(f"Text size {self.s.chat_text_pt} (Ctrl + bigger, Ctrl - smaller, Ctrl 0 back to "
-                            f"{DEFAULT_TEXT_PT})")
+        note = f"Text size {self.s.chat_text_pt} (Ctrl + bigger, Ctrl - smaller, Ctrl 0 back to {DEFAULT_TEXT_PT})"
+        self.status.setText(note)
+        QTimer.singleShot(3000, lambda: self.status.text() == note and self.status.setText(""))
 
     def eventFilter(self, obj, e):
         if e.type() == QEvent.Wheel and e.modifiers() & Qt.ControlModifier:
@@ -1152,6 +1153,7 @@ class ChatPage(QWidget):
         while self.feed.count() > 1:
             w = self.feed.takeAt(0).widget()
             if w and w is not self.welcome:
+                w.hide()            # gone at once, not when Qt gets round to deleting it
                 w.deleteLater()
         self.feed.insertWidget(0, self.welcome)
         self.welcome.setVisible(True)
