@@ -775,6 +775,73 @@ class GuiTest(unittest.TestCase):
         self.assertFalse(blk.preview.isVisibleTo(blk))
         w.close()
 
+    def test_chat_list_on_the_left_and_text_size(self):
+        import json
+
+        from localagent import chats
+        from localagent.config import Settings
+
+        folder = chats.folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        for f in folder.glob("*.json"):
+            f.unlink()
+        old = folder / "2026-01-02_10-00-00.json"
+        old.write_text(json.dumps({"messages": [
+            {"role": "user", "content": "[summary]", "_kind": "summary"},
+            {"role": "user", "content": "fix the   crash in my game\nplease"},
+            {"role": "assistant", "content": "Fixed it."}]}))
+        os.utime(old, (time.time() - 3 * 86400, time.time() - 3 * 86400))
+        new = folder / "2026-01-05_10-00-00.json"
+        new.write_text(json.dumps({"messages": [{"role": "user", "content": "rename my photos"}]}))
+        s = Settings(base_url="http://127.0.0.1:9/v1")
+        w = self.gui.MainWindow(s)
+        w.show()
+        side, chat = w.sidebar, w.chat
+        texts = [side.list.item(i).text() for i in range(side.list.count())]
+        self.assertEqual(texts, ["Today", "rename my photos", "Previous 7 days", "fix the crash in my game please"])
+        side._clicked(side.list.item(3))
+        self.assertEqual(chat.chat_file, old)
+        self.assertEqual(chat.title.fullText(), "fix the crash in my game please")
+        bodies = [chat.feed.itemAt(i).widget() for i in range(chat.feed.count() - 1)]
+        self.assertTrue(any(isinstance(b, self.gui.AssistantBlock) and "Fixed it." in b.text for b in bodies))
+        self.assertEqual([i.text() for i in side.list.selectedItems()], ["fix the crash in my game please"])
+        # renamed: the new name sticks even after the chat changes
+        chats.rename(old, "Game crash")
+        old.write_text(old.read_text())
+        side.refresh()
+        self.assertIn("Game crash", [side.list.item(i).text() for i in range(side.list.count())])
+        side.search.setText("photos")
+        self.assertEqual([side.list.item(i).text() for i in range(side.list.count())], ["Today", "rename my photos"])
+        side.search.setText("")
+        # deleting the open chat starts a new one
+        orig = self.gui.QMessageBox.question
+        self.gui.QMessageBox.question = staticmethod(lambda *a, **k: self.gui.QMessageBox.Yes)
+        self.addCleanup(setattr, self.gui.QMessageBox, "question", orig)
+        side._delete(old, "Game crash")
+        self.assertFalse(old.exists())
+        self.assertIsNone(chat.chat_file)
+        self.assertTrue(chat.welcome.isVisibleTo(chat))
+        # text size: Ctrl + / Ctrl -, saved, and Settings shows it
+        start = s.chat_text_pt
+        chat.change_text_size(1)
+        chat.change_text_size(1)
+        self.assertEqual(s.chat_text_pt, start + 2)
+        self.assertIn(f"font-size: {start + 2}pt", chat.chat_area.styleSheet())
+        chat.change_text_size(0)
+        self.assertEqual(s.chat_text_pt, self.gui.DEFAULT_TEXT_PT)
+        w.nav.setCurrentRow(2)
+        self.assertEqual(w.settings_page.text_pt.value(), self.gui.DEFAULT_TEXT_PT)
+        w.settings_page.text_pt.setValue(15)
+        self.assertEqual(s.chat_text_pt, 15)
+        self.assertIn("font-size: 15pt", chat.chat_area.styleSheet())
+        # the list hides and comes back (Ctrl+B)
+        w.toggle_sidebar()
+        self.assertFalse(side.isVisible())
+        self.assertFalse(s.sidebar_open)
+        w.toggle_sidebar()
+        self.assertTrue(side.isVisible())
+        w.close()
+
     def test_memory_page(self):
         from localagent import memory
         from localagent.config import Settings

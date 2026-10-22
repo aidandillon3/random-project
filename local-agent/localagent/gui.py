@@ -5,13 +5,15 @@ from __future__ import annotations
 import copy
 import gc
 import json
+import re
 import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
-    QColor, QDesktopServices, QFont, QImage, QKeySequence, QPalette, QPixmap, QShortcut,
+    QColor, QDesktopServices, QFont, QFontDatabase, QImage, QKeySequence, QPalette, QPixmap, QShortcut, QTextCharFormat,
+    QTextCursor, QTextDocument, QTextFormat,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
@@ -20,7 +22,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import catalog, launcher, mcp, odp, plugins, strata
+from . import catalog, chats, launcher, mcp, odp, plugins, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import gpu_info, model_info
@@ -30,61 +32,108 @@ from . import memory as memory_mod
 from .permissions import ApprovalRequest, Decision, risk_text
 from .tools import RISK_LABELS
 
-ACCENT = "#4f8cff"
-OK = "#2fbf71"
+# the Claude app's dark look: warm greys, its clay orange for what you press
+BG = "#262624"          # the chat
+SIDEBAR = "#1f1e1d"     # the chat list on the left
+SURFACE = "#30302e"     # the message box, cards, menus
+RAISED = "#3a3a37"      # hover, the picked chat
+LINE = "#43423e"        # borders
+TEXT = "#f0eee6"
+MUTED = "#a6a39a"
+FAINT = "#75736c"
+USER_BG = "#141413"     # your messages
+ACCENT = "#d97757"
+OK = "#5fb37a"
 WARN = "#e0a43a"
 BAD = "#e5534b"
+COLUMN_W = 780          # the chat column's width, centred like the Claude app's
+DEFAULT_TEXT_PT, MIN_TEXT_PT, MAX_TEXT_PT = 11, 8, 24      # the chat's text size (Settings.chat_text_pt)
+SERIF = "Georgia, 'Times New Roman', serif"
+SANS = "'Segoe UI', 'Inter', 'Helvetica Neue', Arial, sans-serif"
 
 THINKING_LEVELS = [("auto", "Model default"), ("off", "Off (fastest)"), ("low", "Low"), ("medium", "Medium"),
                    ("high", "High (smartest)")]
-# the chat bar's short names for the approval modes (the long ones are the tooltips)
+# the message box's short names for the approval modes (the long ones are the tooltips)
 PERMISSION_SHORT = {"read_only": "Read only", "ask": "Ask first", "auto_edit": "Auto-edit files",
                     "auto": "Full auto"}
 
 STYLE = f"""
 QWidget {{ font-size: 10pt; }}
-QMainWindow, QWidget#page {{ background: #16181d; color: #e6e8ee; }}
-QLabel, QCheckBox, QRadioButton {{ color: #e6e8ee; }}
-QLabel[muted="true"] {{ color: #9aa1ad; }}
+QMainWindow, QWidget#page {{ background: {BG}; color: {TEXT}; }}
+QLabel, QCheckBox, QRadioButton {{ color: {TEXT}; }}
+QLabel[muted="true"] {{ color: {MUTED}; }}
 QLabel#h1 {{ font-size: 16pt; font-weight: 600; }}
-QListWidget {{ background: #1e2128; border: 1px solid #2c303a; border-radius: 8px; color: #e6e8ee; }}
+QLabel#greeting {{ font-family: {SERIF}; font-size: 24pt; color: {TEXT}; }}
+QLabel#chatTitle {{ color: {TEXT}; font-size: 10.5pt; }}
+QListWidget {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 8px; color: {TEXT}; }}
 QListWidget::item {{ padding: 5px 6px; }}
-QListWidget::item:selected {{ background: #2b3550; color: white; }}
-QListWidget#nav {{ background: #101216; border: none; color: #c9ced8; font-size: 11pt; padding-top: 8px; }}
-QListWidget#nav::item {{ padding: 10px 16px; }}
-QListWidget#nav::item:selected {{ background: #232733; color: white; border-left: 3px solid {ACCENT}; }}
-QFrame#user {{ background: #23304a; border-radius: 10px; }}
+QListWidget::item:selected {{ background: {RAISED}; color: white; }}
+QFrame#sidebar {{ background: {SIDEBAR}; border-right: 1px solid #2b2a28; }}
+QLabel#brand {{ font-family: {SERIF}; font-size: 14pt; color: {TEXT}; }}
+QLabel#section {{ color: {FAINT}; font-size: 9pt; padding: 8px 10px 2px 10px; }}
+QListWidget#nav, QListWidget#chats {{ background: transparent; border: none; color: {TEXT}; outline: none; }}
+QListWidget#nav::item, QListWidget#chats::item {{ padding: 6px 10px; border-radius: 8px; margin: 1px 6px; }}
+QListWidget#nav::item:hover, QListWidget#chats::item:hover {{ background: #2a2927; }}
+QListWidget#nav::item:selected, QListWidget#chats::item:selected {{ background: {RAISED}; color: white; }}
+QPushButton#newChat {{ background: transparent; border: none; color: {TEXT}; text-align: left;
+    padding: 7px 10px; border-radius: 8px; font-weight: 600; }}
+QPushButton#newChat:hover {{ background: #2a2927; }}
+QLineEdit#search {{ background: transparent; border: 1px solid #34332f; border-radius: 8px; padding: 5px 8px;
+    margin: 0 6px; }}
+QFrame#user {{ background: {USER_BG}; border-radius: 14px; }}
 QFrame#assistant {{ background: transparent; }}
-QFrame#tool {{ background: #1e2128; border: 1px solid #2c303a; border-radius: 8px; }}
-QFrame#side {{ background: #1b1d23; border-left: 1px solid #2c303a; }}
-QPushButton {{ background: #2a2f3a; color: #e6e8ee; border: 1px solid #3a404d; border-radius: 6px; padding: 6px 14px; }}
-QPushButton:hover {{ background: #333948; }}
-QPushButton:disabled {{ color: #6b717c; }}
+QLabel#answer {{ font-family: {SERIF}; }}
+QFrame#tool {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 10px; }}
+QFrame#side {{ background: {SIDEBAR}; border-left: 1px solid #2b2a28; }}
+QFrame#composer {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 18px; }}
+QPlainTextEdit#composerInput {{ background: transparent; border: none; padding: 0; }}
+QFrame#composer QComboBox {{ background: transparent; border: 1px solid transparent; color: {MUTED};
+    border-radius: 8px; padding: 3px 6px; }}
+QFrame#composer QComboBox:hover {{ background: {RAISED}; color: {TEXT}; }}
+QFrame#composer QToolButton {{ color: {MUTED}; border-radius: 8px; padding: 4px 8px; }}
+QFrame#composer QToolButton:hover {{ background: {RAISED}; color: {TEXT}; }}
+QFrame#composer QToolButton::menu-indicator {{ image: none; }}
+QPushButton#send {{ background: {ACCENT}; border: none; color: white; font-size: 13pt; font-weight: 700;
+    border-radius: 10px; padding: 0; }}
+QPushButton#send:hover {{ background: #e08a6d; }}
+QPushButton#send:disabled {{ background: #5a4a43; color: #b9aca5; }}
+QPushButton#stop {{ background: {TEXT}; border: none; color: {BG}; font-size: 10pt; border-radius: 10px;
+    padding: 0; }}
+QPushButton {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 8px; padding: 6px 14px; }}
+QPushButton:hover {{ background: {RAISED}; }}
+QPushButton:disabled {{ color: {FAINT}; }}
 QPushButton#primary {{ background: {ACCENT}; border: none; color: white; font-weight: 600; }}
-QPushButton#primary:hover {{ background: #6a9dff; }}
+QPushButton#primary:hover {{ background: #e08a6d; }}
 QPushButton#danger {{ background: {BAD}; border: none; color: white; font-weight: 600; }}
-QPushButton#primary:disabled, QPushButton#danger:disabled {{ background: #2a2f3a; color: #6b717c; }}
-QToolButton {{ color: #9aa1ad; border: none; background: transparent; }}
-QToolButton:hover {{ color: #e6e8ee; }}
-QToolButton#menu {{ background: #2a2f3a; color: #e6e8ee; border: 1px solid #3a404d; border-radius: 6px; padding: 5px 10px; }}
+QPushButton#primary:disabled, QPushButton#danger:disabled {{ background: {SURFACE}; color: {FAINT}; }}
+QToolButton {{ color: {MUTED}; border: none; background: transparent; }}
+QToolButton:hover {{ color: {TEXT}; }}
+QToolButton#menu {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 8px; padding: 5px 10px; }}
 QToolButton#menu::menu-indicator {{ image: none; }}
-QDialog, QMessageBox, QInputDialog {{ background: #16181d; color: #e6e8ee; }}
-QMenu {{ background: #1e2128; color: #e6e8ee; border: 1px solid #3a404d; }}
-QMenu::item {{ padding: 6px 22px; }}
-QMenu::item:selected {{ background: #2b3550; }}
-QMenu::item:disabled {{ color: #6b717c; }}
-QToolTip {{ background: #23262e; color: #e6e8ee; border: 1px solid #3a404d; }}
-QGroupBox {{ border: 1px solid #2c303a; border-radius: 8px; margin-top: 14px; padding: 10px; color: #c9ced8; }}
+QToolButton#flat {{ border-radius: 8px; padding: 5px 8px; }}
+QToolButton#flat:hover, QToolButton#flat:checked {{ background: {RAISED}; color: {TEXT}; }}
+QDialog, QMessageBox, QInputDialog {{ background: {BG}; color: {TEXT}; }}
+QMenu {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 8px; padding: 4px; }}
+QMenu::item {{ padding: 6px 22px; border-radius: 6px; }}
+QMenu::item:selected {{ background: {RAISED}; }}
+QMenu::item:disabled {{ color: {FAINT}; }}
+QToolTip {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {LINE}; }}
+QGroupBox {{ border: 1px solid {LINE}; border-radius: 10px; margin-top: 14px; padding: 10px; color: #d6d3ca; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; }}
-QTextBrowser, QPlainTextEdit {{ background: #1e2128; border: 1px solid #2c303a; border-radius: 8px; color: #e6e8ee; }}
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: #23262e; color: #e6e8ee; border: 1px solid #3a404d;
-    border-radius: 4px; padding: 3px 6px; }}
-QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{ background: #1b1d23;
-    color: #6b717c; border-color: #2c303a; }}
-QComboBox QAbstractItemView {{ background: #1e2128; color: #e6e8ee; selection-background-color: #2b3550; }}
-QProgressBar {{ background: #23262e; border: 1px solid #3a404d; border-radius: 4px; text-align: center; color: white; height: 14px; }}
+QTextBrowser, QPlainTextEdit {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 8px; color: {TEXT}; }}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: #2c2c2a; color: {TEXT}; border: 1px solid {LINE};
+    border-radius: 6px; padding: 3px 6px; }}
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{ background: {SIDEBAR};
+    color: {FAINT}; border-color: #34332f; }}
+QComboBox QAbstractItemView {{ background: {SURFACE}; color: {TEXT}; selection-background-color: {RAISED}; }}
+QProgressBar {{ background: #2c2c2a; border: 1px solid {LINE}; border-radius: 4px; text-align: center; color: white; height: 14px; }}
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 4px; }}
 QScrollArea {{ border: none; background: transparent; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
+QScrollBar::handle:vertical {{ background: #4a4945; border-radius: 4px; min-height: 30px; }}
+QScrollBar::handle:vertical:hover {{ background: #5c5b56; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 """
 
 
@@ -228,18 +277,95 @@ class ImageDialog(QDialog):
 
 
 # ====================================================================== chat widgets
-class UserBubble(QFrame):
+CODE_BG, INLINE_CODE_BG = "#1a1a18", "#3a3936"
+_mono: list[str] = []
+
+
+def mono_family() -> str:
+    """Windows' code fonts if there, else the system's fixed-width one (Qt's HTML takes one family name)."""
+    if not _mono:
+        have = set(QFontDatabase.families())
+        _mono.append(next((f for f in ("Cascadia Mono", "Consolas") if f in have),
+                          QFontDatabase.systemFont(QFontDatabase.FixedFont).family()))
+    return _mono[0]
+
+
+def markdown_html(text: str) -> str:
+    """A reply's Markdown as HTML for a QLabel, with code on a dark background as in the Claude app.
+    The page's own font and size are left out, so the chat's text size and answer font apply."""
+    doc = QTextDocument()
+    doc.setMarkdown(text)
+    cur = QTextCursor(doc)
+    b = doc.begin()
+    while b.isValid():
+        f = b.blockFormat()
+        if f.hasProperty(QTextFormat.BlockCodeFence) or f.nonBreakableLines():
+            prev, nxt = b.previous(), b.next()
+            if not (prev.isValid() and prev.blockFormat().nonBreakableLines()):
+                f.setTopMargin(8)
+            if not (nxt.isValid() and nxt.blockFormat().nonBreakableLines()):
+                f.setBottomMargin(8)
+            f.setBackground(QColor(CODE_BG))
+            cur.setPosition(b.position())
+            cur.setBlockFormat(f)
+        else:
+            it = b.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                cf = frag.charFormat()
+                if cf.fontFixedPitch() or "monospace" in (cf.fontFamilies() or []):
+                    mark = QTextCharFormat()
+                    mark.setBackground(QColor(INLINE_CODE_BG))
+                    cur.setPosition(frag.position())
+                    cur.setPosition(frag.position() + frag.length(), QTextCursor.KeepAnchor)
+                    cur.mergeCharFormat(mark)
+                it += 1
+        b = b.next()
+    html = re.sub(r'(<body style=")[^"]*"', r'\1"', doc.toHtml(), count=1)
+    return html.replace("font-family:'monospace';", f"font-family:'{mono_family()}';")
+
+
+class UserBubble(QWidget):
+    """What you typed, in a rounded box on the right, as in the Claude app."""
+
     def __init__(self, text: str, images: list[bytes]):
         super().__init__()
-        self.setObjectName("user")
-        lay = QVBoxLayout(self)
-        lab = QLabel(text)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 4, 0, 4)
+        row.addStretch(1)
+        self.box = _Bubble()
+        lay = QVBoxLayout(self.box)
+        lay.setContentsMargins(14, 10, 14, 10)
+        self.label = lab = QLabel(text)
         lab.setTextFormat(Qt.PlainText)      # what you typed, never rendered as HTML
         lab.setWordWrap(True)
         lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.box.label = lab
         lay.addWidget(lab)
         for p in images:
             lay.addWidget(thumb(p, 240))
+        row.addWidget(self.box)
+
+
+class _Bubble(QFrame):
+    """As wide as its text needs, up to most of the column; longer lines wrap."""
+
+    label: QLabel
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("user")
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        if getattr(self, "label", None) is None:
+            return hint
+        fm = self.label.fontMetrics()
+        lines = self.label.text().split("\n") or [""]
+        want = max(fm.horizontalAdvance(line) for line in lines) + 30
+        hint.setWidth(max(60, min(int(COLUMN_W * 0.8), want, max(hint.width(), want))))
+        return hint
 
 
 class AssistantBlock(QFrame):
@@ -266,13 +392,29 @@ class AssistantBlock(QFrame):
         self.think.setVisible(False)
         self.think.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.body = QLabel()
+        self.body.setObjectName("answer")
         self.body.setWordWrap(True)
-        self.body.setTextFormat(Qt.MarkdownText)
+        self.body.setTextFormat(Qt.RichText)
         self.body.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
         self.body.setOpenExternalLinks(True)
         self.body.setVisible(False)
         for w in (self.think_btn, self.preview, self.think, self.body):
             lay.addWidget(w)
+        acts = QHBoxLayout()
+        acts.setContentsMargins(0, 2, 0, 0)
+        self.copy_btn = QToolButton(text="Copy")
+        self.copy_btn.setObjectName("flat")
+        self.copy_btn.setToolTip("Copy this answer")
+        self.copy_btn.clicked.connect(self._copy)
+        self.copy_btn.setVisible(False)
+        acts.addWidget(self.copy_btn)
+        acts.addStretch(1)
+        lay.addLayout(acts)
+
+    def _copy(self):
+        QApplication.clipboard().setText(self.text.strip())
+        self.copy_btn.setText("Copied")
+        QTimer.singleShot(1500, lambda: self.copy_btn.setText("Copy"))
 
     def _label(self) -> str:
         arrow = "▾" if self.think.isVisible() else "▸"
@@ -308,6 +450,7 @@ class AssistantBlock(QFrame):
         self._dirty = True
         self._next = 0.0
         self.refresh()
+        self.copy_btn.setVisible(bool(self.text.strip()))
 
     def refresh(self):
         if self.reasoning and self._think_secs is None:
@@ -327,7 +470,7 @@ class AssistantBlock(QFrame):
                 self.think.setText(self.reasoning[-20000:])
         if self.text.strip():
             self.body.setVisible(True)
-            self.body.setText(self.text)
+            self.body.setText(markdown_html(self.text))
         # rendering a long Markdown reply takes a while; leave the window free in between
         self._next = time.time() + 3 * (time.time() - t0)
 
@@ -343,7 +486,7 @@ class ToolCard(QFrame):
         lay.setContentsMargins(10, 6, 10, 6)
         top = QHBoxLayout()
         self.icon = QLabel("⏳")
-        self.title = QLabel(f"<b>{name}</b>  <span style='color:#9aa1ad'>{_esc(summary[:160])}</span>")
+        self.title = QLabel(f"<b>{name}</b>  <span style='color:{MUTED}'>{_esc(summary[:160])}</span>")
         self.title.setWordWrap(True)
         self.more = QToolButton(text="details")
         self.more.clicked.connect(self._toggle)
@@ -379,8 +522,28 @@ def _esc(s: str) -> str:
 
 
 class InputBox(QPlainTextEdit):
+    """The message box: grows with what you type, up to MAX_LINES, then scrolls."""
+
     send = Signal()
     image_pasted = Signal(bytes)
+    MIN_LINES, MAX_LINES = 2, 12
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("composerInput")
+        self.setFrameShape(QFrame.NoFrame)
+        self.document().documentLayout().documentSizeChanged.connect(self._fit)
+        self._fit()
+
+    def _fit(self, *_):
+        lines = int(self.document().documentLayout().documentSize().height())
+        lines = max(self.MIN_LINES, min(self.MAX_LINES, lines))
+        self.setFixedHeight(int(lines * self.fontMetrics().lineSpacing() + 2 * self.document().documentMargin() + 6))
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() == QEvent.FontChange:
+            self._fit()
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not (e.modifiers() & Qt.ShiftModifier):
@@ -533,6 +696,11 @@ class ApprovalDialog(QDialog):
 
 
 # ====================================================================== chat page
+def _greeting() -> str:
+    h = time.localtime().tm_hour
+    return "Good morning" if 5 <= h < 12 else "Good afternoon" if 12 <= h < 18 else "Good evening"
+
+
 class ChatPage(QWidget):
     def __init__(self, win: "MainWindow"):
         super().__init__()
@@ -548,6 +716,7 @@ class ChatPage(QWidget):
         self.current: AssistantBlock | None = None
         self.cards: dict[str, ToolCard] = {}
         self.chat_file: Path | None = None
+        self._plan_shown = False
         self._build()
         self._wire()
         self.timer = QTimer(self, interval=80, timeout=self._tick)
@@ -559,72 +728,63 @@ class ChatPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         main = QVBoxLayout()
-        main.setContentsMargins(16, 10, 16, 10)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
 
+        # the bar on top: show / hide the chat list, the chat's name, the plan panel
         top = QHBoxLayout()
-        self.dot = QLabel("●")
-        self.dot.setStyleSheet(f"color: {BAD};")
-        top.addWidget(self.dot)
-        self.conn = ElidedLabel("not connected")
-        top.addWidget(self.conn, 1)
-        self.model_btn = QToolButton(text="Model ▾")
-        self.model_btn.setObjectName("menu")
-        self.model_btn.setToolTip("Switch model, or start / stop it")
-        self.model_btn.setPopupMode(QToolButton.InstantPopup)
-        self.model_menu = QMenu(self.model_btn)
-        self.model_menu.aboutToShow.connect(self._fill_model_menu)
-        self.model_btn.setMenu(self.model_menu)
-        top.addWidget(self.model_btn)
-        top.addSpacing(8)
-        self.mode = QComboBox()
-        for k, v in PERMISSION_SHORT.items():
-            self.mode.addItem(v, k)
-            self.mode.setItemData(self.mode.count() - 1, APPROVAL_MODES[k], Qt.ToolTipRole)
-        self.mode.setToolTip("What it may do without asking you first")
-        self.mode.setCurrentIndex(max(0, self.mode.findData(self.s.approval_mode)))
-        self.mode.currentIndexChanged.connect(self._mode_changed)
-        top.addWidget(self.mode)
-        self.think = QComboBox()
-        for k, v in THINKING_LEVELS:
-            self.think.addItem(f"Thinking: {v}", k)
-        self.think.setToolTip("How long it thinks before answering. Applies from your next message. "
-                              "High is best for hard tasks, Off or Low for quick clicks.")
-        self.sync_thinking()
-        self.think.currentIndexChanged.connect(self._thinking_changed)
-        top.addWidget(self.think)
-        b = QPushButton("New chat")
-        b.clicked.connect(self.new_chat)
-        top.addWidget(b)
-        more = QToolButton(text="⋯")
-        more.setObjectName("menu")
-        more.setToolTip("Old chats, work folder")
-        more.setPopupMode(QToolButton.InstantPopup)
-        m = QMenu(more)
-        m.addAction("Open an old chat...", self._open_chat)
-        m.addAction("Change the work folder...", self._pick_workspace)
-        more.setMenu(m)
-        top.addWidget(more)
+        top.setContentsMargins(10, 8, 12, 4)
+        self.side_btn = QToolButton(text="☰")
+        self.side_btn.setObjectName("flat")
+        self.side_btn.setToolTip("Show or hide the chat list (Ctrl+B)")
+        self.side_btn.clicked.connect(self.win.toggle_sidebar)
+        top.addWidget(self.side_btn)
+        self.title = ElidedLabel("New chat")
+        self.title.setObjectName("chatTitle")
+        top.addWidget(self.title, 1)
+        self.plan_btn = QToolButton(text="Plan && context")
+        self.plan_btn.setObjectName("flat")
+        self.plan_btn.setCheckable(True)
+        self.plan_btn.setToolTip("The plan for bigger tasks, how full the context is, the work folder")
+        top.addWidget(self.plan_btn)
         main.addLayout(top)
 
+        # the conversation, in a centred column
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        holder = QWidget()
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chat_area = holder = QWidget()
         holder.setObjectName("page")
-        self.feed = QVBoxLayout(holder)
-        self.feed.setSpacing(8)
+        centre = QHBoxLayout(holder)
+        centre.setContentsMargins(24, 8, 24, 16)
+        column = QWidget()
+        column.setMaximumWidth(COLUMN_W)
+        self.feed = QVBoxLayout(column)
+        self.feed.setContentsMargins(0, 0, 0, 0)
+        self.feed.setSpacing(12)
         self.feed.addStretch(1)
+        centre.addStretch(1)
+        centre.addWidget(column, 100)
+        centre.addStretch(1)
         self.scroll.setWidget(holder)
         self.scroll.verticalScrollBar().rangeChanged.connect(self._autoscroll)
+        self.scroll.viewport().installEventFilter(self)       # Ctrl + mouse wheel: text size
         main.addWidget(self.scroll, 1)
 
         self.welcome = QWidget()
         wl = QVBoxLayout(self.welcome)
-        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setContentsMargins(0, 60, 0, 0)
+        wl.setSpacing(14)
+        self.greeting = QLabel(_greeting())
+        self.greeting.setObjectName("greeting")
+        self.greeting.setAlignment(Qt.AlignCenter)
+        wl.addWidget(self.greeting)
         self.welcome_text = muted(
             "Ask for anything: \"tidy up my Downloads folder\", \"write a script that renames these photos by "
             "date\", \"find the bug that makes my game crash on start and fix it\". It runs and tests what it "
             "makes and fixes what fails, without touching your mouse, keyboard or screen. It asks before "
-            "changing anything (you can loosen that at the top).\n\nEmergency stop: press Stop (or Esc).")
+            "changing anything (you can loosen that below).\n\nEmergency stop: press Stop (or Esc).")
+        self.welcome_text.setAlignment(Qt.AlignCenter)
         wl.addWidget(self.welcome_text)
         # first run: one click to a working model
         self.setup_card = QGroupBox("No model running yet. Pick one to get started:")
@@ -644,37 +804,87 @@ class ChatPage(QWidget):
         wl.addWidget(self.setup_card)
         self.feed.insertWidget(0, self.welcome)
 
+        # the message box, as in the Claude app: what you type on top, the pickers and Send below
+        wrap = QHBoxLayout()
+        wrap.setContentsMargins(24, 0, 24, 4)
+        composer = QFrame()
+        composer.setObjectName("composer")
+        composer.setMaximumWidth(COLUMN_W)
+        cl = QVBoxLayout(composer)
+        cl.setContentsMargins(14, 10, 10, 8)
+        cl.setSpacing(6)
         self.chips = QHBoxLayout()
-        main.addLayout(self.chips)
-        row = QHBoxLayout()
+        cl.addLayout(self.chips)
         self.input = InputBox()
-        self.input.setPlaceholderText("Message (Enter to send, Shift+Enter for a new line, paste images with Ctrl+V)")
-        self.input.setFixedHeight(84)
-        row.addWidget(self.input, 1)
-        col = QVBoxLayout()
-        self.send_btn = QPushButton("Send")
-        self.send_btn.setObjectName("primary")
-        self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setObjectName("danger")
+        self.input.setPlaceholderText("How can I help you today?")
+        self.input.setToolTip("Enter to send, Shift+Enter for a new line, Ctrl+V pastes images")
+        cl.addWidget(self.input)
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        self.plus_btn = QToolButton(text="+")
+        self.plus_btn.setToolTip("Add an image or a screenshot, change the work folder")
+        self.plus_btn.setPopupMode(QToolButton.InstantPopup)
+        pm = QMenu(self.plus_btn)
+        pm.addAction("Attach an image...", self._attach)
+        pm.addAction("Add a screenshot", self._add_screenshot)
+        pm.addSeparator()
+        pm.addAction("Change the work folder...", self._pick_workspace)
+        self.plus_btn.setMenu(pm)
+        row.addWidget(self.plus_btn)
+        self.mode = QComboBox()
+        for k, v in PERMISSION_SHORT.items():
+            self.mode.addItem(v, k)
+            self.mode.setItemData(self.mode.count() - 1, APPROVAL_MODES[k], Qt.ToolTipRole)
+        self.mode.setToolTip("What it may do without asking you first")
+        self.mode.setCurrentIndex(max(0, self.mode.findData(self.s.approval_mode)))
+        self.mode.currentIndexChanged.connect(self._mode_changed)
+        self.mode.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        row.addWidget(self.mode)
+        self.think = QComboBox()
+        for k, v in THINKING_LEVELS:
+            self.think.addItem(f"Thinking: {v}", k)
+        self.think.setToolTip("How long it thinks before answering. Applies from your next message. "
+                              "High is best for hard tasks, Off or Low for quick clicks.")
+        self.sync_thinking()
+        self.think.currentIndexChanged.connect(self._thinking_changed)
+        self.think.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        row.addWidget(self.think)
+        row.addStretch(1)
+        self.dot = QLabel("●")
+        self.dot.setStyleSheet(f"color: {BAD}; font-size: 8pt;")
+        row.addWidget(self.dot)
+        self.model_btn = QToolButton(text="No model")
+        self.model_btn.setToolTip("Switch model, or start / stop it")
+        self.model_btn.setPopupMode(QToolButton.InstantPopup)
+        self.model_btn.setMaximumWidth(260)
+        self.model_menu = QMenu(self.model_btn)
+        self.model_menu.aboutToShow.connect(self._fill_model_menu)
+        self.model_btn.setMenu(self.model_menu)
+        row.addWidget(self.model_btn)
+        self.send_btn = QPushButton("↑")
+        self.send_btn.setObjectName("send")
+        self.send_btn.setToolTip("Send (Enter)")
+        self.send_btn.setFixedSize(34, 34)
+        self.stop_btn = QPushButton("■")
+        self.stop_btn.setObjectName("stop")
+        self.stop_btn.setToolTip("Stop (Esc)")
+        self.stop_btn.setFixedSize(34, 34)
         self.stop_btn.setEnabled(False)
-        col.addWidget(self.send_btn)
-        col.addWidget(self.stop_btn)
-        row.addLayout(col)
-        main.addLayout(row)
-        tools = QHBoxLayout()
-        b = QPushButton("Attach image")
-        b.clicked.connect(self._attach)
-        tools.addWidget(b)
-        b = QPushButton("Add screenshot")
-        b.clicked.connect(self._add_screenshot)
-        tools.addWidget(b)
-        tools.addStretch(1)
+        self.stop_btn.setVisible(False)
+        row.addWidget(self.send_btn)
+        row.addWidget(self.stop_btn)
+        cl.addLayout(row)
+        wrap.addStretch(1)
+        wrap.addWidget(composer, 100)
+        wrap.addStretch(1)
+        main.addLayout(wrap)
         self.status = muted("")
-        tools.addWidget(self.status)
-        main.addLayout(tools)
+        self.status.setAlignment(Qt.AlignCenter)
+        self.status.setContentsMargins(24, 0, 24, 8)
+        main.addWidget(self.status)
         outer.addLayout(main, 1)
 
-        side = QFrame()
+        self.side = side = QFrame()
         side.setObjectName("side")
         side.setFixedWidth(290)
         sl = QVBoxLayout(side)
@@ -706,8 +916,11 @@ class ChatPage(QWidget):
         row.addWidget(self.ws_btn)
         sl.addLayout(row)
         sl.addStretch(1)
+        side.setVisible(False)          # opens by itself when a plan comes in
+        self.plan_btn.toggled.connect(side.setVisible)
         outer.addWidget(side)
         self._update_ws_btn()
+        self.apply_text_size()
 
     def _wire(self):
         b = self.bridge
@@ -730,11 +943,38 @@ class ChatPage(QWidget):
         self.send_btn.clicked.connect(self.send)
         self.stop_btn.clicked.connect(self.request_stop)
         QShortcut(QKeySequence("Escape"), self, activated=self.request_stop)
+        for keys, step in (("Ctrl+=", 1), ("Ctrl++", 1), ("Ctrl+-", -1), ("Ctrl+0", 0)):
+            QShortcut(QKeySequence(keys), self, activated=lambda d=step: self.change_text_size(d))
 
     # ---------------------------------------------------------------- helpers
     def _add(self, w: QWidget):
         self.welcome.setVisible(False)
         self.feed.insertWidget(self.feed.count() - 1, w)
+
+    def apply_text_size(self):
+        """The chat's text size and the answers' font (Settings > Look, Ctrl + / Ctrl -)."""
+        pt = max(MIN_TEXT_PT, min(MAX_TEXT_PT, int(self.s.chat_text_pt)))
+        family = SERIF if self.s.answer_font == "serif" else SANS
+        self.chat_area.setStyleSheet(f"QWidget {{ font-size: {pt}pt; }} QLabel#answer {{ font-family: {family}; }}"
+                                     f" QLabel#greeting {{ font-size: {pt * 2 + 2}pt; }}")
+        self.input.setStyleSheet(f"font-size: {pt}pt;")
+
+    def change_text_size(self, step: int):
+        """step +1 / -1, or 0 for the default size."""
+        pt = DEFAULT_TEXT_PT if step == 0 else int(self.s.chat_text_pt) + step
+        self.s.chat_text_pt = max(MIN_TEXT_PT, min(MAX_TEXT_PT, pt))
+        self.s.save()
+        self.apply_text_size()
+        self.status.setText(f"Text size {self.s.chat_text_pt} (Ctrl + bigger, Ctrl - smaller, Ctrl 0 back to "
+                            f"{DEFAULT_TEXT_PT})")
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.Wheel and e.modifiers() & Qt.ControlModifier:
+            dy = e.angleDelta().y()
+            if dy:
+                self.change_text_size(1 if dy > 0 else -1)
+            return True
+        return super().eventFilter(obj, e)
 
     def _autoscroll(self, _min, maximum):
         bar = self.scroll.verticalScrollBar()
@@ -867,10 +1107,11 @@ class ChatPage(QWidget):
         self.input.clear()
         self._clear_pending()
         if self.chat_file is None:
-            self.chat_file = DATA_DIR / "chats" / (time.strftime("%Y-%m-%d_%H-%M-%S") + ".json")
+            self.chat_file = chats.folder() / (time.strftime("%Y-%m-%d_%H-%M-%S") + ".json")
+            self.title.setText(chats.short(text) or "New chat")
+            self.win.sidebar.refresh(pending=(self.chat_file, self.title.fullText()))
         self.stop.clear()
-        self.send_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self._set_busy(True)
 
         def work():
             try:
@@ -888,6 +1129,13 @@ class ChatPage(QWidget):
 
     def busy(self) -> bool:
         return self.thread is not None and self.thread.is_alive()
+
+    def _set_busy(self, on: bool):
+        """While it works, Send turns into Stop, as in the Claude app."""
+        self.send_btn.setEnabled(not on)
+        self.send_btn.setVisible(not on)
+        self.stop_btn.setEnabled(on)
+        self.stop_btn.setVisible(on)
 
     def request_stop(self):
         if self.busy():
@@ -907,40 +1155,33 @@ class ChatPage(QWidget):
                 w.deleteLater()
         self.feed.insertWidget(0, self.welcome)
         self.welcome.setVisible(True)
+        self.greeting.setText(_greeting())
+        self.title.setText("New chat")
+        self._plan_shown = False
         self._on_todos([])
         self.ctx_bar.setValue(0)
         self.timings.setText("")
+        self.plan_btn.setText("Plan && context")
+        self.win.sidebar.select(None)
 
-    def _open_chat(self):
+    def open_chat_file(self, f: Path) -> bool:
+        """Show a saved chat (from the list on the left) and carry on in it."""
         if self.busy():
-            return
-        files = sorted((DATA_DIR / "chats").glob("*.json"), reverse=True)[:100]
-        if not files:
-            QMessageBox.information(self, "Old chats", "No saved chats yet.")
-            return
-        labels = []
-        for f in files:
-            try:
-                msgs = json.loads(f.read_text(encoding="utf-8"))["messages"]
-                first = next((m.get("_shown", m["content"]) for m in msgs
-                              if m["role"] == "user" and "_kind" not in m and isinstance(m["content"], str)), "")
-            except (OSError, ValueError, KeyError):
-                first = ""
-            labels.append(f"{f.stem}   {first[:60]}")
-        label, ok = QInputDialog.getItem(self, "Old chats", "Open which chat?", labels, 0, False)
-        if not ok:
-            return
-        f = files[labels.index(label)]
+            self.status.setText("Wait for the current task to finish (or press Stop) before opening another chat.")
+            return False
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:     # leave the open chat alone
-            QMessageBox.warning(self, "Old chats", f"Couldn't open that chat: {e}")
-            return
+            QMessageBox.warning(self, "Chats", f"Couldn't open that chat: {e}")
+            return False
         self.new_chat()
         self._ensure_agent()
         self.agent.load_json(data)
         self.chat_file = f
+        self.title.setText(chats.title(f))
         self._render_history()
+        self._on_todos(self.agent.todos)
+        return True
 
     def _render_history(self):
         from .tools import ToolResult
@@ -954,7 +1195,7 @@ class ChatPage(QWidget):
             elif m["role"] == "assistant" and text.strip():
                 blk = AssistantBlock()
                 blk.add_text(text)
-                blk.refresh()
+                blk.finish()
                 self._add(blk)
             elif m["role"] == "tool" and m.get("name") != "todo_write":
                 card = ToolCard(m.get("name", "tool"), "", {})
@@ -1013,6 +1254,9 @@ class ChatPage(QWidget):
         if not todos:
             self.todo.setText("No plan yet. It makes one for bigger tasks.")
             return
+        if not self.plan_btn.isChecked() and not self._plan_shown:
+            self._plan_shown = True             # opens once per chat; after that it's yours to close
+            self.plan_btn.setChecked(True)
         marks = {"pending": "○", "in_progress": f"<span style='color:{ACCENT}'>◉</span>",
                  "done": f"<span style='color:{OK}'>✓</span>"}
         self.todo.setText("<br>".join(f"{marks.get(t['status'], '○')} {_esc(t['content'])}" for t in todos))
@@ -1020,6 +1264,8 @@ class ChatPage(QWidget):
     def _on_usage(self, used, limit, tps):
         self.ctx_bar.setMaximum(max(1, limit))
         self.ctx_bar.setValue(min(used, limit))
+        if limit:
+            self.plan_btn.setText(f"Plan && context · {100 * min(used, limit) // limit}%")
         self.ctx_hint.setText("Nearly full: older steps get summarized soon. For a new task, press New chat."
                               if limit and used / limit > 0.8 else "")
         if tps:
@@ -1052,8 +1298,7 @@ class ChatPage(QWidget):
         w.event.set()
 
     def _done_common(self):
-        self.send_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self._set_busy(False)
         self.status.setText("")
         self._restore()
         self.current = None
@@ -1062,6 +1307,8 @@ class ChatPage(QWidget):
                 self.agent.save(self.chat_file)
             except OSError:
                 pass
+            self.win.sidebar.refresh()
+        self.input.setFocus()
 
     def _on_finished(self, final):
         self._done_common()
@@ -1076,9 +1323,12 @@ class ChatPage(QWidget):
 
     def set_connection(self, state: str, text: str, first_run: bool = False, tip: str = ""):
         """state: "ok" (a model answers), "busy" (ours is loading) or "off"."""
-        self.dot.setStyleSheet(f"color: {dict(ok=OK, busy=WARN).get(state, BAD)};")
-        self.conn.setText(text)
-        self.conn.setToolTip(tip or text)
+        self.dot.setStyleSheet(f"color: {dict(ok=OK, busy=WARN).get(state, BAD)}; font-size: 8pt;")
+        short = text if state == "ok" else "Loading the model" if state == "busy" else "No model"
+        label = self.model_btn.fontMetrics().elidedText(short, Qt.ElideMiddle, 220) + "  ▾"
+        self.model_btn.setText(label)
+        self.model_btn.setMinimumWidth(self.model_btn.fontMetrics().horizontalAdvance(label) + 24)
+        self.model_btn.setToolTip((tip or text) + "\n\nClick to switch model, or start / stop it.")
         self.setup_card.setVisible(first_run)
         self._update_ws_btn()
 
@@ -2185,7 +2435,23 @@ class SettingsPage(QWidget):
         h.setObjectName("h1")
         lay.addWidget(h)
         lay.addWidget(muted("Changes save straight away and apply to the next message. Thinking and what it may "
-                            "do without asking are picked in the chat bar."))
+                            "do without asking are picked in the message box."))
+
+        g = QGroupBox("Look")
+        f = QFormLayout(g)
+        self.text_pt = self._spin(s.chat_text_pt, MIN_TEXT_PT, MAX_TEXT_PT)
+        self.text_pt.setSuffix(" pt")
+        self.text_pt.setToolTip("Also in the chat: Ctrl + bigger, Ctrl - smaller, Ctrl 0 back to the default, "
+                                "or Ctrl + mouse wheel")
+        f.addRow("Chat text size:", self.text_pt)
+        self.answer_font = QComboBox()
+        self.answer_font.addItem("Serif, as in the Claude app", "serif")
+        self.answer_font.addItem("Sans serif", "sans")
+        self.answer_font.setCurrentIndex(max(0, self.answer_font.findData(s.answer_font)))
+        f.addRow("Answers in:", self.answer_font)
+        self.text_pt.valueChanged.connect(self._look_changed)
+        self.answer_font.currentIndexChanged.connect(self._look_changed)
+        lay.addWidget(g)
 
         g = QGroupBox("What it may use")
         f = QFormLayout(g)
@@ -2386,8 +2652,17 @@ class SettingsPage(QWidget):
             self.url.setText(url)
             self._save_connection()
 
+    def _look_changed(self, *_):
+        self.s.chat_text_pt = self.text_pt.value()
+        self.s.answer_font = self.answer_font.currentData()
+        self.s.save()
+        self.win.chat.apply_text_size()
+
     def reload(self):
         """The Model server page changes the address and model when it starts one: show what's saved."""
+        self.text_pt.blockSignals(True)
+        self.text_pt.setValue(self.s.chat_text_pt)        # Ctrl + / Ctrl - in the chat change it too
+        self.text_pt.blockSignals(False)
         self.url.setText(self.s.base_url)
         self.model.setEditText(self.s.model)
         self._conn_shown = (self.s.base_url, self.s.model)
@@ -2736,6 +3011,147 @@ class MemoryPage(QWidget):
 
 
 # ====================================================================== window
+class Sidebar(QFrame):
+    """The column on the left, as in the Claude app: New chat, the app's pages, then the past chats by date."""
+
+    PAGES = ("Chat", "Model server", "Settings", "Memory", "Guide")     # the stack's order
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__()
+        self.win = win
+        self.setObjectName("sidebar")
+        self.setFixedWidth(270)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 10, 8, 8)
+        lay.setSpacing(4)
+        top = QHBoxLayout()
+        brand = QLabel("Local Agent")
+        brand.setObjectName("brand")
+        top.addWidget(brand, 1)
+        hide = QToolButton(text="«")
+        hide.setObjectName("flat")
+        hide.setToolTip("Hide the chat list (Ctrl+B)")
+        hide.clicked.connect(win.toggle_sidebar)
+        top.addWidget(hide)
+        top.setContentsMargins(10, 0, 0, 6)
+        lay.addLayout(top)
+        self.new_btn = QPushButton("＋  New chat")
+        self.new_btn.setObjectName("newChat")
+        self.new_btn.setToolTip("Start a new chat (Ctrl+N)")
+        self.new_btn.clicked.connect(win.new_chat)
+        lay.addWidget(self.new_btn)
+        self.nav = QListWidget()
+        self.nav.setObjectName("nav")
+        self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        for name in self.PAGES:
+            self.nav.addItem(name)
+        self.nav.setFixedHeight(len(self.PAGES) * 34 + 6)
+        lay.addWidget(self.nav)
+        head = QLabel("Recents")
+        head.setObjectName("section")
+        lay.addWidget(head)
+        self.search = QLineEdit()
+        self.search.setObjectName("search")
+        self.search.setPlaceholderText("Search chats")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda _t: self.refresh())
+        lay.addWidget(self.search)
+        self.list = QListWidget()
+        self.list.setObjectName("chats")
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.setTextElideMode(Qt.ElideRight)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._menu)
+        self.list.itemClicked.connect(self._clicked)
+        lay.addWidget(self.list, 1)
+        self.current: Path | None = None
+
+    def refresh(self, pending: tuple[Path, str] | None = None):
+        """pending: a chat that was just started and isn't saved yet, shown on top straight away."""
+        if pending:
+            self.current = pending[0]
+        q = self.search.text().strip().lower()
+        items = chats.list_chats()
+        if pending and all(c.path != pending[0] for c in items):
+            items.insert(0, chats.Chat(pending[0], pending[1], time.time()))
+        self.list.clear()
+        heading = None
+        for c in items:
+            if q and q not in c.title.lower():
+                continue
+            g = chats.group(c.mtime)
+            if g != heading:
+                heading = g
+                h = QListWidgetItem(g)
+                h.setFlags(Qt.NoItemFlags)
+                h.setForeground(QColor(FAINT))
+                f = h.font()
+                f.setPointSizeF(max(7.0, f.pointSizeF() - 1))
+                h.setFont(f)
+                self.list.addItem(h)
+            it = QListWidgetItem(c.title)
+            it.setData(Qt.UserRole, str(c.path))
+            it.setToolTip(c.title)
+            self.list.addItem(it)
+            if self.current and c.path == self.current:
+                it.setSelected(True)
+                self.list.setCurrentItem(it)
+        if not items:
+            empty = QListWidgetItem("Your chats will show up here.")
+            empty.setFlags(Qt.NoItemFlags)
+            empty.setForeground(QColor(FAINT))
+            self.list.addItem(empty)
+
+    def select(self, path: Path | None):
+        self.current = path
+        self.list.clearSelection()
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if path and it.data(Qt.UserRole) == str(path):
+                it.setSelected(True)
+                self.list.setCurrentItem(it)
+
+    def _clicked(self, it: QListWidgetItem):
+        p = it.data(Qt.UserRole)
+        if p:
+            self.win.open_chat(Path(p))
+
+    def _menu(self, pos):
+        it = self.list.itemAt(pos)
+        p = it and it.data(Qt.UserRole)
+        if not p:
+            return
+        path = Path(p)
+        m = QMenu(self)
+        m.addAction("Rename...", lambda: self._rename(path, it.text()))
+        m.addAction("Delete", lambda: self._delete(path, it.text()))
+        m.exec(self.list.viewport().mapToGlobal(pos))
+
+    def _rename(self, path: Path, old: str):
+        name, ok = QInputDialog.getText(self, "Rename chat", "New name:", text=old)
+        if ok and name.strip():
+            chats.rename(path, name)
+            if path == self.win.chat.chat_file:
+                self.win.chat.title.setText(chats.short(name))
+            self.refresh()
+
+    def _delete(self, path: Path, title: str):
+        r = QMessageBox.question(self, "Delete chat", f"Delete \"{title}\"? This can't be undone.",
+                                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            return
+        if path == self.win.chat.chat_file:
+            if self.win.chat.busy():
+                QMessageBox.information(self, "Delete chat", "Stop the current task before deleting its chat.")
+                return
+            self.win.chat.new_chat()
+        try:
+            chats.delete(path)
+        except OSError as e:
+            QMessageBox.warning(self, "Delete chat", f"Couldn't delete it: {e}")
+        self.refresh()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings | None = None):
         super().__init__()
@@ -2743,15 +3159,14 @@ class MainWindow(QMainWindow):
         self.connected_model = ""
         self.last_tps = 0.0
         self.setWindowTitle("Local Agent")
-        self.resize(1280, 860)
+        self.resize(1320, 880)
         central = QWidget()
         central.setObjectName("page")
         lay = QHBoxLayout(central)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        self.nav = QListWidget()
-        self.nav.setObjectName("nav")
-        self.nav.setFixedWidth(170)
+        self.sidebar = Sidebar(self)
+        self.nav = self.sidebar.nav
         self.stack = QStackedWidget()
         self.chat = ChatPage(self)
         self.server = ServerPage(self)
@@ -2760,20 +3175,45 @@ class MainWindow(QMainWindow):
         guide = QTextBrowser()
         guide.setMarkdown(GUIDE)
         guide.setOpenExternalLinks(True)
-        for name, page in [("Chat", self.chat), ("Model server", self.server), ("Settings", self.settings_page),
-                           ("Memory", self.memory), ("Guide", guide)]:
-            self.nav.addItem(name)
+        for page in (self.chat, self.server, self.settings_page, self.memory, guide):
             self.stack.addWidget(page)
         self.nav.currentRowChanged.connect(self._nav)
-        lay.addWidget(self.nav)
+        lay.addWidget(self.sidebar)
         lay.addWidget(self.stack, 1)
         self.setCentralWidget(central)
         self.nav.setCurrentRow(0)
+        self.sidebar.setVisible(self.settings.sidebar_open)
+        self.sidebar.refresh()
+        QShortcut(QKeySequence("Ctrl+B"), self, activated=self.toggle_sidebar)
+        QShortcut(QKeySequence("Ctrl+N"), self, activated=self.new_chat)
         QTimer.singleShot(300, self.refresh_connection)
         plugins.load()
         mcp.manager().start_background(cwd=self.settings.workspace_path())
         if self.settings.index_files:
             memory_mod.start_indexer(self.settings)
+
+    def toggle_sidebar(self):
+        on = not self.sidebar.isVisible()
+        self.sidebar.setVisible(on)
+        self.settings.sidebar_open = on
+        self.settings.save()
+
+    def new_chat(self):
+        self.nav.setCurrentRow(0)
+        if self.chat.busy():
+            self.chat.status.setText("Wait for the current task to finish (or press Stop) before a new chat.")
+            return
+        self.chat.new_chat()
+        self.chat.input.setFocus()
+
+    def open_chat(self, path: Path):
+        self.nav.setCurrentRow(0)
+        if path == self.chat.chat_file:
+            return
+        if self.chat.open_chat_file(path):
+            self.sidebar.select(path)
+        else:
+            self.sidebar.select(self.chat.chat_file)
 
     def _nav(self, i):
         self.stack.setCurrentIndex(i)
@@ -2839,15 +3279,15 @@ class MainWindow(QMainWindow):
 def dark_palette() -> QPalette:
     """For what the style sheet doesn't reach (message boxes, file dialogs, disabled text)."""
     pal = QPalette()
-    for role, col in [(QPalette.Window, "#16181d"), (QPalette.WindowText, "#e6e8ee"), (QPalette.Base, "#1e2128"),
-                      (QPalette.AlternateBase, "#23262e"), (QPalette.Text, "#e6e8ee"), (QPalette.Button, "#2a2f3a"),
-                      (QPalette.ButtonText, "#e6e8ee"), (QPalette.ToolTipBase, "#23262e"),
-                      (QPalette.ToolTipText, "#e6e8ee"), (QPalette.Highlight, ACCENT),
-                      (QPalette.HighlightedText, "#ffffff"), (QPalette.PlaceholderText, "#6b717c"),
+    for role, col in [(QPalette.Window, BG), (QPalette.WindowText, TEXT), (QPalette.Base, SURFACE),
+                      (QPalette.AlternateBase, "#2c2c2a"), (QPalette.Text, TEXT), (QPalette.Button, SURFACE),
+                      (QPalette.ButtonText, TEXT), (QPalette.ToolTipBase, SURFACE),
+                      (QPalette.ToolTipText, TEXT), (QPalette.Highlight, ACCENT),
+                      (QPalette.HighlightedText, "#ffffff"), (QPalette.PlaceholderText, FAINT),
                       (QPalette.Link, ACCENT)]:
         pal.setColor(role, QColor(col))
     for role in (QPalette.Text, QPalette.ButtonText, QPalette.WindowText):
-        pal.setColor(QPalette.Disabled, role, QColor("#6b717c"))
+        pal.setColor(QPalette.Disabled, role, QColor(FAINT))
     return pal
 
 

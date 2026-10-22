@@ -22,10 +22,28 @@ It also starts the model for you, with the speed settings worked out for an
 The chat page shows **No model running yet. Pick one to get started** with the two ready-made
 modes (see [Models](#models-for-a-5080-16-gb--64-gb-ram)). Click one: the app downloads what's
 missing (the model, its vision file and llama.cpp; downloads resume if they're interrupted) and
-starts it. When the dot at the top turns green, ask for something. Next time it starts the same
+starts it. When the dot next to the model's name (bottom right of the message box) turns green, ask
+for something. Next time it starts the same
 model by itself when the app opens (turn that off under Model server > Advanced).
 
-You can switch modes any time from the **Model** menu at the top of the chat.
+You can switch modes any time from the model menu at the bottom right of the message box.
+
+## The window
+
+It's laid out like the Claude app:
+
+- **On the left**: **New chat** (Ctrl+N), the app's pages, then your past chats by date (Today,
+  Yesterday, Previous 7 days...). Click one to carry on in it; right-click to rename or delete it;
+  type in **Search chats** to find one. **«** or Ctrl+B hides the list, **☰** brings it back.
+- **The message box** at the bottom: **+** adds an image or a screenshot or changes the work folder,
+  then what it may do without asking, how long it thinks, and the model. **↑** sends (or Enter), and
+  turns into **■** Stop while it works (or Esc).
+- **Text size**: Ctrl + bigger, Ctrl - smaller, Ctrl 0 back to normal, or Ctrl + mouse wheel over the
+  chat. Settings > Look has the same, and switches answers between serif (as in the Claude app) and
+  sans serif.
+- **Plan & context** (top right) opens the plan for bigger tasks, how full the context is and the
+  work folder. It opens by itself when a plan comes in.
+- Each answer has **Copy** under it.
 
 Using a model file of your own instead:
 
@@ -193,7 +211,7 @@ asks first. Press **Reload** after changing a plugin; a plugin can't replace a b
 
 ## Safety: what it asks before doing
 
-At the top of the chat, **Permissions**:
+In the message box, the first picker (**Ask first** by default):
 
 | Mode | Asks before |
 |---|---|
@@ -226,7 +244,7 @@ Ubuntu download, about 390 MB). If you got as far as setting it up, first run
 ## Models for a 5080 (16 GB) + 64 GB RAM
 
 **Ready-made modes** (Model server page > Mode): pick the model, then its size (quant) in the list
-beside it, and press the button. The chat bar's Model menu has the same, one sub-menu per model. If the files
+beside it, and press the button. The message box's model menu has the same, one sub-menu per model. If the files
 aren't on your PC it downloads them first (it can pause and resume), then switches the model,
 its vision file and the server settings, and restarts the model. Sampling and thinking levels
 follow whichever model is running.
@@ -277,7 +295,7 @@ on the RTX 5070, about IQ3_S's speed, and it reads long prompts the fastest of a
 experts take only 23 GB of RAM, so Unity or a game can stay open. It is the plain Qwen model, not
 the Swift fine-tune, so it thinks for longer before it answers. It has its own folder
 (`Qwen3.8-Flash-Next-Coder`) and vision file, and Strata sets it up once the first time it starts.
-Switch to it for coding from the model menu in the chat bar, and back to a Swift size for the rest.
+Switch to it for coding from the model menu in the message box, and back to a Swift size for the rest.
 
 The 1-bit mode is IST-DASLab's [disaggregated prefill](https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-NVFP4-prefiller)
 research. A 1-bit model is small but answers badly, mostly because it misreads the prompt. Here a
@@ -335,7 +353,7 @@ Qwen3.8-27B includes vision wasn't confirmed. Any model with tool calling works 
 | Prompt caching | The server remembers the conversation so each step only reads what's new; the app avoids rewriting old messages so the cache keeps working | Always on |
 | Quant choice | Q4_K_M is the sweet spot; IQ4_XS ~10% smaller; below Q3 gets dumb | Shown per model |
 
-Smarter answers: set **Thinking** in the chat bar to High for hard tasks, Off or Low for quick
+Smarter answers: set **Thinking** in the message box to High for hard tasks, Off or Low for quick
 jobs. Changing it mid-chat makes the next reply re-read the chat once, so pick it before you
 start. Sampling follows the model maker's recommended values by itself (Settings > Advanced).
 
