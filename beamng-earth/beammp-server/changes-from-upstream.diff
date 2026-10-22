@@ -1,0 +1,325 @@
+--- upstream v1.5.4-beta/core.lua
++++ beamng_earth_mp/core.lua
+@@ -100,6 +100,7 @@
+ local rebaseLag = 0 -- frames between a vehicle move request and its visibility (measured, see commitRebase)
+ local roadsSession = nil -- the server session whose road tiles are shown (roads.lua)
+ local gov = governor.new() -- outlives levels (keeps its target and cost estimates)
++local mp = {}              -- BeamMP sync (server copy): one shared anchor for players near each other, see mp.update
+ local warned = {}          -- one-time warnings
+ local nearVisual = 'terrain' -- from the server's hello; outlives levels like the connection
+ local serverAttribution = nil -- hello.attribution (protocol 4): the credits for the sources it uses
+@@ -114,6 +115,7 @@
+ local cacheClears = 0         -- answers to a clear so far (the settings page waits for the next one)
+ 
+ local function resetState()
++  if mp.reset then mp.reset() end
+   st = {
+     inOurLevel = false,
+     active = false,          -- world logic running (rebase, far field, sky, pose)
+@@ -431,7 +433,20 @@
+   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
+   -- is the new session's): they go once the new session's tiles cover them
+   farfield.switchAnchor(msg.anchorId, true, { cx = tr.cx, cy = tr.cy }, st.sessionId)
+-  local cs = camshift.shift(xf, rb.playerOld[1], rb.playerOld[2], rb.playerOld[3])
++  local cs
++  local po = rb.playerOld
++  if rb.purpose == 'adopt' then
++    -- BeamMP sync: the car may sit near the origin (just teleported). Only points within half its distance from
++    -- the origin are camera positions; nearer than 40 m nothing can be told apart and the camera is left alone
++    -- (it swings round once) rather than having its offsets moved
++    if po[1] * po[1] + po[2] * po[2] + po[3] * po[3] >= 40 * 40 then
++      cs = camshift.shift(xf, po[1], po[2], po[3], 10)
++    else
++      cs = { points = 0, triples = 0, viaDebug = true }
++    end
++  else
++    cs = camshift.shift(xf, po[1], po[2], po[3])
++  end
+   be:reloadCollision()
+ 
+   st.anchor, st.anchorId, st.anchorKey = rb.newAnchor, msg.anchorId, msg.anchorKey
+@@ -509,8 +524,15 @@
+ 
+ local function commitAnchor(msg, purpose)
+   if st.rebasing then finishRebase() end -- never mix two frame changes
+-  if purpose == 'teleport' or not st.anchor then return commitTeleport(msg) end
+-  return commitRebase(msg, purpose)
++  local ok
++  if purpose == 'teleport' or not st.anchor then
++    ok = commitTeleport(msg)
++    purpose = 'teleport'
++  else
++    ok = commitRebase(msg, purpose)
++  end
++  if ok then mp.committed(purpose, msg.lat, msg.lon) end
++  return ok
+ end
+ 
+ -- Terrain-follow commit (V1_1_SPEC 1a, V1_2_DESIGN 2.3), in a governor heavy slot, atomic in one
+@@ -703,7 +725,7 @@
+   elseif t == 'anchor_ready' then
+     local p = st.pending
+     if not p or msg.requestId ~= p.requestId then return end -- stale answer
+-    if p.purpose == 'rebase' or (p.purpose == 'resync' and st.anchor) then
++    if p.purpose == 'rebase' or p.purpose == 'adopt' or (p.purpose == 'resync' and st.anchor) then
+       p.ready, p.msg = true, msg -- committed in updateWorld() (distance rule / when not paused)
+       if p.purpose == 'rebase' and p.sentAt then st.anchorLatency = st.clock - p.sentAt end
+     else
+@@ -997,6 +1019,164 @@
+   return st.anchorId ~= nil and st.anchorSession == st.sessionId
+ end
+ 
++-- ------------------------------------------------------------------------------------------------
++-- BeamMP sync. Added to the copy of the mod a BeamMP server sends its players (not in the original mod).
++-- BeamMP sends car positions as they are, and every game used to pick its own floating origin at each
++-- rebase, so after one the players disagreed on where everything was. Now each rebase (and each
++-- teleport that lands away from everyone) is announced to the server plugin Resources/Server/BeamNGEarthSync,
++-- which numbers it and passes it on; every game whose car is within the rebase distance of the
++-- newest announced anchor switches to that same lat/lon ('adopt', committed like a rebase). The same
++-- lat/lon gives the same frame in every game (geodesy.newAnchor). Outside a BeamMP session nothing runs.
++-- ------------------------------------------------------------------------------------------------
++mp.RANGE = 1.0           -- share an anchor whose centre is within the rebase distance of the car (nearer
++                         -- the edge it means one more rebase soon, which the others then share)
++mp.CHECK_S = 0.5         -- how often the announced anchors are checked
++mp.TELEPORT_WAIT_S = 3   -- after a teleport: announce our own anchor unless one nearby is adopted by then
++mp.ECHO_WAIT_S = 5       -- after an announcement: wait this long at most for the server's number
++
++function mp.reset()
++  mp.remote = {}         -- [server player id] = { lat, lon, seq } of each player's last announcement
++  mp.cur = nil           -- { lat, lon, seq } of our anchor (seq nil: not numbered by the server yet)
++  mp.checkAt, mp.waitEcho, mp.announceAt, mp.adopting, mp.helloSent = 0, nil, nil, nil, nil
++  mp.asleep = {}         -- [game vehicle id] = true: a far player's car put to sleep (mp.updateRemoteCars)
++end
++mp.reset()
++
++function mp.active()
++  local core = rawget(_G, 'MPCoreNetwork')
++  if not (core and core.isMPSession and rawget(_G, 'TriggerServerEvent') and rawget(_G, 'AddEventHandler')) then
++    return false
++  end
++  local ok, on = pcall(core.isMPSession)
++  return ok and on == true
++end
++
++function mp.near(a, lat, lon)
++  return a ~= nil and math.abs(a.lat - lat) < 1e-7 and math.abs(a.lon - lon) < 1e-7
++end
++
++function mp.send(name, data)
++  if not mp.active() then return end
++  local ok, err = pcall(TriggerServerEvent, name, data)
++  if not ok then log('W', 'beamngEarth', 'BeamMP sync: ' .. tostring(err)) end
++end
++
++-- "seq|from|mine|lat|lon" from the server plugin
++function mp.onAnchor(data)
++  local seq, from, mine, lat, lon = string.match(tostring(data), '^(%d+)|(%-?%d+)|([01])|([^|]+)|([^|]+)$')
++  seq, lat, lon = tonumber(seq), tonumber(lat), tonumber(lon)
++  if not (seq and lat and lon) then return end
++  if mine == '1' then
++    mp.waitEcho = nil
++    if mp.near(mp.cur, lat, lon) and (mp.cur.seq or -1) < seq then mp.cur.seq = seq end
++  else
++    mp.remote[from] = { lat = lat, lon = lon, seq = seq }
++  end
++end
++
++function mp.onLeft(data)
++  mp.remote[tostring(data)] = nil
++end
++
++-- Cars of players on another anchor: BeamMP sends their positions in that anchor's frame, so in ours they show up
++-- at the wrong place (2026-10-22: a player hundreds of miles away drove through the air over the car). Such a car
++-- is put to sleep (setActive(0): no physics, not drawn) and its name tag hidden while its owner's anchor is not
++-- ours, and woken once it is. A player whose anchor is not known yet stays as BeamMP shows them.
++function mp.updateRemoteCars()
++  local mpv = rawget(_G, 'MPVehicleGE')
++  if not (mpv and mpv.getVehicles) then return end
++  local ok, vehicles = pcall(mpv.getVehicles)
++  if not ok or type(vehicles) ~= 'table' then return end
++  for _, v in pairs(vehicles) do
++    local id = type(v) == 'table' and not v.isLocal and v.ownerID ~= nil and tonumber(v.gameVehicleID) or -1
++    local obj = id > 0 and scenetree.findObjectById(id)
++    if obj then
++      local r = mp.remote[tostring(v.ownerID)]
++      local away = r ~= nil and mp.cur ~= nil and not mp.near(mp.cur, r.lat, r.lon)
++      if away then
++        if obj:getActive() then obj:setActive(0) end
++        v.hideNametag, mp.asleep[id] = true, true
++      elseif mp.asleep[id] then     -- only the cars put to sleep here are woken
++        obj:setActive(1)
++        v.hideNametag, mp.asleep[id] = nil, nil
++      end
++    end
++  end
++end
++
++function mp.announce(lat, lon)
++  mp.announceAt = nil
++  mp.waitEcho = st.clock + mp.ECHO_WAIT_S
++  mp.send('bngEarthAnnounce', string.format('%.10f|%.10f', lat, lon))
++end
++
++-- From commitAnchor. purpose: 'teleport', 'rebase', 'resync' (same anchor) or 'adopt'.
++function mp.committed(purpose, lat, lon)
++  if purpose == 'resync' then return end
++  local a = mp.adopting
++  mp.adopting = nil
++  if purpose == 'adopt' and a then
++    mp.cur = { lat = lat, lon = lon, seq = a.seq }
++    -- tell the others we are on it now: our last announcement no longer says where we are
++    mp.send('bngEarthOn', string.format('%d|%.10f|%.10f', a.seq, a.lat, a.lon))
++    return
++  end
++  mp.cur = { lat = lat, lon = lon }
++  if purpose == 'rebase' then
++    mp.announce(lat, lon)
++  else
++    mp.announceAt = st.clock + mp.TELEPORT_WAIT_S -- a friend's anchor nearby is adopted instead, if there is one
++  end
++end
++
++-- Every frame from updateWorld (car placed, st.player known).
++function mp.update(pl)
++  if not mp.active() then return end
++  if not mp.registered then
++    mp.registered = true
++    AddEventHandler('bngEarthAnchor', mp.onAnchor, 'beamngEarthSync')
++    AddEventHandler('bngEarthLeft', mp.onLeft, 'beamngEarthSync')
++  end
++  if not mp.helloSent then
++    mp.helloSent = true -- once per level (mp.reset clears it): the server answers with every player's anchor
++    mp.send('bngEarthHello', 'hi')
++  end
++  if st.clock < mp.checkAt then return end
++  mp.checkAt = st.clock + mp.CHECK_S
++  local okR, errR = pcall(mp.updateRemoteCars)
++  if not okR and not warned.mpCars then
++    warned.mpCars = true
++    log('W', 'beamngEarth', 'BeamMP sync: ' .. tostring(errR))
++  end
++  if not st.anchor or not mp.cur or st.rebasing or st.paused then return end
++  local p = st.pending
++  if p and p.purpose ~= 'rebase' then return end -- a teleport, resync or adopt is under way
++  if mp.waitEcho and st.clock < mp.waitEcho then return end
++  local mine = mp.cur.seq or -1
++  local best, bx, by
++  local range2 = (mp.RANGE * rebase.distance) ^ 2
++  for _, r in pairs(mp.remote) do
++    if r.seq > mine and (not best or r.seq > best.seq) then
++      r.anchor = r.anchor or geodesy.newAnchor(r.lat, r.lon)
++      local x, y = st.anchor:transformTo(r.anchor):apply(pl.x, pl.y, pl.z)
++      if x * x + y * y < range2 then best, bx, by = r, x, y end
++    end
++  end
++  if best then
++    if mp.near(mp.cur, best.lat, best.lon) then -- already on it (both teleported to the same spot)
++      mp.cur.seq, mp.announceAt = best.seq, nil
++      return
++    end
++    if requestAnchor(best.lat, best.lon, 'adopt', follow.target(bx, by, pl.vx, pl.vy)) then
++      mp.adopting, mp.announceAt = best, nil
++      log('I', 'beamngEarth', string.format('BeamMP sync: switching to the shared anchor %.5f, %.5f (#%d)',
++        best.lat, best.lon, best.seq))
++    end
++    return
++  end
++  if mp.announceAt and st.clock >= mp.announceAt then mp.announce(mp.cur.lat, mp.cur.lon) end
++end
++
+ local function updateWorld(dt)
+   if st.floorZ and not st.placeFrames then M.floorCheck() end
+   if st.placeFrames then
+@@ -1009,6 +1189,7 @@
+   end
+   local pl = st.player
+   if not pl then return end
++  mp.update(pl)
+ 
+   st.poseTimer = st.poseTimer + dt
+   -- no pose before the resync with a restarted server commits (anchorKnown; hello named the
+@@ -1047,6 +1228,21 @@
+     local x0, y0, x1, y1 = lattice.groundBox(tr.cx or 0, tr.cy or 0)
+     edgeDist = math.min(nx - x0, x1 - nx, ny - y0, y1 - ny)
+   end
++  if p and p.ready and p.purpose == 'adopt' then
++    -- another player's anchor (mp.update): committed like a rebase, unless the car left its terrain meanwhile
++    p.anchorObj = p.anchorObj or geodesy.newAnchor(p.msg.lat, p.msg.lon)
++    local nx, ny = st.anchor:transformTo(p.anchorObj):apply(pl.x, pl.y, pl.z)
++    local tr = p.msg.terrain or {}
++    if follow.cheb(nx, ny, tr.cx or 0, tr.cy or 0) > rebase.STALE_DIST then
++      st.pending, mp.adopting, p = nil, nil, nil -- mp.update asks again
++    elseif not st.paused then
++      if gov:requestHeavy() then
++        st.pending = nil
++        commitAnchor(p.msg, 'adopt')
++      end
++      return
++    end
++  end
+   local action = rebase.decide(pl.dist, p, staleDist, st.clock, st.retryAt, edgeDist)
+   if p and p.ready and p.purpose == 'resync' then
+     -- the player may have driven off the terrain the server prepared meanwhile: ask again
+@@ -1159,7 +1355,7 @@
+   -- a rebase / resync ready to commit moves the car with physics running: a guard pause gives way to it (it re-centres
+   -- the block on the car), and no new pause for RESUME_GRACE_S (the commit waits for the next unpaused frame)
+   local p = st.pending
+-  if g.pausedByUs and p and p.ready and (p.purpose == 'rebase' or p.purpose == 'resync') then
++  if g.pausedByUs and p and p.ready and (p.purpose == 'rebase' or p.purpose == 'resync' or p.purpose == 'adopt') then
+     edgeguard.release(g)
+     g.resumedAt = st.clock
+   end
+--- upstream v1.5.4-beta/camshift.lua
++++ beamng_earth_mp/camshift.lua
+@@ -71,8 +71,12 @@
+ end
+ 
+ -- A shift job: the transform, the player's old position (the pivot of "near the player") and stats.
+-local function newJob(xf, px, py, pz)
+-  local radius = math.max(M.RADIUS_MIN, math.min(M.RADIUS_MAX, 0.5 * math.sqrt(px * px + py * py)))
++-- minRadius (optional, BeamMP sync): a shared anchor is adopted right after a teleport too, with the car
++-- near the origin, where RADIUS_MIN would also catch the cameras' offsets and turn third person to junk.
++local function newJob(xf, px, py, pz, minRadius)
++  local radius = minRadius and math.min(M.RADIUS_MAX, 0.5 * math.sqrt(px * px + py * py + pz * pz))
++    or math.max(M.RADIUS_MIN, math.min(M.RADIUS_MAX, 0.5 * math.sqrt(px * px + py * py)))
++  radius = math.max(radius, minRadius or 0)
+   return { xf = xf, px = px, py = py, pz = pz, r2 = radius * radius, seen = {}, points = 0, triples = 0 }
+ end
+ 
+@@ -176,8 +180,8 @@
+ 
+ -- Map the whole camera state through xf (p' = R*p + t). (px, py, pz) = the player's position in the
+ -- old frame. Returns a stats table { points, triples, contexts, viaDebug }.
+-function M.shift(xf, px, py, pz)
+-  local job = newJob(xf, px, py, pz)
++function M.shift(xf, px, py, pz, minRadius)
++  local job = newJob(xf, px, py, pz, minRadius)
+   local stats = { contexts = 0, viaDebug = false }
+   local contexts = findContexts()
+   if contexts then
+--- upstream v1.5.4-beta/rebase.lua
++++ beamng_earth_mp/rebase.lua
+@@ -17,8 +17,10 @@
+ -- 15 km: float32 positions have the same 0.98 mm step everywhere in [8192, 16384) m, so 15 km
+ -- costs no precision over 10 km and rebases a third less often; beyond 16384 m the step doubles
+ -- (docs/research/2026-10-10-origin-distance.md)
+-M.DEFAULT_DISTANCE = 15000
+-M.MIN_DISTANCE, M.MAX_DISTANCE = 2000, 16000
++-- Server copy: fixed at 25 km for every player (the mod's own cap before v1.1, which its server handled). Past
++-- 16384 m float32 positions step 1.95 mm instead of 0.98 mm, still well under a pixel (docs/research/2026-10-10-origin-distance.md).
++M.DEFAULT_DISTANCE = 25000
++M.MIN_DISTANCE, M.MAX_DISTANCE = 25000, 25000
+ M.distance = M.DEFAULT_DISTANCE -- switch anchors at or beyond this horizontal distance
+ M.PREFETCH_MARGIN = 300  -- prepare_anchor this much earlier, so the anchor is ready by `distance`
+ M.STALE_DIST = 450       -- a prepared anchor whose terrain centre is this far (Chebyshev, new
+--- upstream v1.5.4-beta/follow.lua
++++ beamng_earth_mp/follow.lua
+@@ -47,7 +47,7 @@
+                                              -- move is a ~50 ms frame, the new block's first draw; 2026-10-15)
+ M.RECHECK_S_512 = 2
+ M.RECHECK_SAFE_512 = 510 - 150               -- the re-check waits only while the player stays this close
+-M.FAST_V_512 = 150
++M.FAST_V_512 = 80                            -- (was 150; this repo's high-speed patch)
+ -- 512² fast mode (|v| > FAST_V)
+ M.FAST_V = 150
+ M.EDGE_MARGIN_FAST = 90

@@ -1,0 +1,101 @@
+# BeamNG.Earth (TecnaGamer/BeamNG.Earth, MIT) for the Misty BeamMP server: builds the Windows launcher exe at
+# UPSTREAM_REF with beamng-earth/apply_patch.py applied (sharper ground ahead at high speed), the same way the
+# upstream release workflow does, and publishes it next to the unchanged upstream exe on the release
+# "beamng-earth" of this repo:
+#   https://github.com/<owner>/<repo>/releases/download/beamng-earth/BeamNG.Earth-<version>-fast.exe
+#   https://github.com/<owner>/<repo>/releases/download/beamng-earth/BeamNG.Earth-<version>.exe
+name: BeamNG.Earth helper
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - beamng-earth/apply_patch.py
+      - .github/workflows/beamng-earth-helper.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: beamng-earth-helper
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: TecnaGamer/BeamNG.Earth
+  UPSTREAM_REF: v1.5.4-beta
+  TAG: beamng-earth
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: this
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ env.UPSTREAM_REF }}
+          path: up
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply the high-speed patch
+        run: python this/beamng-earth/apply_patch.py up
+      - name: Rust kernels
+        working-directory: up
+        run: python tools/build_native.py
+      - name: Python packages
+        working-directory: up
+        run: python -m pip install pyinstaller -r server/requirements.txt
+      - name: Bootloader from source
+        working-directory: up
+        run: python tools/build_bootloader.py
+      - name: Build the .exe
+        working-directory: up
+        run: python tools/build_app.py --require-own-bootloader
+      - name: Smoke test (the packaged server starts and answers --help)
+        shell: bash
+        working-directory: up
+        run: |
+          f=$(ls dist/*.exe)
+          "$f" --server --help > help.txt && head -3 help.txt
+      - name: Name the files
+        shell: bash
+        run: |
+          v=$(tr -d '[:space:]' < up/VERSION)
+          mkdir out
+          mv up/dist/*.exe "out/BeamNG.Earth-$v-fast.exe"
+          cp up/LICENSE out/BeamNG.Earth-LICENSE.txt
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - name: The unchanged upstream exe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$UPSTREAM_REF" -R "$UPSTREAM" -p "BeamNG.Earth-$VERSION.exe" -D out \
+            || echo "::warning::no BeamNG.Earth-$VERSION.exe on the upstream release $UPSTREAM_REF"
+          sha256sum out/*.exe
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cat > notes.md <<NOTES
+          BeamNG.Earth $VERSION by TecnaGamer (https://github.com/$UPSTREAM, MIT licence, see BeamNG.Earth-LICENSE.txt),
+          for the Misty BeamMP server. Run the exe, it installs the mod, starts the world server and the game.
+          Windows may warn about an unknown app: More info > Run anyway.
+
+          - **BeamNG.Earth-$VERSION-fast.exe**: with this repo's high-speed patch
+            ([beamng-earth/apply_patch.py](https://github.com/$GH_REPO/blob/${GITHUB_SHA}/beamng-earth/apply_patch.py)):
+            the ground ahead of a fast car turns sharp sooner, and the next ground block is asked for earlier above 179 mph.
+          - **BeamNG.Earth-$VERSION.exe**: the unchanged upstream release.
+
+          Both work on the server together; the patch only changes what your own game loads.
+          NOTES
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$GITHUB_SHA" \
+            --title "BeamNG.Earth for the BeamMP server" --notes-file notes.md
+          gh release edit "$TAG" --notes-file notes.md
+          gh release upload "$TAG" out/* --clobber

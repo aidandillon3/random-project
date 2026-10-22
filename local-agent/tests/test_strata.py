@@ -226,6 +226,28 @@ class StrataTest(unittest.TestCase):
         self.assertIn("/archive/" + strata.COMMIT, strata.ZIP_URL)
         self.assertFalse(strata.outdated(self.root))
 
+    def test_an_update_keeps_what_setup_made_inside_strata_folders(self):
+        def zipped(files):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as z:
+                for name, text in files.items():
+                    z.writestr(f"Strata-{strata.COMMIT}/{name}", text)
+            return buf.getvalue()
+        httpd, url = serve({"/a.zip": (200, zipped({"setup.py": "# a", "serve/server.py": "#", "serve/old.py": "#",
+                                                   "third_party/README.md": "a"})),
+                            "/b.zip": (200, zipped({"setup.py": "# b", "serve/server.py": "#",
+                                                   "third_party/README.md": "b"}))})
+        self.addCleanup(httpd.shutdown)
+        strata.download(root=self.root, url=url + "/a.zip")
+        llama = self.root / "third_party" / "llama.cpp" / "ggml" / "CMakeLists.txt"   # what setup unpacked there
+        llama.parent.mkdir(parents=True)
+        llama.write_text("x")
+        strata.download(root=self.root, url=url + "/b.zip")
+        self.assertEqual((self.root / "third_party" / "README.md").read_text(), "b")
+        self.assertTrue(llama.is_file())                        # not downloaded again by setup
+        self.assertFalse((self.root / "serve" / "old.py").exists())   # dropped by the newer version
+        self.assertEqual((self.root / "setup.py").read_text(), "# b")
+
     def test_an_older_strata_is_updated_and_set_up_again(self):
         s = Settings(ctx_size=65536, use_vision=True)
         self.root.mkdir(parents=True)
@@ -260,6 +282,23 @@ class StrataTest(unittest.TestCase):
         self.assertFalse(proc.ready(port))
         routes["/health"] = (200, b'{"status": "ok"}')
         self.assertTrue(proc.ready(port))
+
+    def test_setup_log_shows_download_progress(self):
+        """Setup's download progress rewrites one line with \\r and no newline until it's done."""
+        class Chunks(io.RawIOBase):
+            def __init__(self, parts):
+                self.parts = list(parts)
+
+            def read1(self, n=-1):
+                return self.parts.pop(0) if self.parts else b""
+        proc = launcher.ServerProcess()
+        proc._read(Chunks([b"=== Step 4 ===\r\n\r  llama.cpp source:   1.0 MB   \r", b"  llama.cpp source:  25.0 MB",
+                           b"   \r", b"\n  [ok] llama.cpp\r\nlast"]))
+        self.assertEqual(list(proc.lines), ["=== Step 4 ===", "  llama.cpp source:  25.0 MB", "  [ok] llama.cpp",
+                                            "last"])
+        proc.lines.clear()
+        proc._read(Chunks([b"\r  engine:  0.10 / 0.30 GB (33%)   "]))   # cut off mid-line: still shown
+        self.assertEqual(list(proc.lines), ["  engine:  0.10 / 0.30 GB (33%)"])
 
     def test_strata_model_name_gets_qwen38_sampling(self):
         self.assertEqual(sampling_for("swift-1.5-iq2_xs", thinking=True)["temperature"], 1.0)

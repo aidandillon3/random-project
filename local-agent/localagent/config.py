@@ -78,6 +78,11 @@ class Settings:
     screenshot_max_side: int = 1280    # images the model reads are scaled to fit this (longest side, pixels)
     shell: str = "auto"                # auto | powershell | cmd | bash
 
+    # the window
+    chat_text_pt: int = 11             # size of the chat's text (Ctrl + / Ctrl - / Ctrl 0 in the chat)
+    sidebar_open: bool = True          # the chat list on the left (Ctrl+B)
+    answer_font: str = "serif"         # serif (as in the Claude app) | sans
+
     # model server launcher
     engine: str = "auto"               # auto (the mode's recommended one) | llama.cpp | strata (catalog.py)
     server_exe: str = ""

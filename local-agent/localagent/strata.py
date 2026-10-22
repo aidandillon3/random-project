@@ -34,6 +34,7 @@ VERSION = "0.1.45"
 ZIP_URL = f"https://github.com/Niko1221/Strata/archive/{COMMIT}.zip"
 STAMP = "localagent-setup.json"
 INSTALLED = "localagent-commit.txt"     # the commit this app downloaded (installs before 2026-10-20 have none)
+SOURCE_FILES = "localagent-files.txt"   # Strata's own files, so an update can tell them from setup's
 
 
 def supports(preset) -> bool:
@@ -79,6 +80,15 @@ class Stopped(Exception):
     pass
 
 
+def _source_files(root: Path) -> list[str]:
+    """The files the last download put in root (not what setup made there since)."""
+    try:
+        return [ln for ln in (root / SOURCE_FILES).read_text(encoding="utf-8").splitlines()
+                if ln and ".." not in Path(ln).parts and not Path(ln).is_absolute()]
+    except OSError:
+        return []
+
+
 def download(progress=lambda msg, frac: None, root: Path | None = None, url: str = ZIP_URL, session=None,
              stop=None) -> Path:
     """Fetch Strata's source (about 55 MB) into root. Its setup fetches the rest. stop: an Event that ends
@@ -104,13 +114,18 @@ def download(progress=lambda msg, frac: None, root: Path | None = None, url: str
         shutil.rmtree(tmp, ignore_errors=True)
         raise RuntimeError("Downloaded Strata, but its setup.py wasn't in the zip.")
     root.mkdir(parents=True, exist_ok=True)
-    for item in inner.iterdir():            # keeps .venv, the engine and configs of an earlier install
-        dest = root / item.name
+    # Like Strata's own update (a git pull): its files are replaced and the ones a newer version dropped go, while
+    # what setup made or downloaded stays (.venv, the engine, third_party's llama.cpp, configs).
+    files = sorted(f.relative_to(inner).as_posix() for f in inner.rglob("*") if f.is_file())
+    for rel in set(_source_files(root)) - set(files):
+        (root / rel).unlink(missing_ok=True)
+    for rel in files:
+        dest = root / rel
         if dest.is_dir():
             shutil.rmtree(dest)
-        elif dest.exists():
-            dest.unlink()
-        shutil.move(str(item), str(dest))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(inner / rel), str(dest))
+    (root / SOURCE_FILES).write_text("\n".join(files), encoding="utf-8")
     shutil.rmtree(tmp, ignore_errors=True)
     if not WINDOWS:
         for sh in root.glob("*.sh"):
