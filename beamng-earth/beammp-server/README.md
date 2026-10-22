@@ -7,7 +7,8 @@ What runs on the Misty BeamMP server (BeamMP-Server v3.9.3), without ServerConfi
   `Resources/Client/beamng_earth_mp.zip`, byte for byte the zip on the server.
 - `Resources/Server/BeamNGEarthSync/main.lua`: the server side of the position sync.
 - `changes-from-upstream.diff`: everything changed from upstream 1.5.4-beta:
-  - core.lua: the position sync (players near each other share one world centre) and the camera fix after an adopt;
+  - core.lua: the position sync (players near each other share one world centre), the camera fix after an adopt, and
+    far players' cars put to sleep while they are on another world centre (they showed up in the wrong place);
   - camshift.lua: the camera shift's minimum radius (the third-person camera broke after a teleport);
   - rebase.lua: the world centre moves every 25 km (fixed);
   - follow.lua: the terrain block's fast mode from 80 m/s (179 mph) instead of 150.

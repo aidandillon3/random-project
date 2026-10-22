@@ -65,7 +65,7 @@
        p.ready, p.msg = true, msg -- committed in updateWorld() (distance rule / when not paused)
        if p.purpose == 'rebase' and p.sentAt then st.anchorLatency = st.clock - p.sentAt end
      else
-@@ -997,6 +1019,132 @@
+@@ -997,6 +1019,164 @@
    return st.anchorId ~= nil and st.anchorSession == st.sessionId
  end
  
@@ -88,6 +88,7 @@
 +  mp.remote = {}         -- [server player id] = { lat, lon, seq } of each player's last announcement
 +  mp.cur = nil           -- { lat, lon, seq } of our anchor (seq nil: not numbered by the server yet)
 +  mp.checkAt, mp.waitEcho, mp.announceAt, mp.adopting, mp.helloSent = 0, nil, nil, nil, nil
++  mp.asleep = {}         -- [game vehicle id] = true: a far player's car put to sleep (mp.updateRemoteCars)
 +end
 +mp.reset()
 +
@@ -125,6 +126,32 @@
 +
 +function mp.onLeft(data)
 +  mp.remote[tostring(data)] = nil
++end
++
++-- Cars of players on another anchor: BeamMP sends their positions in that anchor's frame, so in ours they show up
++-- at the wrong place (2026-10-22: a player hundreds of miles away drove through the air over the car). Such a car
++-- is put to sleep (setActive(0): no physics, not drawn) and its name tag hidden while its owner's anchor is not
++-- ours, and woken once it is. A player whose anchor is not known yet stays as BeamMP shows them.
++function mp.updateRemoteCars()
++  local mpv = rawget(_G, 'MPVehicleGE')
++  if not (mpv and mpv.getVehicles) then return end
++  local ok, vehicles = pcall(mpv.getVehicles)
++  if not ok or type(vehicles) ~= 'table' then return end
++  for _, v in pairs(vehicles) do
++    local id = type(v) == 'table' and not v.isLocal and v.ownerID ~= nil and tonumber(v.gameVehicleID) or -1
++    local obj = id > 0 and scenetree.findObjectById(id)
++    if obj then
++      local r = mp.remote[tostring(v.ownerID)]
++      local away = r ~= nil and mp.cur ~= nil and not mp.near(mp.cur, r.lat, r.lon)
++      if away then
++        if obj:getActive() then obj:setActive(0) end
++        v.hideNametag, mp.asleep[id] = true, true
++      elseif mp.asleep[id] then     -- only the cars put to sleep here are woken
++        obj:setActive(1)
++        v.hideNametag, mp.asleep[id] = nil, nil
++      end
++    end
++  end
 +end
 +
 +function mp.announce(lat, lon)
@@ -166,6 +193,11 @@
 +  end
 +  if st.clock < mp.checkAt then return end
 +  mp.checkAt = st.clock + mp.CHECK_S
++  local okR, errR = pcall(mp.updateRemoteCars)
++  if not okR and not warned.mpCars then
++    warned.mpCars = true
++    log('W', 'beamngEarth', 'BeamMP sync: ' .. tostring(errR))
++  end
 +  if not st.anchor or not mp.cur or st.rebasing or st.paused then return end
 +  local p = st.pending
 +  if p and p.purpose ~= 'rebase' then return end -- a teleport, resync or adopt is under way
@@ -198,7 +230,7 @@
  local function updateWorld(dt)
    if st.floorZ and not st.placeFrames then M.floorCheck() end
    if st.placeFrames then
-@@ -1009,6 +1157,7 @@
+@@ -1009,6 +1189,7 @@
    end
    local pl = st.player
    if not pl then return end
@@ -206,7 +238,7 @@
  
    st.poseTimer = st.poseTimer + dt
    -- no pose before the resync with a restarted server commits (anchorKnown; hello named the
-@@ -1047,6 +1196,21 @@
+@@ -1047,6 +1228,21 @@
      local x0, y0, x1, y1 = lattice.groundBox(tr.cx or 0, tr.cy or 0)
      edgeDist = math.min(nx - x0, x1 - nx, ny - y0, y1 - ny)
    end
@@ -228,7 +260,7 @@
    local action = rebase.decide(pl.dist, p, staleDist, st.clock, st.retryAt, edgeDist)
    if p and p.ready and p.purpose == 'resync' then
      -- the player may have driven off the terrain the server prepared meanwhile: ask again
-@@ -1159,7 +1323,7 @@
+@@ -1159,7 +1355,7 @@
    -- a rebase / resync ready to commit moves the car with physics running: a guard pause gives way to it (it re-centres
    -- the block on the car), and no new pause for RESUME_GRACE_S (the commit waits for the next unpaused frame)
    local p = st.pending

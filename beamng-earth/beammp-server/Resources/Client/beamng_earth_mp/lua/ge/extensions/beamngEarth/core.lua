@@ -1038,6 +1038,7 @@ function mp.reset()
   mp.remote = {}         -- [server player id] = { lat, lon, seq } of each player's last announcement
   mp.cur = nil           -- { lat, lon, seq } of our anchor (seq nil: not numbered by the server yet)
   mp.checkAt, mp.waitEcho, mp.announceAt, mp.adopting, mp.helloSent = 0, nil, nil, nil, nil
+  mp.asleep = {}         -- [game vehicle id] = true: a far player's car put to sleep (mp.updateRemoteCars)
 end
 mp.reset()
 
@@ -1075,6 +1076,32 @@ end
 
 function mp.onLeft(data)
   mp.remote[tostring(data)] = nil
+end
+
+-- Cars of players on another anchor: BeamMP sends their positions in that anchor's frame, so in ours they show up
+-- at the wrong place (2026-10-22: a player hundreds of miles away drove through the air over the car). Such a car
+-- is put to sleep (setActive(0): no physics, not drawn) and its name tag hidden while its owner's anchor is not
+-- ours, and woken once it is. A player whose anchor is not known yet stays as BeamMP shows them.
+function mp.updateRemoteCars()
+  local mpv = rawget(_G, 'MPVehicleGE')
+  if not (mpv and mpv.getVehicles) then return end
+  local ok, vehicles = pcall(mpv.getVehicles)
+  if not ok or type(vehicles) ~= 'table' then return end
+  for _, v in pairs(vehicles) do
+    local id = type(v) == 'table' and not v.isLocal and v.ownerID ~= nil and tonumber(v.gameVehicleID) or -1
+    local obj = id > 0 and scenetree.findObjectById(id)
+    if obj then
+      local r = mp.remote[tostring(v.ownerID)]
+      local away = r ~= nil and mp.cur ~= nil and not mp.near(mp.cur, r.lat, r.lon)
+      if away then
+        if obj:getActive() then obj:setActive(0) end
+        v.hideNametag, mp.asleep[id] = true, true
+      elseif mp.asleep[id] then     -- only the cars put to sleep here are woken
+        obj:setActive(1)
+        v.hideNametag, mp.asleep[id] = nil, nil
+      end
+    end
+  end
 end
 
 function mp.announce(lat, lon)
@@ -1116,6 +1143,11 @@ function mp.update(pl)
   end
   if st.clock < mp.checkAt then return end
   mp.checkAt = st.clock + mp.CHECK_S
+  local okR, errR = pcall(mp.updateRemoteCars)
+  if not okR and not warned.mpCars then
+    warned.mpCars = true
+    log('W', 'beamngEarth', 'BeamMP sync: ' .. tostring(errR))
+  end
   if not st.anchor or not mp.cur or st.rebasing or st.paused then return end
   local p = st.pending
   if p and p.purpose ~= 'rebase' then return end -- a teleport, resync or adopt is under way
