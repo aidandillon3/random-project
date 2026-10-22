@@ -7,6 +7,12 @@
 local seq = 0
 local anchors = {} -- [player id] = { lat, lon, seq }: each player's last announced centre
 
+-- who did what, in Server.log (to find a player whose game never joins the shared centre)
+local function note(pid, what)
+  local ok, name = pcall(MP.GetPlayerName, pid)
+  print(string.format('BeamNG.Earth sync: %s (%s) %s', ok and tostring(name) or '?', tostring(pid), what))
+end
+
 local function line(a, from, mine)
   return string.format('%d|%d|%d|%s|%s', a.seq, from, mine and 1 or 0, a.lat, a.lon)
 end
@@ -17,6 +23,7 @@ function bngEarthAnnounce(pid, data)
   seq = math.max(seq + 1, os.time()) -- keeps growing across server restarts
   local a = { lat = lat, lon = lon, seq = seq }
   anchors[pid] = a
+  note(pid, string.format('announced centre #%d at %s, %s', seq, lat, lon))
   for id in pairs(MP.GetPlayers() or {}) do
     MP.TriggerClientEvent(id, 'bngEarthAnchor', line(a, pid, id == pid))
   end
@@ -26,7 +33,11 @@ end
 function bngEarthOn(pid, data)
   local n, lat, lon = string.match(tostring(data), '^(%d+)|([^|]+)|([^|]+)$')
   n = tonumber(n)
-  if not (n and n <= seq and tonumber(lat) and tonumber(lon)) then return end
+  if not (n and n <= seq and tonumber(lat) and tonumber(lon)) then
+    note(pid, 'switched to an unknown centre: ' .. tostring(data))
+    return
+  end
+  note(pid, string.format('switched to centre #%d', n))
   local a = { lat = lat, lon = lon, seq = n }
   anchors[pid] = a
   for id in pairs(MP.GetPlayers() or {}) do
@@ -35,6 +46,9 @@ function bngEarthOn(pid, data)
 end
 
 function bngEarthHello(pid, data)
+  local count = 0
+  for _ in pairs(anchors) do count = count + 1 end
+  note(pid, string.format('said hello, sent %d centre(s)', count))
   for from, a in pairs(anchors) do
     MP.TriggerClientEvent(pid, 'bngEarthAnchor', line(a, from, from == pid))
   end
