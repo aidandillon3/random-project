@@ -10,7 +10,7 @@ import base64
 import math
 from array import array
 
-from .chassis import SIDES, clamp, v_add, v_cross, v_dot, v_len, v_mul, v_norm, v_sub
+from .chassis import clamp, v_add, v_cross, v_dot, v_len, v_mul, v_norm, v_sub
 from .shape import K, S_BELT, S_EDGE, S_SHOULDER, S_TOP, lerp
 
 
@@ -516,7 +516,8 @@ def suspension_meshes(g):
         flex[ax.id], coil_flex[ax.id] = [], []
         k = ax.k
         p = ax.p
-        for side, s in SIDES:
+        for c in ax.corners:
+            side = c.side
             nm = ax.id + side.upper()
             hub = ax.hub[side]
             # knuckle
@@ -731,9 +732,9 @@ def build_all(g):
     for M in susp:
         add(M)
     for ax in g.axle_list:
-        for side, s in SIDES:
-            add(rim_mesh("%s_rim_%s_%s" % (g.P.model, ax.id, side.upper()), g, ax, s))
-            add(tire_mesh("%s_tire_%s_%s" % (g.P.model, ax.id, side.upper()), g, ax, s))
+        for c in ax.corners:
+            add(rim_mesh("%s_rim_%s_%s" % (g.P.model, ax.id, c.side.upper()), g, ax, c.s))
+            add(tire_mesh("%s_tire_%s_%s" % (g.P.model, ax.id, c.side.upper()), g, ax, c.s))
     used = set()
     for M in meshes.values():
         used.update(k for k, v in M.t.items() if len(v) >= 3)

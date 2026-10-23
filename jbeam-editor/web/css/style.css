@@ -364,12 +364,27 @@ body.importing .not-importing { display: none !important; }
 .style-card:hover { border-color: var(--line2); color: var(--text); }
 .style-card.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--surface3)); color: var(--text); }
 .field { margin: 10px 0 14px; }
+.gsec div.field { display: block; color: var(--text); }
 .field > .name { margin-bottom: 6px; }
 .field .help { color: var(--faint); font-size: 11.5px; margin-top: 4px; }
 .field select { width: 100%; }
 .seg.wrap { flex-wrap: wrap; }
-#builderSide h4 { margin: 14px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-#builderSide .stat .d { font-size: 11.5px; }
+#builderSide h4, #scrapSide h4 { margin: 14px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+#builderSide .stat .d, #scrapSide .stat .d { font-size: 11.5px; }
+
+/* ---- Scrap Mechanic import ---- */
+.sm-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 12px; }
+.sm-item { display: flex; align-items: center; justify-content: flex-start; gap: 10px; padding: 6px 8px; width: 100%;
+  background: #12151b; border: 1px solid var(--line2); border-radius: 10px; text-align: left; white-space: normal; }
+.sm-item:hover { border-color: #4a5363; }
+.sm-item.active { border-color: var(--accent); background: var(--accent-soft); }
+.sm-thumb { width: 52px; height: 52px; flex: none; border-radius: 8px; background: #0f1217; display: grid; place-items: center;
+  overflow: hidden; color: var(--muted); }
+.sm-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sm-item .meta { display: flex; flex-direction: column; min-width: 0; }
+.sm-item .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.sm-item .sub { color: var(--muted); font-size: 11.5px; }
+#scrapPane .card .grow { flex: 1; }
 
 /* ---- drop test ---- */
 .floatcard { position: absolute; right: 64px; bottom: 14px; width: min(380px, calc(100% - 90px)); background: #11151ccc;

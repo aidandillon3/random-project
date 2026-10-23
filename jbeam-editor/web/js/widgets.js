@@ -1,4 +1,5 @@
-// Controls shared by the Garage and the Vehicle Builder: labelled sliders, sections and the engine chart.
+// Controls shared by the Garage, the Vehicle Builder and the Scrap Mechanic import: labelled sliders,
+// settings fields, sections and the engine chart.
 import { icon } from './icons.js';
 import { h, fmt } from './util.js';
 
@@ -60,3 +61,69 @@ export function curveChart(curve, power, rpm, maxRPM) {
   return svg;
 }
 
+
+// a setting's value in the units people read (metric, or imperial when asked)
+export function valueText(f, v, imperial = false) {
+  const u = f.unit;
+  if (f.display === 'percent') return fmt(v * 100, 0) + ' %';
+  if (u === 'm') {
+    if (!imperial) return fmt(v, 2) + ' m';
+    const inches = v / 0.0254;
+    return inches >= 36 ? `${Math.floor(inches / 12)} ft ${fmt(inches % 12, 1)} in` : fmt(inches, 1) + ' in';
+  }
+  if (u === 'kg') return imperial ? fmt(v * 2.20462, 0) + ' lb' : fmt(v, 0) + ' kg';
+  if (u === 'km/h') return imperial ? fmt(v / 1.609, 0) + ' mph' : fmt(v, 0) + ' km/h';
+  if (u === 'L') return imperial ? fmt(v / 3.785, 1) + ' gal' : fmt(v, 0) + ' L';
+  if (u === 'in') return fmt(v, 1) + '"';
+  if (u === 'hp') return fmt(v, 0) + ' hp' + (imperial ? '' : ` (${fmt(v * 0.7457, 0)} kW)`);
+  if (u === '°') return fmt(v, f.step < 1 ? 1 : 0) + '°';
+  if (u === 'Hz') return fmt(v, 2) + ' Hz';
+  if (u === '×') return fmt(v, 2) + '×';
+  if (!u) return fmt(v, 2);
+  return fmt(v, f.step >= 1 ? 0 : 2) + ' ' + u;
+}
+
+// one setting from a schema field ({type: range|choice|bool|color, ...}); set(value, done) stores it
+export function fieldControl(f, value, set, { imperial = false, show = null, rerender = null, swatches = null } = {}) {
+  const text = show || (x => valueText(f, x, imperial));
+  if (f.type === 'range') {
+    return slider({
+      label: f.label, min: f.min, max: f.max, step: f.step, value, show: text,
+      scale: f.lowLabel ? [f.lowLabel, f.highLabel] : null, help: f.help,
+      onInput: (x, done) => set(+x, done),
+    });
+  }
+  if (f.type === 'choice') {
+    const wrap = h('div', { class: 'field' }, h('div', { class: 'name' }, f.label));
+    if (f.options.length <= 3) {
+      const seg = h('div', { class: 'seg wrap' });
+      for (const [val, label] of f.options) {
+        seg.append(h('button', { class: value === val ? 'active' : '', onclick: () => { set(val, true); rerender?.(); } }, label));
+      }
+      wrap.append(seg);
+    } else {
+      const sel = h('select', {}, ...f.options.map(([val, label]) => h('option', { value: val, selected: value === val }, label)));
+      sel.addEventListener('change', () => set(sel.value, true));
+      wrap.append(sel);
+    }
+    if (f.help) wrap.append(h('div', { class: 'help' }, f.help));
+    return wrap;
+  }
+  if (f.type === 'bool') {
+    const cb = h('input', { type: 'checkbox', checked: !!value });
+    cb.addEventListener('change', () => set(cb.checked, true));
+    return h('label', { class: 'chk field' }, cb, f.label);
+  }
+  if (f.type === 'color') {
+    const pick = h('input', { type: 'color', value });
+    pick.addEventListener('input', () => set(pick.value, false));
+    pick.addEventListener('change', () => { set(pick.value, true); rerender?.(); });
+    const sw = h('div', { class: 'swatches' });
+    for (const [c, name] of swatches || []) {
+      sw.append(h('button', { class: 'swatch' + (value === c ? ' active' : ''), title: name, style: { background: c },
+        onclick: () => { set(c, true); rerender?.(); } }));
+    }
+    return h('div', { class: 'field' }, h('div', { class: 'name' }, f.label), h('div', { class: 'toggle-row' }, pick, h('span', { class: 'muted' }, value)), sw);
+  }
+  return null;
+}

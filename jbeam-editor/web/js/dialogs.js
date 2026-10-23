@@ -331,7 +331,8 @@ export function settingsDialog(first = false) {
   const extra = h('textarea', { rows: 3, placeholder: 'One folder per line (each holding a vehicles folder)' }, (c.extra_folders || []).join('\n'));
   const author = h('input', { type: 'text', value: c.author || '', placeholder: 'Your name (written into new parts)' });
   const sm = h('input', { type: 'text', value: c.sm_folder || '', placeholder: 'Found automatically if Scrap Mechanic is installed with Steam' });
-  for (const i of [user, game, extra, author, sm]) i.addEventListener('keydown', e => e.stopPropagation());
+  const smUser = h('input', { type: 'text', value: c.sm_user_folder || '', placeholder: 'Found automatically (AppData\\Roaming\\Axolot Games\\Scrap Mechanic\\User)' });
+  for (const i of [user, game, extra, author, sm, smUser]) i.addEventListener('keydown', e => e.stopPropagation());
   const win = st.window || {};
   const winSel = h('select', {},
     h('option', { value: 'auto' }, 'Automatic (best available)'),
@@ -365,7 +366,7 @@ export function settingsDialog(first = false) {
     try {
       setLoading(true, 'Looking for vehicles…');
       const st2 = await api.config({ user_folder: user.value, game_folder: game.value, author: author.value,
-        extra_folders: extra.value.split('\n'), window: winSel.value, sm_folder: sm.value });
+        extra_folders: extra.value.split('\n'), window: winSel.value, sm_folder: sm.value, sm_user_folder: smUser.value });
       closeModal();
       await A.loadState(st2);
     } catch (e) { err.textContent = e.message; } finally { setLoading(false); }
@@ -381,7 +382,7 @@ export function settingsDialog(first = false) {
       h('span', { class: 'k' }, 'Author name'), author),
     h('p', { class: 'note' }, 'Your editable mods live in the user folder under mods\\unpacked. The game folder is only read, never changed. Backups of every file the editor changes go to ', h('code', {}, (S.dataDir || 'data') + '\\backups'), '.'),
     sect('Scrap Mechanic'),
-    h('div', { class: 'form' }, h('span', { class: 'k' }, 'Game folder'), sm),
+    h('div', { class: 'form' }, h('span', { class: 'k' }, 'Game folder'), sm, h('span', { class: 'k' }, 'Creations folder'), smUser),
     sect('Window'),
     h('div', { class: 'form' },
       h('span', { class: 'k' }, 'Show the editor in'), h('span', {}, winSel, ' ', winNote),

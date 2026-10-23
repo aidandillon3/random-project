@@ -15,7 +15,9 @@ from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import appwindow, build, daewrite, garage, jbeam_check, jbeamfile, meshes, model, patch, sources, vehiclegen
+from . import appwindow, build, daewrite, garage, jbeam_check, jbeamfile, meshes, model, patch, smimport, sources, \
+    vehiclegen
+from .smimport import game as smgame
 from .vehiclegen import files as vgfiles, spec as vgspec
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -35,6 +37,8 @@ class App:
         self.lock = threading.RLock()
         self.lifetime = None      # appwindow.Lifetime when the editor runs in its own window
         self.window_mode = None   # how the window was opened
+        self.scrap = smimport.Importer()
+        self._scrap_items = {}
 
     # -- config --------------------------------------------------------------
     def _load_cfg(self):
@@ -96,7 +100,7 @@ class App:
         with self.lock:
             if req.get("window") in appwindow.WINDOW_MODES:
                 self.cfg["window"] = req["window"]
-            for k in ("user_folder", "game_folder", "author", "sm_folder"):
+            for k in ("user_folder", "game_folder", "author", "sm_folder", "sm_user_folder"):
                 if k in req:
                     self.cfg[k] = (req[k] or "").strip()
             if "extra_folders" in req:
@@ -198,12 +202,21 @@ class App:
 
     def _model_owner(self, model_name):
         """(root that has vehicles/<model>/, is it a Builder vehicle) for an existing vehicle id."""
+        r, made = self._made_by(model_name)
+        return r, made == "builder"
+
+    def _made_by(self, model_name):
+        """(root that has vehicles/<model>/, "builder" / "scrap" / None: which of the editor's tools made it)."""
         for r in self.ws.roots:
             if r.inactive:
                 continue
             if r.files_under("vehicles/%s" % model_name):
-                return r, vgfiles.read_design(r, model_name) is not None
-        return None, False
+                if vgfiles.read_design(r, model_name) is not None:
+                    return r, "builder"
+                if r.has("vehicles/%s/%s" % (model_name, smimport.DESIGN_FILE)):
+                    return r, "scrap"
+                return r, None
+        return None, None
 
     def api_builder_preview(self, req):
         """Generate the design and build it like any vehicle; meshes the page has already are left out."""
@@ -263,6 +276,139 @@ class App:
             if isinstance(spec.get(k), str):
                 out[k] = spec[k]
         return {"spec": out, "editable": owner.editable, "where": owner.label}
+
+    # -- Scrap Mechanic -------------------------------------------------------------------------
+    def _sm_folder(self):
+        return smgame.find_game_folder(self.cfg.get("sm_folder") or "")
+
+    def api_scrap_list(self, req):
+        """The Scrap Mechanic creations on this computer."""
+        gf = self._sm_folder()
+        if req.get("refresh"):
+            self.scrap.forget()
+        items = self.scrap.creations(gf, self.cfg.get("sm_user_folder") or "")
+        with self.lock:
+            self._scrap_items = {e["id"]: e for e in items}
+        out = [{"id": e["id"], "name": e["name"], "description": e["description"], "source": e["source"],
+                "mtime": e["mtime"], "icon": bool(e["icon"])} for e in items]
+        return {"game": {"found": bool(gf), "folder": gf, "workshop": smgame.workshop_folder(gf),
+                         "userFolders": smgame.user_folders(self.cfg.get("sm_user_folder") or ""),
+                         "configured": self.cfg.get("sm_folder") or ""},
+                "creations": out}
+
+    def _scrap_entry(self, cid=None, path=None):
+        """The creation an id (from the list) or a path to a blueprint (file or folder) names."""
+        if path:
+            p = os.path.abspath(os.path.expanduser(str(path).strip().strip('"')))
+            if os.path.isdir(p):
+                p = os.path.join(p, "blueprint.json")
+            if os.path.basename(p).lower() != "blueprint.json" or not os.path.isfile(p):
+                raise ValueError("that is not a Scrap Mechanic creation: pick its blueprint.json (or the folder it is in)")
+            e = smgame.creation_entry(os.path.dirname(p), "file") or {}
+            e = dict(e, id="file:" + p, path=p, source="file")
+            with self.lock:
+                self._scrap_items[e["id"]] = e
+            return e
+        if cid and cid.startswith("file:"):
+            return self._scrap_entry(path=cid[5:])
+        with self.lock:
+            e = self._scrap_items.get(cid or "")
+        if e is None:
+            self.api_scrap_list({})
+            with self.lock:
+                e = self._scrap_items.get(cid or "")
+        if e is None:
+            raise ValueError("that creation was not found any more (was it deleted in Scrap Mechanic?)")
+        return e
+
+    def api_scrap_entry(self, req):
+        e = self._scrap_entry(req.get("id"), req.get("path"))
+        return {"id": e["id"], "name": e.get("name") or "", "source": e.get("source"), "icon": bool(e.get("icon"))}
+
+    def scrap_icon(self, cid):
+        try:
+            e = self._scrap_entry(cid)
+        except ValueError:
+            return None, None
+        icon = e.get("icon")
+        if not icon:
+            return None, None
+        try:
+            with open(icon, "rb") as f:
+                data = f.read()
+        except OSError:
+            return None, None
+        return data, "image/png" if icon.lower().endswith(".png") else "image/jpeg"
+
+    def _scrap_generate(self, req):
+        e = self._scrap_entry(req.get("id"), req.get("path"))
+        source = {"id": e["id"], "path": e["path"], "name": e.get("name") or ""}
+        return e, self.scrap.generate(e["path"], self._sm_folder(), req.get("settings") or {},
+                                      author=self.cfg.get("author"), source=source, name=e.get("name") or "",
+                                      user_folder=self.cfg.get("sm_user_folder") or "")
+
+    def api_scrap_preview(self, req):
+        """The creation converted with the given settings, built like any vehicle, for the 3D view."""
+        e, g = self._scrap_generate(req)
+        with self.lock:
+            m = model.Model.from_parts(self.ws, g.P.model, g.parts, label="Scrap Mechanic import")
+            scene = build.build(m, {})
+            owner, made = self._made_by(g.P.model)
+        keys, mesh_data = vehiclegen.preview_payload(g, req.get("have"))
+        for fb in scene["flexbodies"]:
+            if fb["mesh"] in keys:
+                fb["mesh"] = "%s@%s" % (fb["mesh"], keys[fb["mesh"]])
+        scene["config"] = _config_out({}, scene)
+        an = self.scrap.analysis(e["path"], self._sm_folder(), e.get("name") or "", self.cfg.get("sm_user_folder") or "")
+        return {"scene": scene, "meshes": mesh_data, "materials": g.materials, "stats": g.stats, "notes": g.notes,
+                "settings": g.settings, "schema": smimport.schema(an), "summary": g.summary, "model": g.P.model,
+                "creation": {"id": e["id"], "name": e.get("name") or "", "source": e.get("source"),
+                             "icon": bool(e.get("icon"))},
+                "exists": {"taken": owner is not None, "scrap": made == "scrap",
+                           "where": owner.label if owner is not None else None}}
+
+    def api_scrap_create(self, req):
+        """Write the converted creation as a vehicle mod (or update one imported before)."""
+        e, g = self._scrap_generate(req)
+        model_name = g.P.model
+        with self.lock:
+            user = self.cfg.get("user_folder")
+            if not user or not os.path.isdir(user):
+                raise ValueError("set your BeamNG user folder in Settings first")
+            owner, made = self._made_by(model_name)
+            if owner is not None and not (made == "scrap" and owner.editable):
+                raise ValueError('there is already a vehicle called "%s" (in %s); pick another name'
+                                 % (model_name, owner.label))
+            if owner is not None:
+                mod_dir = owner.path
+            else:
+                mod = re.sub(r"[^A-Za-z0-9_\-]", "_", req.get("modName") or model_name).strip("_") or model_name
+                mod_dir = os.path.join(user, "mods", "unpacked", mod)
+            vdir = os.path.join(mod_dir, "vehicles", model_name)
+            pic = req.get("picture") or ""
+            picture = None
+            if pic.startswith("data:image/") and "," in pic:
+                picture = base64.b64decode(pic.split(",", 1)[1])
+            backup = os.path.join(self.data_dir, "backups", "scrap", "%s-%s" % (model_name, time.strftime("%Y%m%d-%H%M%S")))
+            written = vgfiles.write(g, vdir, picture=picture, backup_dir=backup if owner is not None else None)
+            self.ws.refresh()
+            self.meshes.forget()
+            return {"model": model_name, "folder": mod_dir, "path": vdir, "written": written,
+                    "updated": owner is not None, "stats": g.stats}
+
+    def api_scrap_load(self, req):
+        """Where a vehicle imported from Scrap Mechanic came from, and the settings it was made with."""
+        with self.lock:
+            owner, made = self._made_by(req["model"])
+            if owner is None or made != "scrap":
+                raise ValueError("%s was not imported from Scrap Mechanic" % req["model"])
+            data = jbeamfile.loads(jbeamfile.decode(owner.read("vehicles/%s/%s" % (req["model"], smimport.DESIGN_FILE))))
+        src = data.get("source") if isinstance(data, dict) else None
+        st = data.get("settings") if isinstance(data, dict) else None
+        if not isinstance(src, dict) or not isinstance(st, dict):
+            raise ValueError("the import settings of %s are unreadable" % req["model"])
+        found = bool(src.get("path")) and os.path.isfile(src["path"])
+        return {"source": src, "settings": st, "found": found, "editable": owner.editable, "where": owner.label}
 
     def api_save(self, req):
         with self.lock:
@@ -657,6 +803,8 @@ ROUTES = {
     "/api/garage_save": "api_garage_save",
     "/api/builder_schema": "api_builder_schema", "/api/builder_preview": "api_builder_preview",
     "/api/builder_create": "api_builder_create", "/api/builder_load": "api_builder_load",
+    "/api/scrap_list": "api_scrap_list", "/api/scrap_entry": "api_scrap_entry", "/api/scrap_preview": "api_scrap_preview",
+    "/api/scrap_create": "api_scrap_create", "/api/scrap_load": "api_scrap_load",
     "/api/projects": "api_projects", "/api/project_save": "api_project_save", "/api/project_load": "api_project_load",
     "/api/project_delete": "api_project_delete",
     "/api/shortcut": "api_shortcut", "/api/install_native": "api_install_native", "/api/log": "api_log",
@@ -695,6 +843,12 @@ def make_handler(app):
             if path == "/api/thumb":
                 q = parse_qs(urlparse(self.path).query)
                 data, ctype = app.thumb((q.get("model") or [""])[0])
+                if data is None:
+                    return self._send(404, "no picture", "text/plain")
+                return self._send(200, data, ctype, cache=True)
+            if path == "/api/scrap_icon":
+                q = parse_qs(urlparse(self.path).query)
+                data, ctype = app.scrap_icon((q.get("id") or [""])[0])
                 if data is None:
                     return self._send(404, "no picture", "text/plain")
                 return self._send(200, data, ctype, cache=True)
@@ -751,6 +905,9 @@ def make_handler(app):
                 return self._send(403, json.dumps({"error": "forbidden"}), "application/json")
             try:
                 out = getattr(app, name)(req)
+            except ValueError as e:  # a problem to tell the user about, in plain words
+                traceback.print_exc()
+                return self._send(500, json.dumps({"error": str(e)}), "application/json")
             except Exception as e:  # report every failure to the page instead of dying
                 traceback.print_exc()
                 return self._send(500, json.dumps({"error": "%s: %s" % (type(e).__name__, e)}), "application/json")

@@ -450,7 +450,26 @@ def make_install(root):
     with zipfile.ZipFile(os.path.join(vdir, "common.zip"), "w") as z:
         z.writestr("vehicles/common/wheels/test_wheels.jbeam", jbeamfile.dumps_part_file(cw))
         z.writestr("vehicles/common/wheels/test_wheels.dae", multi_dae(wheel_meshes))
-    return {"game": game, "user": user}
+    out = {"game": game, "user": user}
+    out.update(make_scrap(root))
+    return out
+
+
+def make_scrap(root):
+    """A stand-in Scrap Mechanic install and two saved creations (see smfixture.py)."""
+    import smfixture
+    sm = smfixture.make_game(os.path.join(root, "smroot"))
+    users = os.path.join(root, "smuser")
+    bps = os.path.join(users, "User_76561198000000000", "Blueprints")
+    for i, (name, kw, rgb) in enumerate((("Rusty Hatch", {}, (190, 70, 40)),
+                                          ("Mud Truck", {"suspension": "offroad", "wheel": smfixture.BIG_WHEEL},
+                                           (60, 120, 60)))):
+        folder = os.path.join(bps, "0000000%d-1111-4222-8333-444444444444" % (i + 1))
+        data, _ = smfixture.car(**kw)
+        smfixture.save_creation(folder, data, name)
+        with open(os.path.join(folder, "icon.png"), "wb") as f:
+            f.write(tiny_png(8, 8, rgb))
+    return {"sm": sm, "smuser": users}
 
 
 if __name__ == "__main__":

@@ -22,7 +22,8 @@ const store = {
 };
 
 // modes that only look at the vehicle (no editing tools in the 3D view)
-const LOOK_MODES = new Set(['garage', 'parts', 'tuning', 'model', 'builder']);
+const LOOK_MODES = new Set(['garage', 'parts', 'tuning', 'model', 'builder', 'scrap']);
+const MAKER_MODES = new Set(['builder', 'scrap']);   // modes that make a vehicle rather than edit one
 // mode modules register here: { enter(), leave(), render() }
 export const MODES = {};
 
@@ -42,7 +43,7 @@ async function loadState(st) {
 
 async function openVehicle(model, { intent = null, mode = null, configName } = {}) {
   const want = mode || ({ garage: 'garage', model: 'model', import: 'structure', structure: 'structure' }[intent]) ||
-    (S.mode && S.mode !== 'builder' ? S.mode : 'garage');
+    (S.mode && !MAKER_MODES.has(S.mode) ? S.mode : 'garage');
   if (S.model === model && S.scene && configName === undefined) {
     hideHome();
     setMode(want);
@@ -50,7 +51,7 @@ async function openVehicle(model, { intent = null, mode = null, configName } = {
     return;
   }
   if (S.model && S.pending.length && !(await save({ quiet: true }))) return;
-  MODES.builder?.leave?.();
+  for (const m of MAKER_MODES) MODES[m]?.leave?.();
   clearImport();
   Object.assign(S, { model, scene: null, undo: [], redo: [], pending: [], activePart: null, pinActive: false, mode: null,
     garageSpec: null });
@@ -216,7 +217,7 @@ function setMode(mode, { quiet = false } = {}) {
   $('#toolbar').classList.toggle('show', mode === 'structure');
   if (look) {
     if (S.tool !== 'select') setTool('select');
-    if (mode !== 'model' && mode !== 'builder') { clearSelection(); emit('selection'); }
+    if (mode !== 'model' && !MAKER_MODES.has(mode)) { clearSelection(); emit('selection'); }
   }
   S.lookMode = look;
   updateGroundOffset();

@@ -115,6 +115,12 @@ function clearGroup(g) {
   }
 }
 
+// nothing drawn: for a page that has no vehicle to show yet
+export function clearView() {
+  for (const k of ['nodes', 'beams', 'tris', 'wheels', 'mesh', 'overlay', 'preview']) if (V.groups[k]) clearGroup(V.groups[k]);
+  V.dirty = true;
+}
+
 // ---- building the drawable geometry from the scene --------------------------
 const circleTex = (() => {
   const c = document.createElement('canvas');

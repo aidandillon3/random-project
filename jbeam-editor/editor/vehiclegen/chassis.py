@@ -524,20 +524,29 @@ def _clamp_z(sh, y, z, margin=0.06):
     return min(z, sh.top(y) - margin)
 
 
-def build_wishbone(S, sh, P, ax, body_names):
+def build_wishbone(S, sh, P, ax, body_names, top=None):
+    """Double wishbones at each corner of ax. top(x, y): height of the body there (default: the shape's)."""
     part = "susp_" + ax.id
     k = ax.k
     p = ax.p
     caster = -0.015 if ax.front else 0.0
     hub_w = clamp(3.4 * (P.mass / 1500.0) ** 0.4, 2.4, 8.0)
     piv_w = clamp(3.0 * (P.mass / 1500.0) ** 0.4, 2.0, 7.0)
+    # a pair of wheels keeps its arms on its own side; a lone wheel's arms may cross the middle
+    paired = len(ax.corners) == 2
     for c in ax.corners:
         side, s = c.side, c.s
         T2, y, zc = ax.centers[side]
-        x_lo = max(T2 - 0.075 - clamp(0.5 * T2, 0.26, 0.55), 0.06)
+        x_lo = T2 - 0.075 - clamp(0.5 * T2, 0.26, 0.55)
+        x_lo = max(x_lo, 0.06) if paired else x_lo
         L_lo = T2 - 0.075 - x_lo
-        x_up = max(T2 - 0.125 - 0.72 * L_lo, 0.05)
-        zt_spring = _clamp_z(sh, y, zc + 0.165 * k + 0.26 + 0.35 * ax.travel, 0.07)
+        x_up = T2 - 0.125 - 0.72 * L_lo
+        x_up = max(x_up, 0.05) if paired else x_up
+        z_want = zc + 0.165 * k + 0.26 + 0.35 * ax.travel
+        if top is None:
+            zt_spring = _clamp_z(sh, y, z_want, 0.07)
+        else:
+            zt_spring = min(z_want, top(s * (T2 - 0.205), y) - 0.07)
         zt_spring = max(zt_spring, zc - 0.115 * k + 0.32)
         g_hub = P.model_group("hub_" + ax.id + side.upper())
         h1 = S.node("%sh1%s" % (p, side), mirror((T2 - 0.075, y, zc - 0.115 * k), s), part, w=hub_w,
@@ -588,8 +597,9 @@ def build_wishbone(S, sh, P, ax, body_names):
                beamPrecompressionTime=0.5)
         # tie rod / toe link
         if ax.steer:
-            S.beam(ti.name, h3.name, part, "steer", sec="hydros", **_steer_opts(S, ti.name, h3.name, h1.name, h2.name,
-                                                                              P.steerAngle, s))
+            opts = _steer_opts(S, ti.name, h3.name, h1.name, h2.name, getattr(ax, "steer_angle", None) or P.steerAngle,
+                               s * getattr(ax, "steer_sign", 1))
+            S.beam(ti.name, h3.name, part, "steer", sec="hydros", **opts)
         else:
             S.beam(ti.name, h3.name, part, "link")
         # the subframe: pivots, shock tower and tie rod end held together

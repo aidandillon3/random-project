@@ -7,7 +7,7 @@ import { icon } from './icons.js';
 import { V, buildMeshes, frame, rebuild, setMeshes, setPalette } from './view3d.js';
 import { reindex } from './scene.js';
 import { hideHome } from './home.js';
-import { curveChart, section, slider } from './widgets.js';
+import { curveChart, section, slider, valueText } from './widgets.js';
 import { closePanel as closeDropTest, runDropTest } from './droptest.js';
 import { $, h, fmt, toast, debounce, openModal, closeModal, setLoading, shortPath, confirmBox } from './util.js';
 
@@ -37,25 +37,7 @@ const PAINTS = [
 ];
 
 // ---- units ---------------------------------------------------------------------------------------
-function show(f, v) {
-  const u = f.unit;
-  if (f.display === 'percent') return fmt(v * 100, 0) + ' %';
-  if (u === 'm') {
-    if (!imperial) return fmt(v, 2) + ' m';
-    const inches = v / 0.0254;
-    return inches >= 36 ? `${Math.floor(inches / 12)} ft ${fmt(inches % 12, 1)} in` : fmt(inches, 1) + ' in';
-  }
-  if (u === 'kg') return imperial ? fmt(v * 2.20462, 0) + ' lb' : fmt(v, 0) + ' kg';
-  if (u === 'km/h') return imperial ? fmt(v / 1.609, 0) + ' mph' : fmt(v, 0) + ' km/h';
-  if (u === 'L') return imperial ? fmt(v / 3.785, 1) + ' gal' : fmt(v, 0) + ' L';
-  if (u === 'in') return fmt(v, 1) + '"';
-  if (u === 'hp') return fmt(v, 0) + ' hp' + (imperial ? '' : ` (${fmt(v * 0.7457, 0)} kW)`);
-  if (u === '°') return fmt(v, f.step < 1 ? 1 : 0) + '°';
-  if (u === 'Hz') return fmt(v, 2) + ' Hz';
-  if (u === '×') return fmt(v, 2) + '×';
-  if (!u) return fmt(v, 2);
-  return fmt(v, f.step >= 1 ? 0 : 2) + ' ' + u;
-}
+const show = (f, v) => valueText(f, v, imperial);
 const lenText = m => show({ unit: 'm' }, m);
 
 // ---- registration ----------------------------------------------------------------------------------------
@@ -93,6 +75,9 @@ async function open(model = null) {
 
 function enter() {
   S.modeHint = 'Vehicle Builder: change the sliders on the left; right-drag to turn the view.';
+  const t = $('#builderTitle span');
+  if (t) t.textContent = 'Vehicle Builder';
+  $('#builderTitle svg')?.replaceWith(icon('build', 18));
 }
 
 function leave() {

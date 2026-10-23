@@ -102,7 +102,7 @@ class Generator:
     def _wheel_nodes(self, ax):
         P, S = self.P, self.S
         p = ax.p
-        rim_in = (P.rimDiaF if ax.front else P.rimDiaR)
+        rim_in = getattr(ax, "rim_in", None) or (P.rimDiaF if ax.front else P.rimDiaR)
         rim_r = rim_in * specmod.INCH / 2
         tw = ax.tw
         rays = 16 if ax.r <= 0.42 else 20
@@ -162,9 +162,12 @@ class Generator:
         self.exhaust = [S.pos(names["2r"]), S.pos("ex1"), S.pos("ex0")]
 
     # -- physics numbers ---------------------------------------------------------------
+    def _assign_masses(self):
+        chassis.assign_masses(self.S, self.P, self.axles, self.wheels)
+
     def _mass(self):
         S = self.S
-        chassis.assign_masses(S, self.P, self.axles, self.wheels)
+        self._assign_masses()
         self.masses = {}
         total = sum(n.w for n in S.nodes.values()) + sum(w["generated_mass"] for w in self.wheels.values())
         self.total_mass = total
@@ -182,7 +185,7 @@ class Generator:
         shares = axle_shares([ax.y for ax in self.axle_list], self.cg[1])
         for ax, sh_ in zip(self.axle_list, shares):
             ax.share = sh_
-        self.front_share = clamp(self.axles["F"].share, 0.05, 0.95)
+        self.front_share = clamp(self.axle_list[0].share, 0.05, 0.95)
         for ax in self.axle_list:
             unsprung = sum(S.nodes[n].w for n in set(ax.unsprung_nodes))
             unsprung += sum(S.nodes[n].w for c in ax.corners for n in ax.wheel_nodes[c.side])
@@ -198,8 +201,8 @@ class Generator:
         P, S = self.P, self.S
         self.springs = {}
         for ax in self.axle_list:
-            f = P.springF if ax.front else P.springR
-            zeta = P.dampF if ax.front else P.dampR
+            f = getattr(ax, "freq", None) or (P.springF if ax.front else P.springR)
+            zeta = getattr(ax, "zeta", None) or (P.dampF if ax.front else P.dampR)
             m = ax.corner_sprung
             mr = clamp(ax.mr, 0.5, 1.0)
             k_wheel = m * (2 * math.pi * f) ** 2
@@ -214,7 +217,8 @@ class Generator:
             bump_range = max(ax.bump * mr, 0.02)
             droop_range = max(ax.droop * mr, 0.02)
             hard = clamp((length - bump_range - 0.03) / length, 0.3, 0.97)
-            sw = P.swaybarF if ax.front else P.swaybarR
+            sw = getattr(ax, "swaybar", None)
+            sw = sw if sw is not None else (P.swaybarF if ax.front else P.swaybarR)
             arb = sw * k_wheel * 1.6
             self.springs[ax.id] = {
                 "spring": k_spring, "wheel_rate": k_wheel, "static": static, "preload": round(preload, 4),
@@ -236,7 +240,7 @@ class Generator:
         self.brakes = {}
         force = 1.15 * self.total_mass * G * P.brakePower
         for ax in self.axle_list:
-            rim_in = P.rimDiaF if ax.front else P.rimDiaR
+            rim_in = getattr(ax, "rim_in", None) or (P.rimDiaF if ax.front else P.rimDiaR)
             dia = clamp(rim_in * specmod.INCH - 0.075, 0.2, 0.42)
             coef = force * ax.r / 2.0           # per wheel, if all the force were on this axle
             parking = 0.0 if ax.front else 0.45 * force * ax.r / 2.0

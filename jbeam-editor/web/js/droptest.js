@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { S } from './state.js';
 import { V, buildWheels, refreshPositions, setVisible } from './view3d.js';
-import { dropTest } from './physics.js';
+import { axleOf, dropTest } from './physics.js';
 import { icon } from './icons.js';
 import { $, h, fmt } from './util.js';
 
@@ -113,22 +113,26 @@ function showResult(res) {
       'In Structure mode, turn on "Colour nodes by stability" to find it, then make it heavier or its beams softer.'));
   } else {
     const sag = id => {
-      const w = res.sim.wheels.filter(x => (x.name || '')[0] === id);
+      const w = res.sim.wheels.filter(x => axleOf(x.name) === id);
       if (!w.length || !s.axles[id]) return null;
       const st = res.sim.start, p = res.sim.pos;
       const wheel = w.reduce((t, x) => t + (p[x.n1 * 3 + 2] - st[x.n1 * 3 + 2] + p[x.n2 * 3 + 2] - st[x.n2 * 3 + 2]) / 2, 0) / w.length;
       return { body: s.axles[id].drop, tire: wheel, springs: s.axles[id].drop - wheel };
     };
-    const F = sag('F'), R = sag('R');
-    const soft = [F, R].some(x => x && x.springs < -0.03);
-    const high = [F, R].some(x => x && x.springs > 0.03);
+    const ids = Object.keys(s.axles).sort((a, b) => s.axles[a].y - s.axles[b].y);
+    const many = ids.length > 2;
+    const label = (id, i) => id === 'F' && !i ? 'Front' : id === 'R' && i === ids.length - 1 ? 'Rear'
+      : /^M\d+$/.test(id) ? (many && ids.filter(x => /^M/.test(x)).length > 1 ? 'Middle ' + id.slice(1) : 'Middle') : id;
+    const list = ids.map((id, i) => [label(id, i), sag(id)]);
+    const soft = list.some(([, x]) => x && x.springs < -0.03);
+    const high = list.some(([, x]) => x && x.springs > 0.03);
     verdict = h('p', { class: soft || high || !s.settled ? 'warn' : 'good' }, icon(soft || high || !s.settled ? 'warning' : 'check', 16),
       s.settled ? ' Settles and holds together.' : ' Holds together, but is still bouncing after 3 s.');
-    for (const [label, x] of [['Front', F], ['Rear', R]]) {
+    for (const [name, x] of list) {
       if (!x) continue;
       const springs = Math.abs(x.springs) < 0.003 ? 'right at the height it was built for'
         : x.springs < 0 ? `${cm(x.springs)} lower than built` : `${cm(x.springs)} higher than built`;
-      rows.push(h('div', { class: 'row' }, h('b', {}, label), h('span', {}, `springs hold it ${springs}; tires squash ${cm(x.tire)}`)));
+      rows.push(h('div', { class: 'row' }, h('b', {}, name), h('span', {}, `springs hold it ${springs}; tires squash ${cm(x.tire)}`)));
     }
     if (soft) rows.push(h('p', { class: 'note' }, 'The springs are too soft for the weight: raise the spring rate, or the spring height (Tuning).'));
     if (high) rows.push(h('p', { class: 'note' }, 'The springs push it up above its built height: lower the spring height or the spring rate.'));

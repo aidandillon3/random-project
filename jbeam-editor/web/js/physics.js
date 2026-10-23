@@ -173,6 +173,14 @@ export async function dropTest(scene, { seconds = 2.5, fps = 50, chunk = 400, on
   return { frames, fps, summary: summarize(scene, sim), sim };
 }
 
+// the axle a wheel belongs to: F and R, or the Scrap Mechanic import's extra ones (M1L -> M1, F2R -> F2)
+export function axleOf(name) {
+  const n = name || '?';
+  const m = /^([A-Z]+\d+)[LR]$/i.exec(n);
+  if (m) return m[1].toUpperCase();
+  return /^F/i.test(n) ? 'F' : /^R/i.test(n) ? 'R' : n;
+}
+
 // how the vehicle sits after the test compared to how it was built
 export function summarize(scene, sim) {
   const { pos, start, live } = sim;
@@ -182,7 +190,7 @@ export function summarize(scene, sim) {
   const isBody = i => live[i] && !wheelNodes.has(i) && !(scene.nodes[i].grp || []).some(g => /hub|arm|axle|link|coil|tie|engine|wheel|tire/i.test(g));
   const axles = {};
   for (const w of sim.wheels) {
-    const id = /^F/i.test(w.name || '') ? 'F' : /^R/i.test(w.name || '') ? 'R' : (w.name || '?');
+    const id = axleOf(w.name);
     const y = (start[w.n1 * 3 + 1] + start[w.n2 * 3 + 1]) / 2;
     (axles[id] = axles[id] || { ys: [] }).ys.push(y);
   }
@@ -198,7 +206,7 @@ export function summarize(scene, sim) {
       if (!isBody(i) || Math.abs(start[i * 3 + 1] - y) > 0.45) continue;
       d += pos[i * 3 + 2] - start[i * 3 + 2]; c++;
     }
-    out.axles[id] = { drop: c ? d / c : 0, nodes: c };
+    out.axles[id] = { drop: c ? d / c : 0, nodes: c, y };
   }
   // how much the structure itself bends: the largest stretch of a body beam
   let maxStrain = 0, worst = null;

@@ -22,12 +22,11 @@ const OUT = path.resolve(process.argv[2] || path.join(os.tmpdir(), 'jbe-ui'));
 const WANT = process.argv.slice(3);
 fs.mkdirSync(OUT, { recursive: true });
 
-function startServer(install, port) {
+function startServer(install, port, fx) {
   const data = path.join(install, 'data');
   fs.mkdirSync(data, { recursive: true });
   fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({
-    user_folder: path.join(install, 'user'), game_folder: path.join(install, 'game'),
-    sm_folder: path.join(install, 'sm'), sm_user_folder: path.join(install, 'smuser'),
+    user_folder: fx.user, game_folder: fx.game, sm_folder: fx.sm, sm_user_folder: fx.smuser,
   }));
   const p = spawn('python3', ['run.py', '--no-window', '--port', String(port), '--data', data], { cwd: EDITOR });
   let log = '';
@@ -245,12 +244,82 @@ scenario('builder-create', async page => {
   console.log('    garage ready after ' + (Date.now() - t0) + ' ms');
 });
 
+const scrapIdle = page => page.waitForFunction(() => window.jbe.S.scene && document.querySelector('#scrapBusy')?.classList.contains('hidden'), null, { timeout: 30000 });
+async function scrapRange(page, label, value) {
+  await page.evaluate(({ label, value }) => {
+    const box = [...document.querySelectorAll('#scrapPane .slider')].find(b => b.querySelector('.name').textContent.trim() === label);
+    if (!box) throw new Error('no slider ' + label);
+    const r = box.querySelector('input[type=range]');
+    r.value = value;
+    r.dispatchEvent(new Event('input', { bubbles: true }));
+    r.dispatchEvent(new Event('change', { bubbles: true }));
+  }, { label, value });
+}
+
+scenario('scrap', async page => {
+  if (await page.$('#home.hidden')) await page.click('#btnHome');
+  await page.waitForSelector('#home:not(.hidden) #homeActions .action');
+  await page.click('#homeActions .action:nth-child(3)');
+  await page.waitForSelector('#scrapPane .sm-item', { timeout: 20000 });
+  const names = await page.$$eval('#scrapPane .sm-item .name', els => els.map(e => e.textContent));
+  if (!names.includes('Mud Truck') || !names.includes('Rusty Hatch')) throw new Error('creations: ' + names.join(', '));
+  await page.screenshot({ path: path.join(OUT, 'scrap-list.png') });
+  await page.evaluate(() => [...document.querySelectorAll('#scrapPane .sm-item')].find(b => /Mud Truck/.test(b.textContent)).click());
+  await scrapIdle(page);
+  await page.waitForFunction(() => window.jbe.V.groups.mesh.children.length > 10, null, { timeout: 20000 });
+  const sc = await page.evaluate(() => ({ wheels: window.jbe.S.scene.wheels.length, warn: window.jbe.S.scene.warnings }));
+  if (sc.wheels !== 4) throw new Error('wheels: ' + sc.wheels);
+  if (sc.warn.length) throw new Error('warnings: ' + sc.warn.join('; '));
+  const found = await page.$eval('#smFound', e => e.textContent);
+  if (!/2 steered, 2 driven/.test(found) || !/off-road/.test(found)) throw new Error('found: ' + found);
+});
+
+scenario('scrap-settings', async page => {
+  // softer springs and a bigger size: the preview follows
+  await page.click('#scrapPane .catlist .cat:nth-child(1)');
+  const len0 = await page.evaluate(() => { const s = window.jbe.S.scene; const w = s.wheels; return Math.abs(s.nodes[w[0].n1].p[1] - s.nodes[w[3].n1].p[1]); });
+  await scrapRange(page, 'Size', 1.5);
+  await page.waitForFunction(len0 => { const s = window.jbe.S.scene; const w = s.wheels; return Math.abs(Math.abs(s.nodes[w[0].n1].p[1] - s.nodes[w[3].n1].p[1]) - len0 * 1.5) < 1e-3; }, len0, { timeout: 20000 });
+  await scrapIdle(page);
+  await page.click('#scrapPane .catlist .cat:nth-child(3)');   // engine
+  await scrapRange(page, 'Power', 400);
+  await page.waitForFunction(() => /400 hp/.test(document.querySelector('#scrapSide .stat-grid')?.textContent || ''), null, { timeout: 20000 });
+  await page.fill('#scrapSide input[type=text]', 'UI Mud Truck');
+  await page.waitForFunction(() => /ui_mud_truck/.test(document.querySelector('#scrapSide code')?.textContent || ''), null, { timeout: 20000 });
+  await scrapIdle(page);
+  await page.screenshot({ path: path.join(OUT, 'scrap-truck.png') });
+});
+
+scenario('scrap-drop', async page => {
+  await page.evaluate(() => [...document.querySelectorAll('#scrapSide button')].find(b => /Drop test/.test(b.textContent)).click());
+  await page.waitForFunction(() => /Settles|Holds together|apart/.test(document.querySelector('#dropPanel')?.textContent || ''), null, { timeout: 40000 });
+  const text = await page.$eval('#dropPanel', e => e.textContent);
+  await page.screenshot({ path: path.join(OUT, 'scrap-drop.png') });
+  if (!/Settles and holds together/.test(text)) throw new Error('drop test: ' + text);
+  await page.click('#dropPanel .btnrow button:last-child');
+});
+
+scenario('scrap-create', async page => {
+  await page.click('#scrapSide button.primary');
+  await page.waitForSelector('#modal:not(.hidden) .actions button.primary');
+  await page.click('#modal .actions button.primary');
+  await page.waitForFunction(() => /created/i.test(document.querySelector('#modalTitle')?.textContent || ''), null, { timeout: 30000 });
+  await page.click('#modal .actions button.primary');      // open in the Garage
+  await page.waitForFunction(() => window.jbe.S.model === 'ui_mud_truck' && window.jbe.S.scene && !window.jbe.S.building, null, { timeout: 30000 });
+  await waitIdle(page);
+  const w = await page.evaluate(() => window.jbe.S.scene.wheels.length);
+  if (w !== 4) throw new Error('wheels after opening: ' + w);
+  await page.waitForFunction(() => window.jbe.S.scene.garage && document.querySelector('#garagePane .slider'), null, { timeout: 40000 });
+  const warn = await page.evaluate(() => window.jbe.S.scene.warnings);
+  if (warn.length) throw new Error('warnings: ' + warn.join('; '));
+});
+
 // --------------------------------------------------------------------------------------------
 (async () => {
   const install = fs.mkdtempSync(path.join(os.tmpdir(), 'jbe-ui-install-'));
-  execFileSync('python3', [path.join(EDITOR, 'tests', 'fixture.py'), install]);
+  const fx = JSON.parse(execFileSync('python3', [path.join(EDITOR, 'tests', 'fixture.py'), install]).toString());
   const port = 8790 + Math.floor(Math.random() * 100);
-  const srv = await startServer(install, port);
+  const srv = await startServer(install, port, fx);
   const browser = await chromium.launch({ executablePath: fs.existsSync('/opt/pw-browsers/chromium') ? undefined : undefined });
   const page = await browser.newPage({ viewport: { width: 1500, height: 900 } });
   const errors = [];

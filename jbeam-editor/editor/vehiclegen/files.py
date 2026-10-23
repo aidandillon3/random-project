@@ -113,8 +113,9 @@ def file_texts(g):
         if gm:
             body["glowMap"] = gm
         parts[m + "_body"] = body
-    head = "%s, made with the JBeam Editor's Vehicle Builder.\nOpen it in the Builder again to change it; edits made here " \
-           "are kept until you rebuild." % P.name
+    head = getattr(g, "file_comment", None) or (
+        "%s, made with the JBeam Editor's Vehicle Builder.\nOpen it in the Builder again to change it; edits made "
+        "here are kept until you rebuild." % P.name)
     groups = {
         m + ".jbeam": [m, m + "_body"],
         m + "_suspension.jbeam": [k for k in parts if any(k.startswith(m + "_" + w) for w in
@@ -132,11 +133,22 @@ def file_texts(g):
         objects.append((name, M.p, [(mat, idx[s:s + c]) for s, c, mat in grp], None))
     out[m + ".dae"] = daewrite.dae_multi(objects)
     out["main.materials.json"] = materials_file(g)
-    out["info.json"] = jbeamfile.dumps_json(info_json(g))
+    info = info_json(g)
+    info.update(getattr(g, "info_overrides", None) or {})
+    out["info.json"] = jbeamfile.dumps_json(info)
     out[CONFIG_NAME + ".pc"] = jbeamfile.dumps_json(config_json(g))
-    out["info_%s.json" % CONFIG_NAME] = jbeamfile.dumps_json({k: v for k, v in config_info(g).items() if v is not None})
-    out[DESIGN_FILE] = jbeamfile.dumps_json({"version": 1, "spec": g.spec, "stats": {
-        k: g.stats[k] for k in ("mass", "powerHP", "torqueNm", "zeroTo100", "topSpeed")}})
+    cinfo = config_info(g)
+    cinfo.update(getattr(g, "config_info_overrides", None) or {})
+    out["info_%s.json" % CONFIG_NAME] = jbeamfile.dumps_json({k: v for k, v in cinfo.items() if v is not None})
+    stats = {k: g.stats.get(k) for k in ("mass", "powerHP", "torqueNm", "zeroTo100", "topSpeed")}
+    design = getattr(g, "design", None)
+    if design:
+        name, data = design
+        data = dict(data)
+        data["stats"] = stats
+        out[name] = jbeamfile.dumps_json(data)
+    else:
+        out[DESIGN_FILE] = jbeamfile.dumps_json({"version": 1, "spec": g.spec, "stats": stats})
     return out
 
 

@@ -173,11 +173,13 @@ class Workspace:
             for m in r.models():
                 # a folder with only saved configs (like the user folder) holds no parts to edit
                 jb = any(f.lower().endswith(".jbeam") for f in r.files_under("vehicles/%s" % m))
-                e = found.setdefault(m, {"model": m, "sources": [], "editable": False, "parts": False, "builder": False})
+                e = found.setdefault(m, {"model": m, "sources": [], "editable": False, "parts": False, "builder": False,
+                                         "scrap": False})
                 e["sources"].append(r.label)
                 e["editable"] = e["editable"] or (r.editable and jb)
                 e["parts"] = e["parts"] or jb
                 e["builder"] = e["builder"] or r.has("vehicles/%s/jbeam_editor_builder.json" % m)
+                e["scrap"] = e["scrap"] or r.has("vehicles/%s/jbeam_editor_scrap.json" % m)
         out = []
         for m, e in found.items():
             if not e.pop("parts"):

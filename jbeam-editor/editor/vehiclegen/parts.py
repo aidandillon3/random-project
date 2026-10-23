@@ -271,7 +271,7 @@ class PartsBuilder:
                   {"coreSlot": True}]]
         k_arb = self.g.springs[ax.id]["arb_rate"]
         variables = [VAR_HEAD,
-                     _var("$camber_" + ax.id, "°", "Wheel Alignment", P.camberF if ax.front else P.camberR, -5, 3,
+                     _var("$camber_" + ax.id, "°", "Wheel Alignment", _axle_val(ax, "camber", P.camberF, P.camberR), -5, 3,
                           "Camber", "Tilt of the wheels; negative leans their tops inward",
                           stepDis=0.1, subCategory=side_word),
                      _var("$trackoffset_" + ax.id, "+m", "Wheels", 0, -0.02, 0.08, "Wheel Offset",
@@ -462,7 +462,7 @@ class PartsBuilder:
             x, y, z = ax.centers[c.side]
             flex.append(_place(self.name("tire_%s_%s" % (a, c.side.upper())), ["wheel_" + nm, "tire_" + nm],
                                (x * c.s, y, z)))
-        psi = P.pressureF if ax.front else P.pressureR
+        psi = _axle_val(ax, "pressure", P.pressureF, P.pressureR)
         self.parts[self.name("tire_" + a)] = {
             "information": _info("%s %s %s Tires" % (side_word, w["size_text"], dict(
                 street="Street", sport="Sport", allterrain="All-Terrain", mud="Mud", slick="Racing Slick")[P.tireType]),
@@ -542,8 +542,8 @@ class PartsBuilder:
                                    "offLoadGain": 0.9, "maxLoadMix": 0.8, "minLoadMix": 0,
                                    "fundamentalFrequencyCylinderCount": snd["cyl"], "eqFundamentalGain": -2},
             "vehicleController": {"highShiftUpRPM": int(P.redline - 250)},
-            "flexbodies": _flex([_place(self.name("engine"), [P.model_group("engine")]),
-                                 _place(self.name("exhaust"), [P.model_group("body")])]),
+            "flexbodies": _flex([_place(mesh, groups) for mesh, groups in getattr(g, "engine_flex", None) or [
+                (self.name("engine"), [P.model_group("engine")]), (self.name("exhaust"), [P.model_group("body")])]]),
             "nodes": node_table(S, nodes),
             "beams": beam_table(S, beams),
         }
@@ -654,6 +654,12 @@ class PartsBuilder:
             "energyStorage": [["type", "name"], ["fuelTank", "mainTank"]],
             "mainTank": {"energyType": "gasoline", "fuelCapacity": cap, "startingFuelCapacity": "$fuel"},
         }
+
+
+def _axle_val(ax, key, front, rear):
+    """A per-axle setting (vehicles with any number of axles) or the design's front/rear one."""
+    v = getattr(ax, key, None)
+    return v if v is not None else (front if ax.front else rear)
 
 
 def axle_word(ax):
