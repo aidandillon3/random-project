@@ -306,14 +306,18 @@ class BuilderApiTests(InstallCase):
                 self.assertEqual(out["warnings"], [])
 
     def test_electric_vehicles_pass_the_checker_and_tune_in_the_garage(self):
+        made = {}
         for spec in ({"style": "sedan", "name": "Volt Sedan", "engineType": "electric"},
                      {"style": "pickup", "name": "Volt Truck", "engineType": "electric", "drive": "AWD",
                       "diff": "lsd", "suspR": "solid"}):
-            res = self.app.api_builder_create({"spec": spec})
+            res = made[spec["name"]] = self.app.api_builder_create({"spec": spec})
             out = self.app.api_check({"model": res["model"]})
             with self.subTest(spec=spec):
                 self.assertEqual(out["errors"], [])
                 self.assertEqual(out["warnings"], [])
+        with open(os.path.join(made["Volt Sedan"]["path"], "info_base.json")) as f:
+            info = json.load(f)
+        self.assertEqual((info["Fuel Type"], info["Transmission"]), ("Electricity", "Direct Drive"))
         sc = self.app.api_build({"model": "volt_sedan", "configName": "base"})
         self.assertEqual(sc["engine"]["device"], "mainMotor")
         self.assertTrue(sc["engine"]["electric"])

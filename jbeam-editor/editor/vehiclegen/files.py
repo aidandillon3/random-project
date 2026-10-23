@@ -94,8 +94,9 @@ def config_info(g):
         "Configuration": "Base", "Config Type": "Factory", "Source": "Custom",
         "Description": "Built with the JBeam Editor's Vehicle Builder.",
         "Value": int(15000 + P.power * 80), "Power": int(st["powerHP"]), "Torque": int(st["torqueNm"]),
-        "Weight": int(st["mass"]), "Drivetrain": P.drive, "Propulsion": "ICE", "Fuel Type": "Gasoline",
-        "Transmission": "Automatic" if P.gearbox == "automatic" else "Manual",
+        "Weight": int(st["mass"]), "Drivetrain": P.drive,
+        "Propulsion": "Electric" if P.electric else "ICE", "Fuel Type": "Electricity" if P.electric else "Gasoline",
+        "Transmission": "Direct Drive" if P.electric else "Automatic" if P.gearbox == "automatic" else "Manual",
         "Top Speed": round(st["topSpeed"] / 3.6, 2) if st.get("topSpeed") else None,
         "0-100 km/h": st.get("zeroTo100"),
     }
