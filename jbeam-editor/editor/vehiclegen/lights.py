@@ -88,3 +88,11 @@ def props(lamps):
                                                            "lightBrightness": 0.7, "lightOuterAngle": 90,
                                                            "flareScale": 0.08}))
     return rows
+
+
+HORN = "event:>Vehicle>Electrics>Horns>MER_V2"
+
+
+def soundscape(node):
+    """The horn (H in the game), sounding from a node at the front."""
+    return [["name", "src"], {"node:": node}, ["horn", HORN]]

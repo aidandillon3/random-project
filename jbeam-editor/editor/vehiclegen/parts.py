@@ -259,6 +259,7 @@ class PartsBuilder:
         pr = lights.props(getattr(g, "lamps", None))
         if pr:
             self.parts[self.name("body")]["props"] = pr
+        self.parts[self.name("body")]["soundscape"] = lights.soundscape(front["ids"]["fc"])
 
     # -- suspension ----------------------------------------------------------------------
     def suspension(self, ax):

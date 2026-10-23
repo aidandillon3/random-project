@@ -869,6 +869,8 @@ class SMPartsBuilder(vparts.PartsBuilder):
         pr = lights.props(g.lamps)
         if pr:
             self.parts[self.name("body")]["props"] = pr
+        front = min(g.body_names, key=lambda n: S.pos(n)[1] + 0.3 * abs(S.pos(n)[0]))
+        self.parts[self.name("body")]["soundscape"] = lights.soundscape(front)
 
     def transmission(self):
         P, g = self.P, self.g

@@ -220,6 +220,11 @@ def check_lights(tc, g):
         # rear lights come before the headlights' options (the cookie texture) are set
         tc.assertEqual(cookie, front, func)
     tc.assertEqual(chassis.degenerate_nodes(S, [n for n in S.order if S.nodes[n].kind == "lamp"]), [])
+    # and a horn at the front
+    ss = g.parts[g.P.model + "_body"]["soundscape"]
+    tc.assertEqual(ss[0], ["name", "src"])
+    tc.assertEqual(ss[2][0], "horn")
+    tc.assertAlmostEqual(S.pos(ss[1]["node:"])[1], y_front, delta=0.3)
 
 
 def _gen(g):
