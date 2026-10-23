@@ -3,12 +3,13 @@
 # the link always gives the newest version:
 #   https://github.com/<owner>/<repo>/releases/download/local-agent/local-agent.zip
 #   https://github.com/<owner>/<repo>/releases/download/body-tracker/body-tracker.zip
+#   https://github.com/<owner>/<repo>/releases/download/jbeam-editor/jbeam-editor.zip
 name: App releases
 
 on:
   push:
     branches: [main]
-    paths: ["local-agent/**", "body-tracker/**", ".github/workflows/app-releases.yml"]
+    paths: ["local-agent/**", "body-tracker/**", "jbeam-editor/**", ".github/workflows/app-releases.yml"]
   workflow_dispatch:   # Actions tab > App releases > Run workflow: republishes every app
 
 permissions:
@@ -29,6 +30,8 @@ jobs:
             title: Local Agent
           - app: body-tracker
             title: Body Tracker
+          - app: jbeam-editor
+            title: JBeam Editor
     steps:
       - uses: actions/checkout@v4
         with:

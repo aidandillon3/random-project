@@ -1,4 +1,5 @@
-"""Applies this repo's high-speed changes to a checkout of TecnaGamer/BeamNG.Earth (MIT) at v1.5.4-beta.
+"""Applies this repo's high-speed changes to a checkout of TecnaGamer/BeamNG.Earth (MIT) at v1.5.5-beta
+(written for v1.5.4-beta; applies unchanged).
 
 Usage: python apply_patch.py <BeamNG.Earth checkout>
 

@@ -539,6 +539,7 @@ end
 -- frame: importMaps + setPosition + reloadCollision + the far tiles' cover change. Vehicles and
 -- camera stay where they are; far tiles only sink / hide / come back (no imports in this frame).
 local COMMIT_LOG = 20
+local COMMIT_SLOW_MS = 300     -- a commit frame this slow is logged with its materials
 local frameTimer = hptimer and hptimer() or nil
 
 local function commitTerrain(msg)
@@ -556,8 +557,10 @@ local function commitTerrain(msg)
   end
   local tColl = sw()
   farfield.onBlockCommit(msg.cx, msg.cy)
+  local ls = swapped and terrain.lastSwap or nil
   local c = { load = tLoad, coll = tColl - tLoad, cover = sw() - tColl, f = {}, swap = swapped or nil,
-    ter = swapped and terrain.lastSwap and terrain.lastSwap.apply or nil }   -- the .ter load alone (ms)
+    ter = ls and ls.apply or nil,   -- the .ter load alone (ms)
+    mats = ls and ls.mats or nil, fresh = ls and ls.fresh or nil, at = { msg.cx, msg.cy } }
   table.insert(st.commits, c)
   if #st.commits > COMMIT_LOG then table.remove(st.commits, 1) end
   st.commitFrames = c
@@ -1597,7 +1600,18 @@ local function onUpdate(dtReal, dtSim)
         for i = 1, math.min(8, #arr) do cf.engine[arr[i][1]] = math.floor(arr[i][2] * 10 + 0.5) / 10 end
       end
     end
-    if #cf.f >= 3 then st.commitFrames = nil end
+    if #cf.f >= 3 then
+      st.commitFrames = nil
+      if cf.f[1] and cf.f[1] > COMMIT_SLOW_MS then
+        -- a terrain commit's slow first frame (the user's freezes driving through towns, 2026-10-21: 2.7 s of
+        -- RenderShadows in one): what it listed, for the log
+        local e = {}
+        for k, v in pairs(cf.engine or {}) do e[#e + 1] = k .. ' ' .. tostring(v) end
+        log('W', 'beamngEarth', string.format('slow terrain commit at %s,%s: %.0f ms (%s), %s materials, new: %s',
+          tostring(cf.at and cf.at[1]), tostring(cf.at and cf.at[2]), cf.f[1], table.concat(e, ', '),
+          tostring(cf.mats), cf.fresh and table.concat(cf.fresh, ' ') or 'none'))
+      end
+    end
   end
   st.clock = st.clock + dtReal
   if st.randomStart and st.clock - st.randomStart.t0 > RANDOM_WAIT_S then    -- no random place came: the default

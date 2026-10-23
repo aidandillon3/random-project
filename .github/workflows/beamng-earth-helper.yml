@@ -22,7 +22,7 @@ concurrency:
 
 env:
   UPSTREAM: TecnaGamer/BeamNG.Earth
-  UPSTREAM_REF: v1.5.4-beta
+  UPSTREAM_REF: v1.5.5-beta
   TAG: beamng-earth
 
 jobs:

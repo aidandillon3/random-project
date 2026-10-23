@@ -59,6 +59,14 @@ M.SIDE_PENALTY = 4          -- nextWalk at FAST_MS: m along the path a metre sid
 M.LEAD_MAX_M = 2000         -- ... and what every tile behind the car comes after
 M.URGENT_S = 6
 M.URGENT_GAP_S = 1
+-- What the car drives on comes first (nextWalk): a bridge deck's or a tunnel's collider counts this much nearer than the
+-- rest (on a Steam Deck at 80 mph in Phoenix the import queue grew to 140 behind ~20 ms imports, and an I-10 overpass's
+-- deck turned solid only as the car reached it, behind the sidewalks' and buildings' colliders of the same tiles)
+M.DRIVE_FIRST_M = 400
+-- ... and one the car reaches within URGENT_S (150 m at least) is made at once, whatever the governor's budget (its cost
+-- still charged: what follows waits), one every URGENT_EVERY_FRAMES at most: at ~20 ms an import on a Steam Deck, the
+-- 2-4 ms budget let ~3 a second through, fewer than a city's tiles bring at 80 mph
+M.URGENT_EVERY_FRAMES = 3
 -- No be:reloadCollision for SWAP_QUIET_FRAMES frames and SWAP_QUIET_MS after a terrain .ter swap (M.terrainSwapped): the
 -- swapped block's collision follows by itself a frame later, and a rebuild in between took the block before its
 -- heights were in: flat ground at z 0 for a second, and a ball at 180 mph sank under the real ground and fell through
@@ -85,6 +93,7 @@ local sinceChange = stopwatch.new()  -- ms since a tile arrived / went or a road
 local sinceReload = stopwatch.new()
 local collisionDirty = false
 local lastReloadAt = -math.huge   -- now() of the last be:reloadCollision (ours or another's): M.ahead
+local sinceUrgent = math.huge     -- frames since the last urgent walk import (M.urgentWalk)
 local deletesDirty = false  -- only far colliders deleted since the last rebuild (RELOAD_DELETES_S)
 
 -- Every road object lives in one SimGroup. A Lua reload (Lua:requestReload) rebuilds the VM without
@@ -350,6 +359,7 @@ local function createWalk(walk, collide)
   -- mesh to Visible Mesh Final'); the same collision (in-game rays, 2026-10-17)
   o:setField('collisionType', 0, type(collide) == 'string' and collide or (collide and 'Visible Mesh Final' or 'None'))
   o:setField('decalType', 0, 'None')
+  o:setField('dynamic', 0, 'true')    -- no redraw of the cached sun shadow map for each tile (farfield.lua spawn)
   o.canSave = false
   o:setPosition(vec3(walk.pos[1], walk.pos[2], walk.pos[3]))
   o:registerObject('')
@@ -672,8 +682,14 @@ function M.update(gov, currentAnchor, player, view)
   end
   releaseHeld()
   updateCollideRange()
-  while #walkQ > 0 and gov:try('roadWalk') do
-    local q = table.remove(walkQ, M.nextWalk(walkQ))
+  local forced = nil
+  if #walkQ > 0 and sinceUrgent >= M.URGENT_EVERY_FRAMES and not (gov.isHeavyFrame and gov:isHeavyFrame()) then
+    forced = M.urgentWalk(walkQ)
+  end
+  sinceUrgent = sinceUrgent + 1
+  while #walkQ > 0 and (forced or gov:try('roadWalk')) do
+    local q = table.remove(walkQ, forced or M.nextWalk(walkQ))
+    if forced then forced, sinceUrgent, M.urgentWalks = nil, 0, (M.urgentWalks or 0) + 1 end
     local t = tiles[q.key]
     if t and q.tile and q.tile ~= t then t = nil end   -- (an entry of an earlier tile under this key: not made)
     -- (only a colliding mesh waits: a render-only one (q.renderOnly: the drawn sidewalks and buildings beside their lean
@@ -823,7 +839,7 @@ function M.nextWalk(q)
       if dir then         -- fast: by the way along the path ahead, sideways counting SIDE_PENALTY times (the server's
         local along = dx * dir.x + dy * dir.y               -- roads.path_key); behind the car after all of those
         local side = math.abs(dx * dir.y - dy * dir.x)
-        if along < -M.TILE_M then k = k * 3 + M.LEAD_MAX_M
+        if along < -M.TILE_M / 2 then k = k * 3 + M.LEAD_MAX_M     -- (its centre half a tile behind: left behind)
         else k = math.max(0, along) + M.SIDE_PENALTY * math.max(0, side - M.TILE_M / 2) end
       end
       if viewAt and (e.renderOnly or e.what == 'wire') then
@@ -832,7 +848,28 @@ function M.nextWalk(q)
       end
     end
     if e.renderOnly or e.what == 'wire' then k = k + 1e6 end
+    if e.what == 'deck' or e.what == 'tunnel' then k = math.max(0, k - M.DRIVE_FIRST_M) end
     if k < bestKey then best, bestKey = i, k end
+  end
+  return best
+end
+
+-- The walkQ index of a bridge deck's or tunnel's collider the car reaches within URGENT_S (150 m at least; not behind a
+-- fast car), the nearest, or nil.
+function M.urgentWalk(q)
+  local p, dir = playerNow()
+  if not p then return nil end
+  local reach = math.max(150, lastSpeed * M.URGENT_S) + M.TILE_M * 0.71
+  local best, bd = nil, math.huge
+  for i, e in ipairs(q) do
+    if e.what == 'deck' or e.what == 'tunnel' then
+      local t = tiles[e.key]
+      if t and t.cx and not t.ghost and (not e.tile or e.tile == t) then
+        local dx, dy = t.cx - p.x, t.cy - p.y
+        local d = math.sqrt(dx * dx + dy * dy)
+        if d <= reach and d < bd and (not dir or dx * dir.x + dy * dir.y > -M.TILE_M / 2) then best, bd = i, d end
+      end
+    end
   end
   return best
 end
@@ -999,6 +1036,17 @@ function M.ahead(x, y, hx, hy, dist)
           end
         end
         e.col = want == 0 and 'none' or (solid == want and 'solid') or (made == want and 'made') or 'parked'
+        if e.col == 'parked' then       -- where each missing collider waits: walk (the import queue), parked (not near
+          e.miss = {}                   -- enough yet), held (the car in its box), none (no entry: dropped)
+          for what in pairs(t.colWant or {}) do
+            if not t[what] then e.miss[what] = 'none' end
+          end
+          for _, set in ipairs({ { walkQ, 'walk' }, { parked, 'parked' }, { held, 'held' } }) do
+            for _, q in ipairs(set[1]) do
+              if q.key == tileKey(anchorId, sq) and e.miss[q.what] then e.miss[q.what] = set[2] end
+            end
+          end
+        end
       end
       out[#out + 1] = e
     end
@@ -1018,7 +1066,7 @@ function M.status()
   local nf = 0
   for _, f in pairs(far) do if f.id and not f.hidden then nf = nf + 1 end end
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
-    walks = nw, roadMeshes = nr, decks = nd, buildings = nb, farBuildings = nf, walksQueued = #walkQ, solidAround = M.solidAround or 0,
+    walks = nw, roadMeshes = nr, decks = nd, buildings = nb, farBuildings = nf, walksQueued = #walkQ, solidAround = M.solidAround or 0, urgentWalks = M.urgentWalks or 0,
     quietS = sinceChange() / 1000, error = lastError, units = unitStats, unitLog = unitLog }
 end
 

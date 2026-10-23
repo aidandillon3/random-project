@@ -34,6 +34,15 @@ M.STUCK_S = 45
 M.STUCK_MS = 0.5
 M.STUCK_FAR_M = 40
 M.RESPAWN_M = { 60, 300 }   -- a respawned car goes this far (min, max) behind the camera
+-- A car heading for a graph node whose road the clip cut off (within 45 degrees, CUT_M or CUT_S of driving away) is
+-- respawned too: to the AI the cut is a dead end, and a car spawned facing one made a three-point turn on the spot
+-- (GitHub #72, "spawns the wrong way and tries to turn around immediately"; Bathurst 2026-10-21: 20 m from a cut)
+-- A car that has just appeared (FRESH_S) turns round for a cut much farther ahead (Bathurst: 89 m): CUT_FRESH_M.
+M.CUT_M = 60
+M.CUT_S = 4
+M.CUT_FRESH_M = 250
+M.FRESH_S = 5
+M.JUMP_M = 30           -- a car this much farther than at the last check was respawned (stock or ours)
 -- (gameplay_walk: 0.40's traffic.lua calls gameplay_walk.addVehicleToBlacklist when it activates its cars, and this
 -- level had none loaded: the cars spawned and never drove, 2026-10-19)
 M.EXTENSIONS = { 'core_multiSpawn', 'gameplay_traffic', 'gameplay_walk' }
@@ -50,6 +59,7 @@ local pendingSignals = nil -- the clipped nodes whose signals go in next frame
 local started = false
 local respawnAll = false
 local lastGuard = -math.huge
+local cuts = {}         -- { x, y } of the applied graph's nodes that lost a road to the clip
 
 -- Pure: point inside box {x0, y0, x1, y1} shrunk by m (no box: anywhere).
 function M.inside(b, x, y, m)
@@ -65,7 +75,7 @@ end
 
 -- Pure-ish (needs vec3): the stock map's node table of graph g clipped to box b: {name = {pos, radius,
 -- links = {other = edge}}}, every edge shared by both ends (double-sided) with in/out nodes, positions and radii.
--- Returns nodes, node count, edge count.
+-- Returns nodes, node count, edge count and the cuts: { x, y } of each kept node with a road to a node left out.
 function M.toNodes(g, b, edgeM, leftHand)
   local nodes, nn, ne = {}, 0, 0
   local keep = {}
@@ -82,8 +92,16 @@ function M.toNodes(g, b, edgeM, leftHand)
     end
     return t
   end
+  local cut, cutList = {}, {}
   for _, e in ipairs(g.edges) do
     local a, bb = e[1], e[2]
+    for _, pair in ipairs({ { a, bb }, { bb, a } }) do
+      local k = pair[1]
+      if keep[k] and not keep[pair[2]] and g.nodes[pair[2]] and not cut[k] then
+        cut[k] = true
+        cutList[#cutList + 1] = { keep[k][1], keep[k][2] }
+      end
+    end
     if keep[a] and keep[bb] and a ~= bb then
       local A, B = node(a), node(bb)
       if not A.links[bb] then
@@ -96,7 +114,17 @@ function M.toNodes(g, b, edgeM, leftHand)
       end
     end
   end
-  return nodes, nn, ne
+  return nodes, nn, ne, cutList
+end
+
+-- Pure: is a car at (px, py) moving along unit (dx, dy) heading for one of the cuts within reach m (45 degrees)?
+function M.headingToCut(px, py, dx, dy, list, reach)
+  for _, c in ipairs(list) do
+    local vx, vy = c[1] - px, c[2] - py
+    local d = math.sqrt(vx * vx + vy * vy)
+    if d <= reach and (d < 1 or (vx * dx + vy * dy) >= 0.7071 * d) then return true end
+  end
+  return false
 end
 
 function M.onMessage(msg, currentAnchor)
@@ -212,7 +240,7 @@ local function apply(b)
     M.rules = { rightHandDrive = r.rightHandDrive and true or false, turnOnRed = r.turnOnRed and true or false }
     M.SIGNAL_TYPE = r.redYellow and 'lightsBasicEU' or 'lightsBasic'
   end
-  local nodes, nn, ne = M.toNodes(graph, b, M.EDGE_M, M.rules.rightHandDrive)
+  local nodes, nn, ne, cl = M.toNodes(graph, b, M.EDGE_M, M.rules.rightHandDrive)
   local ts = signalsSystem()
   -- before the reset: its onNavgraphReloaded would place the old instances on the new graph (research §2.8)
   if ts then pcall(ts.resetSignals) end
@@ -250,7 +278,9 @@ local function apply(b)
   if keep then pcall(gps.afterGraph, keep, m.nodes) end    -- before the vehicles' new map
   be:queueAllObjectLua('mapmgr.requestMap()')
   pendingSignals = ts and nodes or nil     -- next frame: a second, smaller hitch instead of one big one
+  cuts = cl
   stats.applies, stats.lastMs, stats.nodes, stats.edges = stats.applies + 1, (os.clock() - t0) * 1000, nn, ne
+  stats.cuts = #cl
   return true
 end
 
@@ -314,6 +344,7 @@ end
 
 -- Traffic cars the block left behind (or all, after a teleport), and stuck ones, are respawned on the graph.
 local stillSince = {}   -- car id -> os.clock() it stopped moving
+local seenAt = {}       -- car id -> { x, y, os.clock() it appeared there }
 local function guard(b, all)
   local gt = gameplay_traffic
   if not gt or gt.getState() ~= 'on' then return end
@@ -329,13 +360,23 @@ local function guard(b, all)
       local o = getObjectByID(id)
       if o and o:getActive() then
         local p = o:getPosition()
+        local u = o:getVelocity()
+        local sp = math.sqrt(u.x * u.x + u.y * u.y)
+        local dir = sp > 1 and { x = u.x / sp, y = u.y / sp } or o:getDirectionVector()
+        local dl = math.sqrt(dir.x * dir.x + dir.y * dir.y)
+        local s0 = seenAt[id]
+        if not s0 or (p.x - s0[1]) ^ 2 + (p.y - s0[2]) ^ 2 > M.JUMP_M ^ 2 then s0 = { p.x, p.y, now } end
+        seenAt[id] = { p.x, p.y, s0[3] }
+        local reach = now - s0[3] < M.FRESH_S and M.CUT_FRESH_M or math.max(M.CUT_M, sp * M.CUT_S)
+        local toCut = dl > 1e-6 and M.headingToCut(p.x, p.y, dir.x / dl, dir.y / dl, cuts, reach)
+        if toCut then stats.cutRespawns = (stats.cutRespawns or 0) + 1 end
         if not paused and o:getVelocity():length() < M.STUCK_MS then
           stillSince[id] = stillSince[id] or now
         else
           stillSince[id] = nil
         end
         local d = pp and (p - pp):length() or math.huge
-        if all or not M.inside(b, p.x, p.y, M.GUARD_M) or M.stuck(stillSince[id], now, d) then
+        if all or toCut or not M.inside(b, p.x, p.y, M.GUARD_M) or M.stuck(stillSince[id], now, d) then
           stillSince[id] = nil
           -- behind the camera: the stock default is 100-500 m in front of it, where the player sees the car
           -- pop in and its tyres smoke as it lands (the photo comparisons, 2026-10-14)
@@ -481,6 +522,7 @@ function M.applies() return stats.applies end
 function M.status()
   return { graph = graph and graph.serial or nil, applies = stats.applies, lastMs = stats.lastMs,
            nodes = stats.nodes, edges = stats.edges, junctions = stats.junctions, started = started,
+           cuts = stats.cuts, cutRespawns = stats.cutRespawns,
            resetMs = stats.resetMs, signalsMs = stats.signalsMs,
            traffic = gameplay_traffic and gameplay_traffic.getState() or nil }
 end
@@ -491,6 +533,8 @@ function M.reset()
   started, respawnAll, lastGuard, heldActive = false, false, -math.huge, nil
   pendingSignals = nil
   stillSince = {}
+  seenAt = {}
+  cuts = {}
   M.restoreChoice()
   stats = { applies = 0, lastMs = 0, nodes = 0, edges = 0 }
 end

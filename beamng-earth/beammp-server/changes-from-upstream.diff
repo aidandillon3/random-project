@@ -1,4 +1,4 @@
---- upstream v1.5.4-beta/core.lua
+--- upstream v1.5.5-beta/core.lua
 +++ beamng_earth_mp/core.lua
 @@ -100,6 +100,7 @@
  local rebaseLag = 0 -- frames between a vehicle move request and its visibility (measured, see commitRebase)
@@ -56,7 +56,7 @@
  end
  
  -- Terrain-follow commit (V1_1_SPEC 1a, V1_2_DESIGN 2.3), in a governor heavy slot, atomic in one
-@@ -703,7 +725,7 @@
+@@ -706,7 +728,7 @@
    elseif t == 'anchor_ready' then
      local p = st.pending
      if not p or msg.requestId ~= p.requestId then return end -- stale answer
@@ -65,7 +65,7 @@
        p.ready, p.msg = true, msg -- committed in updateWorld() (distance rule / when not paused)
        if p.purpose == 'rebase' and p.sentAt then st.anchorLatency = st.clock - p.sentAt end
      else
-@@ -997,6 +1019,164 @@
+@@ -1000,6 +1022,164 @@
    return st.anchorId ~= nil and st.anchorSession == st.sessionId
  end
  
@@ -230,7 +230,7 @@
  local function updateWorld(dt)
    if st.floorZ and not st.placeFrames then M.floorCheck() end
    if st.placeFrames then
-@@ -1009,6 +1189,7 @@
+@@ -1012,6 +1192,7 @@
    end
    local pl = st.player
    if not pl then return end
@@ -238,7 +238,7 @@
  
    st.poseTimer = st.poseTimer + dt
    -- no pose before the resync with a restarted server commits (anchorKnown; hello named the
-@@ -1047,6 +1228,21 @@
+@@ -1050,6 +1231,21 @@
      local x0, y0, x1, y1 = lattice.groundBox(tr.cx or 0, tr.cy or 0)
      edgeDist = math.min(nx - x0, x1 - nx, ny - y0, y1 - ny)
    end
@@ -260,7 +260,7 @@
    local action = rebase.decide(pl.dist, p, staleDist, st.clock, st.retryAt, edgeDist)
    if p and p.ready and p.purpose == 'resync' then
      -- the player may have driven off the terrain the server prepared meanwhile: ask again
-@@ -1159,7 +1355,7 @@
+@@ -1162,7 +1358,7 @@
    -- a rebase / resync ready to commit moves the car with physics running: a guard pause gives way to it (it re-centres
    -- the block on the car), and no new pause for RESUME_GRACE_S (the commit waits for the next unpaused frame)
    local p = st.pending
@@ -269,7 +269,7 @@
      edgeguard.release(g)
      g.resumedAt = st.clock
    end
---- upstream v1.5.4-beta/camshift.lua
+--- upstream v1.5.5-beta/camshift.lua
 +++ beamng_earth_mp/camshift.lua
 @@ -71,8 +71,12 @@
  end
@@ -297,7 +297,7 @@
    local stats = { contexts = 0, viaDebug = false }
    local contexts = findContexts()
    if contexts then
---- upstream v1.5.4-beta/rebase.lua
+--- upstream v1.5.5-beta/rebase.lua
 +++ beamng_earth_mp/rebase.lua
 @@ -17,8 +17,10 @@
  -- 15 km: float32 positions have the same 0.98 mm step everywhere in [8192, 16384) m, so 15 km
@@ -312,7 +312,7 @@
  M.distance = M.DEFAULT_DISTANCE -- switch anchors at or beyond this horizontal distance
  M.PREFETCH_MARGIN = 300  -- prepare_anchor this much earlier, so the anchor is ready by `distance`
  M.STALE_DIST = 450       -- a prepared anchor whose terrain centre is this far (Chebyshev, new
---- upstream v1.5.4-beta/follow.lua
+--- upstream v1.5.5-beta/follow.lua
 +++ beamng_earth_mp/follow.lua
 @@ -47,7 +47,7 @@
                                               -- move is a ~50 ms frame, the new block's first draw; 2026-10-15)
