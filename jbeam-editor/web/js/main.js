@@ -26,12 +26,12 @@ async function loadState(st) {
   S.vehicles = st.vehicles;
   const sel = $('#vehicleSelect');
   sel.innerHTML = '';
-  const list = st.vehicles.slice().sort((a, b) => (b.editable - a.editable) || String(a.name).localeCompare(String(b.name)));
+  const list = st.vehicles.slice().sort((a, b) => (b.editable - a.editable) || String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' }));
   let group = null;
   for (const v of list) {
     const g = v.editable ? 'Your mods (editable)' : 'Read-only (game and zips)';
     if (g !== group) { group = g; sel.append(h('optgroup', { label: g })); }
-    const label = (v.name && !String(v.name).startsWith('vehiclesData') ? v.name : v.model) + `  (${v.model})`;
+    const label = v.name && v.name !== v.model ? `${v.name}  (${v.model})` : v.model;
     sel.lastChild.append(h('option', { value: v.model }, label));
   }
   if (!list.length) {
