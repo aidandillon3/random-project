@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -919,12 +920,26 @@ def make_handler(app):
     return Handler
 
 
+class EditorServer(ThreadingHTTPServer):
+    """An HTTP server that never shares its port.
+
+    Python's servers set SO_REUSEADDR, which on Windows lets a second server bind a port another one is
+    still listening on (an older editor left running in the background); the new editor's window would
+    then talk to the old one. Here the bind fails instead, and serve() moves on to the next port."""
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def serve(data_dir, port=8765, host="127.0.0.1"):
     app = App(data_dir)
     httpd = None
     for p in range(port, port + 20):
         try:
-            httpd = ThreadingHTTPServer((host, p), make_handler(app))
+            httpd = EditorServer((host, p), make_handler(app))
             port = p
             break
         except OSError:

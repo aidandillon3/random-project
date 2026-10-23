@@ -69,6 +69,40 @@ class LifetimeTests(unittest.TestCase):
         self.assertEqual(d["app"], "jbeam-editor")
 
 
+class PortTests(unittest.TestCase):
+    def test_a_port_another_server_listens_on_is_left_alone(self):
+        # an older editor left running holds the usual port: the new one must take the next port, or its
+        # window would show the old editor
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Old(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"old editor")
+
+            def log_message(self, *a):
+                pass
+        old = ThreadingHTTPServer(("127.0.0.1", 0), Old)    # SO_REUSEADDR, like every Python server
+        busy = old.server_address[1]
+        threading.Thread(target=old.serve_forever, daemon=True).start()
+        tmp = tempfile.mkdtemp()
+        try:
+            app, httpd, port = server.serve(os.path.join(tmp, "data"), busy)
+            self.assertNotEqual(port, busy)
+            self.assertFalse(httpd.allow_reuse_address and os.name == "nt")
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("GET", "/api/ping")
+            self.assertIn(b"jbeam-editor", c.getresponse().read())
+            httpd.shutdown()
+            httpd.server_close()
+        finally:
+            old.shutdown()
+            old.server_close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class StopRuleTests(unittest.TestCase):
     def test_never_opened(self):
         lt = appwindow.Lifetime(lambda: None, grace=1, first_wait=5)
