@@ -149,11 +149,16 @@ class Workspace:
             if r.inactive:
                 continue
             for m in r.models():
-                e = found.setdefault(m, {"model": m, "sources": [], "editable": False})
+                # a folder with only saved configs (like the user folder) holds no parts to edit
+                jb = any(f.lower().endswith(".jbeam") for f in r.files_under("vehicles/%s" % m))
+                e = found.setdefault(m, {"model": m, "sources": [], "editable": False, "parts": False})
                 e["sources"].append(r.label)
-                e["editable"] = e["editable"] or r.editable
+                e["editable"] = e["editable"] or (r.editable and jb)
+                e["parts"] = e["parts"] or jb
         out = []
         for m, e in found.items():
+            if not e.pop("parts"):
+                continue
             name, brand, typ = m, "", ""
             for r in self.roots:
                 if r.inactive or m not in r.models():
