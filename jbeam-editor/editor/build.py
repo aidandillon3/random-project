@@ -644,7 +644,7 @@ class Builder:
         if not main_name or main_name not in m.parts:
             mains = m.main_parts()
             if not mains:
-                raise ValueError("no part with slotType \"main\" in vehicles/%s" % m.name)
+                raise ValueError(no_main_message(m))
             main_name = mains[0]
         root_part = m.parts[main_name]
         root = copy_part(root_part)
@@ -985,6 +985,25 @@ def _table_pairs(t):
                 if x is not None and y is not None:
                     out.append([x, y])
     return out
+
+
+def no_main_message(m):
+    """Why a vehicle can't be opened when none of its parts has slotType "main"."""
+    own = "vehicles/%s/" % m.name.lower()
+    files = [fr for fr in m.files.values() if fr.rel.lower().replace("\\", "/").startswith(own)]
+    jbeams = [fr for fr in files if fr.rel.lower().endswith(".jbeam")]
+    bad = [(m.files[k], e) for k, e in m.errors if k in m.files and m.files[k] in jbeams]
+    if bad:
+        fr, err = bad[0]
+        more = " (and %d more)" % (len(bad) - 1) if len(bad) > 1 else ""
+        return ("%s can't be opened: %d of its %d .jbeam files could not be read%s, and none of the others has "
+                "the vehicle's main part. %s in %s: %s" % (m.name, len(bad), len(jbeams), more, fr.rel,
+                                                            fr.root.label, err))
+    if not jbeams:
+        return ("%s can't be opened: vehicles/%s has no .jbeam files, so it may only add configs or paints to a "
+                "vehicle that isn't installed." % (m.name, m.name))
+    return ("%s can't be opened: none of its %d .jbeam files has a part with slotType \"main\", so it may be an "
+            "add-on for another vehicle." % (m.name, len(jbeams)))
 
 
 def engine_device(vehicle):

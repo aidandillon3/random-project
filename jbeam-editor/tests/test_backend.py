@@ -85,6 +85,32 @@ class BuildTests(InstallCase):
         self.assertAlmostEqual(self.node(sc, "fw1l")["p"][0], 0.83)
 
 
+class BrokenVehicleTests(InstallCase):
+    def add_mod_files(self, files):
+        for rel, text in files.items():
+            path = os.path.join(self.inst["user"], "mods", "unpacked", "addons", *rel.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        self.app.ws.refresh()
+
+    def test_why_a_vehicle_cant_be_opened(self):
+        self.add_mod_files({
+            "vehicles/brokencar/brokencar.jbeam": '{"brokencar": {"slotType": "main", "nodes": [[}',
+            "vehicles/brokencar/extra.jbeam": '{"brokencar_seat": {"slotType": "brokencar_seat"}}',
+            "vehicles/skinonly/skinonly.pc": '{"format": 2, "parts": {}}',
+            "vehicles/addon/addon.jbeam": '{"addon_rack": {"slotType": "testcar_roof"}}',
+        })
+        for model, words in (("brokencar", ["1 of its 2 .jbeam files could not be read", "brokencar.jbeam"]),
+                             ("skinonly", ["has no .jbeam files"]),
+                             ("addon", ["none of its 1 .jbeam files", "add-on"])):
+            with self.subTest(model=model):
+                with self.assertRaises(ValueError) as cm:
+                    self.app.api_build({"model": model})
+                for w in words:
+                    self.assertIn(w, str(cm.exception))
+
+
 class SaveTests(InstallCase):
     def test_copy_part_and_move_node(self):
         res, mod = self.unpack_copy("testcar_body")

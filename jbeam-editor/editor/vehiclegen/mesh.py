@@ -126,9 +126,12 @@ class Mesh:
             q = [corners[x] for x in quad]
             self.oquad(mat, q[0], q[1], q[2], q[3], out)
 
-    def revolve(self, mat, profile, segments, centre=(0, 0, 0), radial_mod=None, seam_out=True):
-        """Surface of revolution about the x axis. profile: [(r, x)] in order; faces point away from the axis
-        (or along x where the profile is flat in r)."""
+    def revolve(self, mat, profile, segments, centre=(0, 0, 0), radial_mod=None, flip=False):
+        """Surface of revolution about the x axis through profile [(r, x), ...].
+
+        Faces point to the right of the profile's direction in the (x, r) plane: away from the axis where x
+        falls along the profile, towards +x where r grows. flip=True turns every face round. The game draws
+        only the front of a face, so a surface turned the wrong way is invisible from outside."""
         rings = []
         for k in range(segments):
             ang = 2 * math.pi * k / segments
@@ -147,7 +150,7 @@ class Mesh:
                 # outward normal of this profile segment in the (x, r) plane, rotated into place
                 tx, tr = x1 - x0, r1 - r0
                 nx, nr = tr, -tx
-                if not seam_out:
+                if flip:
                     nx, nr = -nx, -nr
                 out = (nx, radial[1] * nr, radial[2] * nr)
                 if abs(nx) < 1e-9 and abs(nr) < 1e-9:
@@ -654,10 +657,11 @@ def rim_mesh(name, g, ax, s):
     x_face = x_out - dish
     # barrel: inside surface (seen through the spokes) and the two lips
     prof_in = [(R - 0.006, x_out), (R - 0.006, -W / 2 + 0.01)]
-    M.revolve(m + "_metal", prof_in, 32, seam_out=False)
+    M.revolve(m + "_metal", prof_in, 32, flip=True)
+    # the lips: the outer one faces out of the wheel (+x), the inner one into the car, their edge away from the axis
     for x0, sign in ((x_out, 1), (-W / 2 + 0.01, -1)):
-        M.revolve(mat, [(R + lip, x0), (R - 0.006, x0)] if sign > 0 else [(R - 0.006, x0), (R + lip, x0)], 32)
-    M.revolve(mat, [(R + lip, x_out - 0.012), (R + lip, x_out)], 32)
+        M.revolve(mat, [(R - 0.006, x0), (R + lip, x0)] if sign > 0 else [(R + lip, x0), (R - 0.006, x0)], 32)
+    M.revolve(mat, [(R + lip, x_out), (R + lip, x_out - 0.012)], 32)
     # face
     hub_r = 0.075 * clamp(R / 0.22, 0.8, 1.4)
     M.revolve(mat, [(0.0, x_face + 0.03), (hub_r * 0.6, x_face + 0.028), (hub_r, x_face + 0.015)], 16)
@@ -741,7 +745,8 @@ def tire_mesh(name, g, ax, s):
             return 1.0 + lug / R
         return 1.0
     M = Mesh(name)
-    M.revolve(m + "_tire", prof, segs, radial_mod=mod)
+    # the profile runs from one bead over the tread to the other, which puts its right-hand side inside the tire
+    M.revolve(m + "_tire", prof, segs, radial_mod=mod, flip=True)
     if s < 0:
         _mirror_x(M)
     return M

@@ -228,6 +228,35 @@ class GeneratorTests(unittest.TestCase):
                     inward += area
         self.assertGreater(out / (out + inward), 0.9)
 
+    def test_wheels_face_outward(self):
+        # the game draws only the front of a face: a tire turned inside out shows its inside instead
+        for style in ("sedan", "offroad"):
+            gen = vehiclegen.Generator({"style": style})
+            gen.run()
+            for ax in gen.axle_list:
+                w = gen.wheels[ax.id]
+                core = (w["r"] + w["hub_r"]) / 2
+                for c in ax.corners:
+                    side = c.side.upper()
+                    with self.subTest(style=style, wheel=ax.id + side):
+                        out = inward = 0.0
+                        for n, area, (x, y, z) in _faces(gen.meshes["%s_tire_%s_%s" % (gen.P.model, ax.id, side)]):
+                            r = math.hypot(y, z)
+                            away = (x, y - y / r * core, z - z / r * core)      # from the tire's core circle
+                            if chassis.v_dot(n, away) >= 0:
+                                out += area
+                            else:
+                                inward += area
+                        self.assertGreater(out / (out + inward), 0.97)
+                        # the rim's outer lip faces out of the wheel
+                        R, W = w["hub_r"] + 0.005, w["hub_w"]
+                        x_lip = c.s * (W / 2 - 0.005)
+                        lip = [(n, area) for n, area, (x, y, z) in
+                               _faces(gen.meshes["%s_rim_%s_%s" % (gen.P.model, ax.id, side)], gen.P.model + "_rim")
+                               if abs(x - x_lip) < 1e-6 and math.hypot(y, z) > R - 0.006]
+                        self.assertTrue(lip)
+                        self.assertTrue(all(n[0] * c.s > 0 for n, area in lip))
+
     def test_collision_triangles_face_outward(self):
         g = vehiclegen.generate({"style": "wagon"})
         S = g.structure
@@ -278,6 +307,17 @@ def check_lights(tc, g):
     tc.assertEqual(ss[0], ["name", "src"])
     tc.assertEqual(ss[2][0], "horn")
     tc.assertAlmostEqual(S.pos(ss[1]["node:"])[1], y_front, delta=0.3)
+
+
+def _faces(M, material=None):
+    """(normal by the right-hand rule, area, centroid) of every triangle of a mesh (or of one material)."""
+    for mat, lst in M.t.items():
+        if material and mat != material:
+            continue
+        for t in range(0, len(lst), 3):
+            a, b, c = (M.at(i) for i in lst[t:t + 3])
+            n = chassis.v_cross(chassis.v_sub(b, a), chassis.v_sub(c, a))
+            yield n, chassis.v_len(n) / 2, tuple((a[k] + b[k] + c[k]) / 3 for k in range(3))
 
 
 def _gen(g):
