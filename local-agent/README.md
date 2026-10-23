@@ -39,8 +39,8 @@ It's laid out like the Claude app:
   then what it may do without asking, how long it thinks, and the model. **↑** sends (or Enter), and
   turns into **■** Stop while it works (or Esc).
 - **Text size**: Ctrl + bigger, Ctrl - smaller, Ctrl 0 back to normal, or Ctrl + mouse wheel over the
-  chat. Settings > Look has the same, and switches answers between serif (as in the Claude app) and
-  sans serif.
+  chat. Settings > Look has the same, and switches answers between sans serif
+  (the default) and serif.
 - **Plan & context** (top right) opens the plan for bigger tasks, how full the context is and the
   work folder. It opens by itself when a plan comes in.
 - Each answer has **Copy** under it.
