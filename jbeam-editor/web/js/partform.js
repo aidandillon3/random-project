@@ -1,10 +1,11 @@
 // "Make it a part": the choices for turning a placed mesh into a BeamNG part, with a
 // live preview of the structure in the 3D view. Shared by the importer and the Workshop.
-import { S, A } from './state.js';
-import { showStructure } from './view3d.js';
+import { S, A, emit, on, off } from './state.js';
+import { showStructure, updateGizmo } from './view3d.js';
+import { updateHint } from './tools.js';
 import { partEditable } from './scene.js';
 import { rootPicker, slotSelect, freePrefix } from './dialogs.js';
-import { attachBeams, createPart, makeStructure, meshOnPart, meshBounds, STIFFNESS } from './partmaker.js';
+import { attachBeams, createPart, makeStructure, meshOnPart, meshBounds, mountSettings, mountSpringLimit, MOUNT, STIFFNESS } from './partmaker.js';
 import { assignWeights } from './smartfit.js';
 import { icon } from './icons.js';
 import { $, h, fmt, toast, debounce, setLoading } from './util.js';
@@ -16,6 +17,7 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
   const st = {
     kind, detail: 'medium', stiffness: 'panel', mass, collision: true, breakable: true,
     attach: S.sel.nodes.size ? 'sel' : 'near', fit: null, at: null,
+    mount: 'light', springOv: null, strengthOv: null, mt: null,
   };
   const anchors = () => [...S.sel.nodes].filter(i => !S.scene.nodes[i].del);
   const nameIn = h('input', { type: 'text', value: baseName });
@@ -53,13 +55,59 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
   const collision = h('input', { type: 'checkbox', checked: true });
   collision.addEventListener('change', () => { st.collision = collision.checked; update(); });
   const breakable = h('input', { type: 'checkbox', checked: true });
-  breakable.addEventListener('change', () => { st.breakable = breakable.checked; });
+  breakable.addEventListener('change', () => { st.breakable = breakable.checked; st.strengthOv = null; update(); });
   const attachSel = h('select', {},
     h('option', { value: 'sel' }, 'To the nodes I selected'),
     h('option', { value: 'near' }, 'To the nearest vehicle nodes'),
     h('option', { value: 'none' }, 'Not attached (it falls off)'));
   attachSel.value = st.attach;
-  attachSel.addEventListener('change', () => { st.attach = attachSel.value; update(); });
+  attachSel.addEventListener('change', () => {
+    st.attach = attachSel.value;
+    if (st.attach === 'sel' && !anchors().length) setPick(true);
+    if (st.attach !== 'sel') setPick(false);
+    showPickRow();
+    update();
+  });
+
+  // picking the vehicle nodes it bolts to, right in the 3D view
+  const pickBtn = h('button', { class: 'small', onclick: () => setPick(!S.nodePick) });
+  const pickInfo = h('span', { class: 'muted', style: { fontSize: '12px' } });
+  const pickRow = h('div', { class: 'btnrow', style: { marginTop: 0 } }, pickBtn, pickInfo,
+    h('button', { class: 'small ghost', title: 'Unpick all', onclick: () => { S.sel.nodes.clear(); emit('selection'); } }, 'Clear'));
+  function setPick(on) {
+    S.nodePick = on;
+    pickBtn.replaceChildren(icon(on ? 'check' : 'target', 13), on ? 'Done picking' : 'Pick nodes on the vehicle');
+    pickBtn.classList.toggle('primary', on);
+    A.applyDisplay();
+    updateGizmo();
+    updateHint(on ? 'Click the vehicle nodes the part bolts to (Shift+click for more, drag a box around several, Ctrl+click to unpick). Pick at least 3 that aren\'t in a line.' : undefined);
+  }
+  function showPickRow() {
+    pickRow.classList.toggle('hidden', st.attach !== 'sel');
+    const n = anchors().length;
+    pickInfo.textContent = n ? `${n} vehicle node${n === 1 ? '' : 's'} picked` : 'none picked yet';
+  }
+  const onSel = () => { if (!container.isConnected) return stop(); showPickRow(); update(); };
+  on('selection', onSel);
+
+  // how firmly it is fixed on
+  const mountSel = h('select', {}, ...Object.entries(MOUNT).map(([k, v]) => h('option', { value: k, selected: k === st.mount }, v.label)));
+  mountSel.addEventListener('change', () => { st.mount = mountSel.value; st.springOv = st.strengthOv = null; update(); });
+  const springIn = h('input', { type: 'number', step: '100000', min: '10000', style: { width: '120px' } });
+  springIn.addEventListener('change', () => { const v = +springIn.value; st.springOv = v > 0 ? v : null; update(); });
+  const strengthIn = h('input', { type: 'number', step: '1', min: '1', style: { width: '90px' }, placeholder: 'never' });
+  strengthIn.addEventListener('change', () => { const v = +strengthIn.value; st.strengthOv = strengthIn.value === '' ? 'FLT_MAX' : v > 0 ? v * 1000 : null; update(); });
+  for (const i of [springIn, strengthIn]) i.addEventListener('keydown', e => e.stopPropagation());
+  const mountNote = h('div', { class: 'note' });
+  const mountNow = () => {
+    const m = mountSettings(st.stiffness, st.mount, st.breakable);
+    if (st.springOv) m.spring = st.springOv;
+    if (st.strengthOv) m.strength = st.strengthOv;
+    const lim = st.at?.beams.length ? mountSpringLimit(st.at.beams) : null;
+    m.limited = lim !== null && m.spring > lim;
+    if (m.limited) m.spring = lim;
+    return m;
+  };
   const activeOk = S.activePart && partEditable(S.activePart);
 
   const structBox = h('div', {},
@@ -68,8 +116,12 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
       h('span', { class: 'k' }, 'Stiffness'), stiffSel,
       h('span', { class: 'k' }, 'Mass (kg)'), massIn,
       h('span', { class: 'k' }, 'Collision'), h('label', { class: 'chk' }, collision, 'Other things bump into it'),
-      h('span', { class: 'k' }, 'Mounted'), attachSel,
+      h('span', { class: 'k' }, 'Mounted'), h('span', {}, attachSel, pickRow),
+      h('span', { class: 'k', title: 'How firmly it is fixed to the vehicle' }, 'Mount strength'), mountSel,
+      h('span', { class: 'k', title: 'Stiffness of each mounting beam in N/m. Higher holds it tighter.' }, 'Mount spring'), springIn,
+      h('span', { class: 'k', title: 'The pull in kilonewtons that breaks a mounting beam. Empty: never breaks.' }, 'Breaks at (kN)'), strengthIn,
       h('span', { class: 'k' }, ''), h('label', { class: 'chk' }, breakable, 'Can break off in a crash'),
+      h('span', { class: 'k' }, ''), mountNote,
       h('span', { class: 'k' }, 'Slot'), h('span', {}, slotSel, slotWarn),
       h('span', { class: 'k' }, 'Name in parts menu'), titleIn,
       h('span', { class: 'k' }, 'Save into mod'), root),
@@ -89,9 +141,15 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
       const prefix = freePrefix(nameIn.value || 'part');
       const vc = S.scene ? centreOf() : null;
       st.fit = makeStructure(m.pos, m.idx, { kind: st.kind, detail: st.detail, prefix, inside: vc });
-      st.at = st.attach === 'none' ? { beams: [] } : attachBeams(st.fit, st.attach, anchors());
+      st.at = st.attach === 'none' ? { beams: [] } : attachBeams(st.fit, st.attach, anchors(), st.mount);
+      st.mt = mountNow();
+      springIn.value = st.mt.spring;
+      strengthIn.value = st.mt.strength === 'FLT_MAX' ? '' : +(st.mt.strength / 1000).toFixed(1);
+      mountNote.textContent = (st.at.beams.length ? `${st.at.beams.length} mounting beams` +
+        (st.mt.strength === 'FLT_MAX' ? ', never break' : `, each breaks at ${fmt(st.mt.strength / 1000, 1)} kN`) + '.' : '') +
+        (st.mt.limited ? ' The spring is as stiff as the vehicle\'s nodes take and stay stable; pick more nodes to hold it tighter.' : '');
       const s = STIFFNESS[st.stiffness];
-      const w = assignWeights(st.fit, st.mass, { spring: s.spring, damp: s.damp, attach: st.at.beams });
+      const w = assignWeights(st.fit, st.mass, { spring: s.spring, damp: s.damp, attach: st.at.beams, attachSpring: st.mt.spring });
       showStructure(st.collision ? st.fit : { ...st.fit, tris: [] }, { attach: st.at.beams });
       const size = meshBounds(m.pos).size;
       stats.innerHTML = '';
@@ -103,7 +161,7 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
           'Use less detail or softer stiffness for a lighter part, or keep it: the weights are raised to stay stable.'));
       }
       if (st.at.warn) stats.append(h('div', { class: 'warn' }, st.at.warn));
-      if (st.attach === 'sel' && !anchors().length) stats.append(h('div', { class: 'warn' }, 'Select the vehicle nodes it bolts to (in the 3D view), or pick "nearest".'));
+      if (st.attach === 'sel' && !anchors().length) stats.append(h('div', { class: 'warn' }, 'Pick the vehicle nodes it bolts to (Pick nodes on the vehicle), or choose "nearest".'));
     } catch (e) {
       stats.textContent = 'Could not build the structure: ' + e.message;
     }
@@ -123,6 +181,7 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
       if (st.kind === 'mesh') {
         if (!activeOk) throw new Error('Pick a part you can edit first (Structure > Part you\'re editing).');
         const grp = await meshOnPart({ pos: m.pos, idx: m.idx, uv: m.uv, name, part: S.activePart, color: rgb, paint: paint.checked, groups: m.groups });
+        stop();
         showStructure(null);
         onDone?.();
         toast(`Added the mesh to ${S.activePart}. It bends with the "${grp}" nodes.`, 'ok', 7000);
@@ -132,9 +191,11 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
       const slot = slotSel.getSlot();
       if (!slot) throw new Error('Pick a slot for the part.');
       const rootId = await root.getRoot();
+      setPick(false);
       const r = await createPart({ pos: m.pos, idx: m.idx, uv: m.uv, name, title: titleIn.value.trim() || name, slot, rootId,
         fit: st.fit, attach: st.at.beams, mass: st.mass, stiffness: st.stiffness, collision: st.collision, breakable: st.breakable,
-        color: rgb, paint: paint.checked, groups: m.groups });
+        mount: st.mt, color: rgb, paint: paint.checked, groups: m.groups });
+      stop();
       showStructure(null);
       onDone?.();
       toast(`Made part ${name}: ${r.nodes} nodes, ${r.beams} beams, ${r.tris} triangles, ${fmt(r.mass, 1)} kg.` +
@@ -153,12 +214,18 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
     h('p', { class: 'note' }, 'Structure: the nodes and beams the game simulates. Fitted to the shape follows the model, so it collides and crumples where it really is.'),
     kindSeg, structBox, meshBox, err,
     h('div', { class: 'btnrow' },
-      onCancel ? h('button', { onclick: () => { showStructure(null); onCancel(); } }, 'Cancel') : null,
+      onCancel ? h('button', { onclick: () => { stop(); showStructure(null); onCancel(); } }, 'Cancel') : null,
       h('button', { class: 'primary', onclick: go }, icon('check', 15), 'Make part')));
+  function stop() {
+    off('selection', onSel);
+    if (S.nodePick) setPick(false);
+  }
   showFor();
   checkSlot();
+  showPickRow();
+  setPick(st.attach === 'sel' && !anchors().length);
   compute();
-  return { update, refresh: compute, clear: () => showStructure(null) };
+  return { update, refresh: compute, clear: () => { stop(); showStructure(null); } };
 }
 
 function centreOf() {

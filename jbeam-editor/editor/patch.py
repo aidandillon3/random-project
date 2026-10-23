@@ -277,6 +277,7 @@ class Session:
         self.docs = {}       # file key -> TextDoc
         self.new_files = {}  # disk path -> text
         self.originals = {}  # file key -> original text
+        self.raw = {}        # disk path -> (bytes, root label or None, rel): mesh files
 
     def doc(self, fkey):
         if fkey in self.docs:
@@ -491,6 +492,15 @@ class Session:
             raise EditError("%s already exists" % rel)
         self.new_files[path] = op["text"]
 
+    def write_raw(self, root, rel, data):
+        """Replace (or with root=None, create) a non-JBeam file such as a .dae; backed up like the rest."""
+        if root is None:
+            self.raw[rel] = (data, None, None)
+        else:
+            if not root.editable:
+                raise EditError("%s can't be changed" % rel)
+            self.raw[root.full_path(rel)] = (data, root.label, rel)
+
     def commit(self, label="edit"):
         """Validate and write every changed file. Returns the list of written paths."""
         outputs = {}
@@ -511,6 +521,7 @@ class Session:
                 except jbeamfile.ParseError as e:
                     raise EditError("new file %s doesn't parse (%s)" % (os.path.basename(path), e))
             outputs[path] = (text, None, None)
+        outputs.update(self.raw)
         stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
         written = []
         for path, (text, label_root, rel) in outputs.items():
@@ -520,8 +531,12 @@ class Session:
                 shutil.copy2(path, dst)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + ".jbeam-editor-tmp"
-            with open(tmp, "w", encoding="utf-8", newline="") as f:
-                f.write(text)
+            if isinstance(text, bytes):
+                with open(tmp, "wb") as f:
+                    f.write(text)
+            else:
+                with open(tmp, "w", encoding="utf-8", newline="") as f:
+                    f.write(text)
             os.replace(tmp, path)
             written.append(path)
         return written

@@ -12,7 +12,9 @@ vehicle:
 - **Scrap Mechanic import**: turn a Scrap Mechanic creation into a BeamNG
   vehicle, with its wheels, suspension, steering and engine.
 - **3D Model Workshop**: model a bumper, roof rack or light bar in the editor and
-  bolt it on with a node structure fitted to its shape.
+  bolt it on with a node structure fitted to its shape. Pick the vehicle nodes it
+  bolts to by clicking them, and choose how strong the mount is (light, normal,
+  strong or welded, or your own spring and breaking force).
 - **Import a 3D model** (`.obj`, `.glb`, `.gltf`, `.stl`, `.dae`) as a new part.
 - **Parts, Tuning and Structure** for detailed work: the game's parts menu and
   tuning sliders, and direct editing of nodes, beams, collision triangles and
@@ -113,9 +115,17 @@ its folder in Settings (the one with `Data` and `Survival` in it).
 
 ## Structure (detailed editing)
 
-- Select (click, Shift+click, box drag) and move nodes with the arrows; add
-  nodes that connect to what you had selected; join nodes with beams; make
-  collision triangles; delete; mirror left and right sides.
+- Select (click, Shift+click, box drag), then drag the handles to **move** (W),
+  **stretch** (R) or **turn** (E) what you selected; add nodes that connect to
+  what you had selected; join nodes with beams; make collision triangles;
+  delete; mirror left and right sides.
+- **Reshape parts with their model.** With *Model follows* on, the 3D model
+  bends and stretches with the nodes as you move them, and saving writes the new
+  shape into the model's `.dae` too (the game doesn't move a model when only its
+  nodes move). To make a bed wider, use ⋯ > *Select its nodes* in Parts, pick
+  *Stretch* and drag the side handle, or type a factor under *Stretch* in the
+  properties. A model that belongs to the game is copied into your mod under a
+  new name instead of being changed.
 - Every node, beam and triangle option is editable, and any part's text can be
   opened and edited directly.
 - **Weights and stability**: each node is checked against the stiffness and
@@ -124,6 +134,9 @@ its folder in Settings (the one with `Data` and `Survival` in it).
   stiff areas get more weight.
 - **New parts and upfits**: copy a part (also one from the game, into your own
   mod), start from a braced box, or start empty; add slots for upfits.
+- **How firmly a part is mounted** (⋯ next to its slot): makes the beams that
+  hold it to the rest of the vehicle stiffer and harder to break, up to never
+  breaking.
 - **Check** runs a full checker over your mod; **Export** packs it into a zip.
 
 Press **Help** in the editor for the mouse and keyboard controls.

@@ -201,6 +201,167 @@ scenario('workshop', async page => {
   await page.waitForFunction(() => window.jbe.S.scene.parts.test_box_part, null, { timeout: 20000 });
 });
 
+// pick vehicle nodes to bolt a Workshop part to, in the 3D view, and make the mount strong
+scenario('attach-pick', async page => {
+  await page.click('#modeTabs [data-mode=model]');
+  await page.waitForSelector('#modelPane .toolgrid button');
+  await page.evaluate(() => { window.jbe.S.sel.nodes.clear(); window.jbe.emit('selection'); });
+  await page.click('#modelPane .toolgrid button:first-child');
+  await page.evaluate(() => { const { W } = window.jbeWorkshop; W.selObjs.clear(); });
+  await page.click('#modelPane button.primary');
+  await page.waitForSelector('#modelPane .seg');
+  // "To the nodes I selected" with nothing picked starts picking: the vehicle's nodes show and can be clicked
+  await page.evaluate(() => {
+    const sel = [...document.querySelectorAll('#modelPane select')].find(s => [...s.options].some(o => o.value === 'sel'));
+    sel.value = 'sel';
+    sel.dispatchEvent(new Event('change'));
+  });
+  const st = await page.evaluate(() => ({ pick: window.jbe.S.nodePick, nodes: window.jbe.V.visible.nodes, gizmo: !!window.jbe.V.gizmo.object }));
+  if (!st.pick || !st.nodes || st.gizmo) throw new Error('picking did not start: ' + JSON.stringify(st));
+  await page.click('[data-view=top]').catch(() => {});
+  await sleep(300);
+  // click three body nodes on screen
+  const pts = await page.evaluate(() => {
+    const { S, V } = window.jbe;
+    const r = V.renderer.domElement.getBoundingClientRect();
+    return ['f1l', 'f1r', 'f2l'].map(id => {
+      const n = S.scene.nodes[S.scene.nodeById.get(id)];
+      const v = new V.pivot.position.constructor(...n.p);
+      v.z += V.offsetZ || 0;
+      v.project(V.camera);
+      return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height];
+    });
+  });
+  for (const [k, [x, y]] of pts.entries()) {
+    if (k) await page.keyboard.down('Shift');
+    await page.mouse.click(x, y);
+    if (k) await page.keyboard.up('Shift');
+  }
+  const picked = await page.evaluate(() => [...window.jbe.S.sel.nodes].map(i => window.jbe.S.scene.nodes[i].id).sort());
+  if (picked.join() !== 'f1l,f1r,f2l') throw new Error('picked ' + picked.join());
+  await page.screenshot({ path: path.join(OUT, 'attach-pick.png') });
+  await page.evaluate(() => {
+    const sel = [...document.querySelectorAll('#modelPane select')].find(s => [...s.options].some(o => o.value === 'strong'));
+    sel.value = 'strong';
+    sel.dispatchEvent(new Event('change'));
+  });
+  await sleep(400);
+  await page.fill('#modelPane input[type=text]', 'test_pick_part');
+  await page.click('#modelPane .btnrow button.primary >> text=Make part');
+  await page.waitForFunction(() => window.jbe.S.scene.parts.test_pick_part, null, { timeout: 20000 });
+  const mount = await page.evaluate(() => {
+    const { S } = window.jbe;
+    const sc = S.scene;
+    const bs = sc.beams.filter(b => b.part === 'test_pick_part' && (sc.nodes[b.a].part !== b.part || sc.nodes[b.b].part !== b.part));
+    return { n: bs.length, ids: [...new Set(bs.map(b => [sc.nodes[b.a].id, sc.nodes[b.b].id].find(id => /^f\d/.test(id))))].sort(),
+      k: bs.map(b => b.k), s: bs.map(b => b.s), pick: S.nodePick };
+  });
+  if (mount.pick || mount.n !== 15 || mount.ids.join() !== 'f1l,f1r,f2l' || !(mount.s[0] > 1e6)) throw new Error('mount ' + JSON.stringify(mount).slice(0, 300));
+});
+
+// the mount of an existing part made stronger from the parts menu
+scenario('mount-dialog', async page => {
+  await page.click('#modeTabs [data-mode=structure]');
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('#partsTree .slotrow')].find(r => r.querySelector('select')?.value === 'test_pick_part');
+    row.querySelector('button[title^="More"]').click();
+  });
+  await page.evaluate(() => [...document.querySelectorAll('.popmenu button')].find(b => /firmly/.test(b.textContent)).click());
+  await page.waitForSelector('#modal:not(.hidden)');
+  await page.evaluate(() => { const s = document.querySelector('#modalBody select'); s.value = 'Infinity'; s.dispatchEvent(new Event('change')); });
+  await page.evaluate(() => [...document.querySelectorAll('#modalBody button')].find(b => /Change it/.test(b.textContent)).click());
+  const r = await page.evaluate(async () => {
+    const { S, A } = window.jbe;
+    const sc = S.scene;
+    const bs = () => sc.beams.filter(b => b.part === 'test_pick_part' && (sc.nodes[b.a].part !== b.part || sc.nodes[b.b].part !== b.part));
+    const s = bs().map(b => b.s);
+    await A.save({ quiet: true });
+    const sc2 = S.scene;
+    const s2 = sc2.beams.filter(b => b.part === 'test_pick_part' && (sc2.nodes[b.a].part !== b.part || sc2.nodes[b.b].part !== b.part)).map(b => b.s);
+    return { s, s2 };
+  });
+  if (!r.s.length || r.s2.some(v => v !== 'FLT_MAX')) throw new Error(JSON.stringify(r).slice(0, 300));
+});
+
+const meshSize = (page, part, axis) => page.evaluate(({ part, axis }) => {
+  const { V } = window.jbe;
+  const m = V.groups.mesh.children.find(c => c.userData.part === part);
+  if (!m) return null;
+  m.geometry.computeBoundingBox();
+  const b = m.geometry.boundingBox.clone().applyMatrix4(m.matrix);
+  return b.max.getComponent(axis) - b.min.getComponent(axis);
+}, { part, axis });
+
+// stretch a part with the handles: the model follows, and saving writes it into its .dae
+scenario('reshape', async page => {
+  await page.click('#modeTabs [data-mode=structure]');
+  const w0 = await meshSize(page, 'test_pick_part', 0);
+  await page.evaluate(() => {
+    const { S, V, emit } = window.jbe;
+    S.sel.nodes.clear();
+    S.scene.nodes.forEach((n, i) => { if (!n.del && n.part === 'test_pick_part') S.sel.nodes.add(i); });
+    emit('selection');
+    document.querySelector('#gizmoModes [data-gizmo=scale]').click();
+    // a drag of the stretch handle: 1.5 times as wide
+    V.gizmo.dispatchEvent({ type: 'dragging-changed', value: true });
+    V.pivot.scale.set(1.5, 1, 1);
+    V.gizmo.dispatchEvent({ type: 'objectChange' });
+    V.gizmo.dispatchEvent({ type: 'dragging-changed', value: false });
+  });
+  const w1 = await meshSize(page, 'test_pick_part', 0);
+  if (!(Math.abs(w1 / w0 - 1.5) < 0.03)) throw new Error(`model did not follow: ${w0} -> ${w1}`);
+  await page.screenshot({ path: path.join(OUT, 'reshape-live.png') });
+  await page.evaluate(() => window.jbe.A.save({ quiet: true }));
+  await waitIdle(page);
+  const after = await page.evaluate(() => {
+    const { V } = window.jbe;
+    const m = V.groups.mesh.children.find(c => c.userData.part === 'test_pick_part');
+    return { shared: m.userData.sharedGeometry };
+  });
+  const w2 = await meshSize(page, 'test_pick_part', 0);
+  if (!after.shared || !(Math.abs(w2 / w0 - 1.5) < 0.03)) throw new Error(`saved model: ${w0} -> ${w2} ${JSON.stringify(after)}`);
+  await page.click('#gizmoModes [data-gizmo=translate]');
+});
+
+// a part copied from the game keeps the game's model: reshaping it saves a copy of the model in the mod
+scenario('reshape-copy', async page => {
+  const r = await page.evaluate(async () => {
+    const { S, A } = window.jbe;
+    const root = S.summary.editableRoots[0].id;
+    const res = await fetch('api/new_part', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: S.model, root, name: 'my_body', mode: 'copy', source: 'testcar_body' }) }).then(x => x.json());
+    S.summary = res.summary;
+    S.config.parts.testcar_body = 'my_body';
+    await A.rebuild();
+    return Object.keys(S.scene.parts).includes('my_body');
+  });
+  if (!r) throw new Error('copy not in the vehicle');
+  await waitIdle(page);
+  await page.waitForFunction(() => window.jbe.V.groups.mesh.children.some(c => c.userData.part === 'my_body'), null, { timeout: 10000 });
+  const l0 = await meshSize(page, 'my_body', 1);
+  await page.evaluate(() => {
+    const { S, emit } = window.jbe;
+    S.sel.nodes.clear();
+    S.scene.nodes.forEach((n, i) => { if (!n.del && n.part === 'my_body') S.sel.nodes.add(i); });
+    emit('selection');
+  });
+  // the Stretch row in the properties: 1.2 times as long
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('#props .props')].find(p => /Stretch/.test(p.textContent));
+    const ins = row.querySelectorAll('input[type=number]');
+    ins[1].value = '1.2';
+    ins[1].dispatchEvent(new Event('change'));
+    [...document.querySelectorAll('#props button')].find(b => b.textContent === 'Stretch').click();
+  });
+  const l1 = await meshSize(page, 'my_body', 1);
+  if (!(l1 / l0 > 1.1)) throw new Error(`model did not follow: ${l0} -> ${l1}`);
+  await page.evaluate(() => window.jbe.A.save({ quiet: true }));
+  await waitIdle(page);
+  const fb = await page.evaluate(() => window.jbe.S.scene.flexbodies.filter(f => f.part === 'my_body').map(f => f.mesh));
+  const l2 = await meshSize(page, 'my_body', 1);
+  if (fb.join() !== 'testcar_body_reshaped' || !(Math.abs(l2 - l1) < 0.02)) throw new Error(`saved: ${fb} ${l0} ${l1} ${l2}`);
+});
+
 async function builderRange(page, label, value) {
   await page.evaluate(({ label, value }) => {
     const box = [...document.querySelectorAll('#builderPane .slider')].find(b => b.querySelector('.name').textContent.trim() === label);

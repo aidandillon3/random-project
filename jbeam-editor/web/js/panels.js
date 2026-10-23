@@ -1,12 +1,12 @@
 // Side panels: the parts tree (like the game's parts menu), tuning sliders,
 // problems, the properties of what's selected, and weights / auto-weight.
 import { S, A, emit, clearSelection } from './state.js';
-import { DAMP_RED, DAMP_YELLOW, STIFF_RED, STIFF_YELLOW, effOpts, minStableWeight, mirrorPartner, partEditable,
+import { DAMP_RED, DAMP_YELLOW, DT, STIFF_RED, STIFF_TARGET, STIFF_YELLOW, effOpts, minStableWeight, mirrorPartner, partEditable,
   partMass, toRaw, totalMass, BEAM_TYPE_INFO } from './scene.js';
 import { commit, opNodeMove, opNodeSet, opRowSet } from './edit.js';
 import { deleteSelection, flipSelectedTris, connectSelected, frameSelection } from './tools.js';
 import { frame } from './view3d.js';
-import { $, debounce, fmt, h, num, numInput, popupMenu, textInput, toast } from './util.js';
+import { $, closeModal, debounce, fmt, h, num, numInput, openModal, popupMenu, textInput, toast } from './util.js';
 import { addSlotDialog, newPartDialog, partTextDialog } from './dialogs.js';
 import { icon } from './icons.js';
 
@@ -75,6 +75,7 @@ function slotNode(slot, depth, q) {
       chosen ? ['Select its nodes', () => focusPart(chosen)] : null,
       slot.path !== '/' ? [chosen && !canEdit ? 'Make an editable copy…' : 'New part for this slot…', () => newPartDialog({ slot })] : null,
       chosen ? ['Add a slot to this part (for upfits)…', () => addSlotDialog(chosen), !canEdit] : null,
+      chosen ? ['How firmly it is mounted…', () => mountDialog(chosen), !canEdit] : null,
     ].filter(Boolean)));
     icons.append(more);
   }
@@ -102,6 +103,66 @@ function setSlot(slot, value) {
   S.config.parts[slot.id] = value;
   if (slot.path in S.config.parts) S.config.parts[slot.path] = value;
   A.rebuild();
+}
+
+// How firmly a part is held on: the beams of the part that reach nodes of other parts, made
+// stiffer and harder to break (or weaker), as far as the nodes at their ends stay stable.
+const HOLD = [[0.5, 'Weaker'], [1, 'As it is now'], [2, 'Stronger (×2)'], [5, 'Much stronger (×5)'], [20, 'Very strong (×20)'],
+  [Infinity, 'Never breaks off']];
+function mountDialog(part) {
+  const sc = S.scene;
+  const els = sc.beams.filter(b => !b.del && b.part === part && editable(b) && (sc.nodes[b.a].part !== part || sc.nodes[b.b].part !== part));
+  if (!els.length) return toast('This part has no beams to the rest of the vehicle, so there is nothing to make stronger. It may share nodes with another part instead.');
+  const med = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
+  const never = v => v === 'FLT_MAX' || !isFinite(num(v, Infinity));
+  const k0 = med(els.map(b => num(b.k, 0))), c0 = med(els.map(b => num(b.c, 0)));
+  const d0 = els.every(b => never(b.d)) ? Infinity : med(els.filter(b => !never(b.d)).map(b => num(b.d, 0)));
+  const s0 = els.every(b => never(b.s)) ? Infinity : med(els.filter(b => !never(b.s)).map(b => num(b.s, 0)));
+  // the stiffest spring the nodes at the ends take: each node's room under the stability target
+  const count = new Map();
+  for (const b of els) for (const i of [b.a, b.b]) count.set(i, (count.get(i) || 0) + 1);
+  let lim = Infinity;
+  for (const [i, c] of count) {
+    const n = sc.nodes[i];
+    lim = Math.min(lim, (n.w * (STIFF_TARGET / DT) ** 2 - (n.K || 0)) / c + k0);
+  }
+  lim = Math.max(k0, Math.floor(lim / 1000) * 1000);
+  const kN = v => (isFinite(v) ? fmt(v / 1000, 1) + ' kN' : 'never');
+  const holdSel = h('select', {}, ...HOLD.map(([f, t]) => h('option', { value: String(f), selected: f === 1 }, t)));
+  const springIn = h('input', { type: 'number', step: '100000', value: k0 });
+  const breakIn = h('input', { type: 'number', step: '1', placeholder: 'never', value: isFinite(s0) ? +(s0 / 1000).toFixed(1) : '' });
+  for (const i of [springIn, breakIn]) i.addEventListener('keydown', e => e.stopPropagation());
+  const note = h('p', { class: 'note' });
+  const fill = () => {
+    const f = +holdSel.value;
+    const k = isFinite(f) ? Math.min(lim, Math.round(k0 * Math.max(1, Math.sqrt(f)))) : lim;
+    springIn.value = f < 1 ? Math.round(k0 * f) : k;
+    const s = isFinite(f) && isFinite(s0) ? s0 * f : Infinity;
+    breakIn.value = isFinite(s) ? +(s / 1000).toFixed(1) : '';
+    note.textContent = k < k0 * Math.sqrt(f) && isFinite(f) || (!isFinite(f) && lim < k0 * 4)
+      ? 'The springs are as stiff as the nodes at their ends take and stay stable; it still holds by not breaking.' : '';
+  };
+  holdSel.addEventListener('change', fill);
+  const apply = () => {
+    const k = Math.max(1000, +springIn.value || k0);
+    const s = breakIn.value === '' ? Infinity : Math.max(1, +breakIn.value) * 1000;
+    const d = !isFinite(s) ? Infinity : Math.min(s, isFinite(d0) ? d0 * Math.max(1, s / (isFinite(s0) ? s0 : s)) : s);
+    setOpts('beams', els, {
+      beamSpring: k, beamDamp: Math.round(c0 * Math.sqrt(k / (k0 || k))),
+      beamDeform: isFinite(d) ? Math.round(d) : 'FLT_MAX', beamStrength: isFinite(s) ? Math.round(s) : 'FLT_MAX',
+    }, 'Mount strength of ' + part);
+    closeModal();
+    toast(`Changed the ${els.length} mounting beams. Save (Ctrl+S) to keep it.`, 'ok');
+  };
+  openModal('How firmly it is mounted', h('div', {},
+    h('p', { class: 'note' }, `${sc.parts[part]?.title || part} is held on by ${els.length} beams to the rest of the vehicle. ` +
+      `Now each has a spring of ${fmt(k0, 0)} N/m and breaks at ${kN(s0)}.`),
+    h('div', { class: 'form' },
+      h('span', { class: 'k' }, 'Make it'), holdSel,
+      h('span', { class: 'k', title: 'Stiffness of each mounting beam in N/m' }, 'Spring'), springIn,
+      h('span', { class: 'k', title: 'The pull in kilonewtons that breaks a mounting beam. Empty: never breaks.' }, 'Breaks at (kN)'), breakIn),
+    note,
+    h('div', { class: 'actions' }, h('button', { onclick: closeModal }, 'Cancel'), h('button', { class: 'primary', onclick: apply }, 'Change it'))));
 }
 
 export function focusPart(name) {
@@ -497,18 +558,41 @@ function nodeProps(idx) {
   if (idx.length > 1) {
     const d = [0, 0, 0];
     const dIn = [0, 1, 2].map(k => numInput(0, v => { d[k] = v; }, { digits: 4 }));
-    wrap.append(h('h4', {}, 'Move and line up'),
+    wrap.append(h('h4', {}, 'Move, stretch and line up'),
       h('div', { class: 'props' }, h('span', { class: 'k' }, 'Move by X Y Z'), h('span', { class: 'v xyz' }, ...dIn)),
       h('div', { class: 'btnrow' },
         h('button', { onclick: () => moveNodes(idx, n => [n.p[0] + d[0], n.p[1] + d[1], n.p[2] + d[2]], 'Move nodes') }, 'Move'),
         ...['X', 'Y', 'Z'].map((a, k) => h('button', { title: `Give every selected node the same ${a} (the average)`,
           onclick: () => { const avg = idx.reduce((s, i) => s + sc.nodes[i].p[k], 0) / idx.length; moveNodes(idx, n => { const p = n.p.slice(); p[k] = avg; return p; }, 'Line up ' + a); } }, 'Line up ' + a))),
+      stretchRow(idx),
       h('div', { class: 'btnrow' },
         h('button', { title: 'B: join the selected nodes in the order you picked them', onclick: () => connectSelected(false) }, 'Connect in a chain'),
         h('button', { title: 'Shift+B: join every selected node to every other one (a braced, rigid block)', onclick: () => connectSelected(true) }, 'Connect all (brace)')));
   }
   if (els.length <= 400) wrap.append(allOptions('nodes', els, ['nodeWeight', 'collision', 'selfCollision', 'fixed', 'frictionCoef', 'nodeMaterial', 'group']));
   return wrap;
+}
+
+// make the selection wider, longer or taller by a factor (the 3D model follows when "Model follows" is on)
+function stretchRow(idx) {
+  const sc = S.scene;
+  const f = [1, 1, 1];
+  const fIn = [0, 1, 2].map(k => numInput(1, v => { f[k] = v > 0 ? v : 1; }, { digits: 3 }));
+  const around = h('select', {}, h('option', { value: 'sel' }, 'the middle of the selection'),
+    h('option', { value: 'axis' }, 'the middle of the vehicle (left-right)'));
+  const go = () => {
+    const pts = idx.map(i => sc.nodes[i].p);
+    const c = [0, 1, 2].map(k => (Math.min(...pts.map(p => p[k])) + Math.max(...pts.map(p => p[k]))) / 2);
+    if (around.value === 'axis') c[0] = 0;
+    if (f.every(v => v === 1)) return toast('Type how many times bigger, like 1.2 for 20% wider.');
+    moveNodes(idx, n => n.p.map((v, k) => c[k] + (v - c[k]) * f[k]), 'Stretch nodes');
+  };
+  return h('div', {},
+    h('div', { class: 'props' },
+      h('span', { class: 'k', title: 'Width (X), length (Y) and height (Z): 1.2 is 20% bigger, 0.9 is 10% smaller' }, 'Stretch × X Y Z'),
+      h('span', { class: 'v xyz' }, ...fIn),
+      h('span', { class: 'k' }, 'Around'), around),
+    h('div', { class: 'btnrow' }, h('button', { onclick: go }, 'Stretch')));
 }
 
 function moveNodes(idx, fn, label) {

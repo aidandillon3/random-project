@@ -16,7 +16,7 @@ from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import appwindow, build, daewrite, garage, jbeam_check, jbeamfile, meshes, model, patch, smimport, sources, \
+from . import appwindow, build, daeedit, daewrite, garage, jbeam_check, jbeamfile, meshes, model, patch, smimport, sources, \
     vehiclegen
 from .smimport import game as smgame
 from .vehiclegen import files as vgfiles, spec as vgspec
@@ -421,18 +421,65 @@ class App:
                         s.apply(op)
                     except patch.EditError as e:
                         raise patch.EditError("edit %d of %d (%s): %s" % (i + 1, len(req["ops"]), op.get("op"), e))
+                reshaped, notes = self._reshape_meshes(m, s, req.get("meshes") or [])
                 written = s.commit()
             except patch.EditError as e:
                 return {"ok": False, "error": str(e)}
             m = self.ws.model(req["model"], reload=True)
             if any(p.lower().endswith(".dae") for p in written):
                 self.meshes.forget(req["model"])
-            out = {"ok": True, "written": written, "summary": m.summary()}
+            out = {"ok": True, "written": written, "summary": m.summary(), "reshaped": reshaped, "notes": notes}
             if req.get("config") is not None:
                 scene = build.build(m, req["config"])
                 scene["config"] = _config_out(req["config"], scene)
                 out["scene"] = scene
             return out
+
+    def _reshape_meshes(self, m, s, items):
+        """3D models that follow moved nodes: [{mesh, pos (base64 float32, as extracted), f, part, row}].
+        A model in a mod folder is changed where it is; one in the game or a zip is copied into the mod of
+        the part that uses it, under a new name. Returns (names whose shape changed, notes for the person)."""
+        changed, notes = [], []
+        if not items:
+            return changed, notes
+        index = self.meshes.index(m.name)
+        taken = set(index)
+        for it in items:
+            name = it["mesh"]
+            loc = index.get(name)
+            if loc is None:
+                notes.append("The model %s wasn't found, so it stays as it was." % name)
+                continue
+            root, rel = loc
+            pos = array("f")
+            pos.frombytes(base64.b64decode(it["pos"]))
+            try:
+                if root.editable:
+                    s.write_raw(root, rel, daeedit.reshape(root.read(rel), name, list(pos)))
+                    changed.append(name)
+                    continue
+                fr = m.files.get(it.get("f"))
+                if fr is None or not fr.root.editable:
+                    notes.append("The model %s belongs to a part you can't edit, so it stays as it was." % name)
+                    continue
+                base = re.sub(r"[^A-Za-z0-9_]", "_", name)
+                new = base + "_reshaped"
+                k = 2
+                while new in taken or os.path.exists(os.path.join(fr.root.path, "vehicles", m.name,
+                                                                  "jbeam_editor_meshes", new + ".dae")):
+                    new = "%s_reshaped%d" % (base, k)
+                    k += 1
+                taken.add(new)
+                text = daeedit.copy_object(root.read(rel), name, new, list(pos))
+                s.write_raw(None, os.path.join(fr.root.path, "vehicles", m.name, "jbeam_editor_meshes", new + ".dae"),
+                            text.encode("utf-8"))
+                s.apply({"op": "cell.set", "f": it["f"], "part": it["part"], "sec": "flexbodies", "row": it["row"],
+                         "col": 0, "value": new})
+                changed.append(name)
+                notes.append("The model %s is in the game's files, so your reshaped one is a copy called %s." % (name, new))
+            except daeedit.ReshapeError as e:
+                notes.append("Couldn't reshape the model: %s." % e)
+        return changed, notes
 
     def api_part_text(self, req):
         with self.lock:

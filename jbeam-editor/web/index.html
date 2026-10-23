@@ -82,10 +82,16 @@
     <div id="boxsel" class="hidden"></div>
     <div id="toolbar" class="floatbar">
       <div class="group" id="tools">
-        <button data-tool="select" title="Select and move (Q): click, Shift+click to add, drag a box; drag the arrows to move"><i data-icon="select"></i><span>Select</span></button>
+        <button data-tool="select" title="Select (Q): click, Shift+click to add, drag a box; then drag the handles to move, stretch or turn"><i data-icon="select"></i><span>Select</span></button>
         <button data-tool="node" title="Add node (N): click where it goes"><i data-icon="node"></i><span>Node</span></button>
         <button data-tool="beam" title="Connect (B): click two nodes to join them with a beam"><i data-icon="beam"></i><span>Beam</span></button>
         <button data-tool="tri" title="Collision triangle (T): click three nodes"><i data-icon="triangle"></i><span>Triangle</span></button>
+      </div>
+      <div class="group" id="gizmoModes" title="What dragging the handles does to the selected nodes">
+        <button data-gizmo="translate" class="active" title="Move (W): drag the arrows"><i data-icon="move"></i><span>Move</span></button>
+        <button data-gizmo="scale" title="Stretch (R): drag a handle to make the selection wider, longer or taller"><i data-icon="scale"></i><span>Stretch</span></button>
+        <button data-gizmo="rotate" title="Turn (E): drag a ring to turn the selection"><i data-icon="rotate"></i><span>Turn</span></button>
+        <label class="chk" title="The 3D model bends and stretches with the nodes, and is saved that way"><input type="checkbox" id="optFollow" checked>Model follows</label>
       </div>
       <div class="group">
         <label class="chk" title="Edit left and right sides together (M)"><input type="checkbox" id="optMirror"><i data-icon="mirror" data-size="16"></i>Mirror</label>
