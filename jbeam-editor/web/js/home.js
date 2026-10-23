@@ -5,7 +5,7 @@ import { $, $$, h, toast } from './util.js';
 
 const ACTIONS = [
   { id: 'garage', icon: 'wrench', title: 'Modify a vehicle', needs: 'vehicle',
-    text: 'Lift kits, bigger wheels and tires, wider track, engine power and paint. Saved as your own version of the car.' },
+    text: 'One-click off-road, lowered or monster truck builds, lift kits, bigger wheels and tires, engine power and paint. Saved as your own version.' },
   { id: 'builder', icon: 'build', title: 'Build a new vehicle', cls: 'blue',
     text: 'Pick a body style and shape it with sliders: length, wheelbase, track width, ride height, suspension and engine.' },
   { id: 'scrap', icon: 'scrap', title: 'Import from Scrap Mechanic', cls: 'blue',
