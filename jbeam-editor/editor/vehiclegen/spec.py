@@ -108,12 +108,14 @@ FIELDS = [
     _r("camberR", "Rear camber", "suspension", "°", -5.0, 3.0, 0.1, "", "more"),
     _r("steerAngle", "Steering angle", "suspension", "°", 18, 55, 1, "How far the front wheels turn.", "more"),
     # -- engine
+    _c("engineType", "Power source", "engine", [["gas", "Petrol engine"], ["electric", "Electric motor"]],
+       "An electric motor pulls hard from a standstill, needs no gearbox and runs on a battery."),
     _c("enginePos", "Engine position", "engine", [["front", "Front"], ["mid", "Middle"], ["rear", "Rear"]]),
     _r("power", "Power", "engine", "hp", 20, 2000, 5),
-    _r("redline", "Redline", "engine", "rpm", 2500, 12000, 100, "", "more"),
+    _r("redline", "Redline", "engine", "rpm", 2500, 12000, 100, "", "more", when={"engineType": "gas"}),
     _r("torqueShape", "Engine character", "engine", "", 0.0, 1.0, 0.01,
        "Low-end pull like a truck or diesel, or high-revving like a race engine.", "more",
-       lowLabel="Low-end pull", highLabel="High-revving"),
+       lowLabel="Low-end pull", highLabel="High-revving", when={"engineType": "gas"}),
     _c("sound", "Engine sound", "engine", [["i4", "Inline 4"], ["b4", "Flat 4"]], "", "more"),
     _c("drive", "Driven wheels", "engine", [["RWD", "Rear (RWD)"], ["FWD", "Front (FWD)"], ["AWD", "All (AWD)"]]),
     _c("gearbox", "Gearbox", "engine", [["manual", "Manual"], ["automatic", "Automatic"]]),
@@ -122,6 +124,9 @@ FIELDS = [
     _c("diff", "Differential", "engine", [["open", "Open"], ["lsd", "Limited slip"], ["locked", "Locked (welded)"]],
        "Locked and limited slip put power down better off-road and in drifts.", "more"),
     _r("fuel", "Fuel tank", "engine", "L", 5, 300, 1, "", "more"),
+    _r("battery", "Battery", "engine", "kWh", 10, 200, 1,
+       "How much energy the battery holds: more drives further. It lies in the floor between the axles and "
+       "weighs about 6 kg per kWh, part of the vehicle's weight.", "more"),
     # -- weight
     _r("mass", "Weight", "weight", "kg", 250, 8000, 10, "The weight of the vehicle ready to drive."),
     _r("weightBias", "Weight balance", "weight", "", -0.15, 0.15, 0.005,
@@ -137,6 +142,11 @@ FIELDS = [
     _c("trim", "Bumpers and trim", "looks", [["black", "Black plastic"], ["body", "Body colour"], ["chrome", "Chrome"]],
        "", "more"),
 ]
+for _f in FIELDS:
+    if _f["key"] in ("sound", "gearbox", "gears", "fuel"):
+        _f["when"] = {"engineType": "gas"}
+    elif _f["key"] == "battery":
+        _f["when"] = {"engineType": "electric"}
 FIELD = {f["key"]: f for f in FIELDS}
 
 # a sensible family sedan; every style starts from this and changes what makes it that style
@@ -152,8 +162,8 @@ BASE = {
     "suspF": "wishbone", "suspR": "wishbone", "travelF": 0.2, "travelR": 0.22, "springF": 1.35, "springR": 1.5,
     "dampF": 0.35, "dampR": 0.35, "swaybarF": 0.5, "swaybarR": 0.25, "camberF": -0.8, "camberR": -1.2,
     "steerAngle": 36,
-    "enginePos": "front", "power": 200, "redline": 6500, "torqueShape": 0.5, "sound": "i4", "drive": "RWD",
-    "gearbox": "manual", "gears": 6, "topSpeed": 220, "diff": "open", "fuel": 60,
+    "engineType": "gas", "enginePos": "front", "power": 200, "redline": 6500, "torqueShape": 0.5, "sound": "i4",
+    "drive": "RWD", "gearbox": "manual", "gears": 6, "topSpeed": 220, "diff": "open", "fuel": 60, "battery": 75,
     "mass": 1500, "weightBias": 0.0, "brakePower": 1.0, "brakeBias": 0.65, "abs": True,
     "paint": "#8c1c22", "metallic": 0.6, "glassTint": 0.55, "trim": "black",
 }
@@ -165,7 +175,7 @@ STYLES = [
         "trackF": 1.53, "trackR": 1.52, "hoodLength": 1.05, "windshieldAngle": 30, "roofLength": 1.6,
         "rearAngle": 62, "beltline": 0.96, "noseHeight": 0.76, "tailHeight": 0.98, "roofWidth": 0.83,
         "tireDiaF": 24.5, "tireDiaR": 24.5, "tireWidthF": 205, "tireWidthR": 205, "rimDiaF": 16, "rimDiaR": 16,
-        "power": 130, "drive": "FWD", "mass": 1200, "paint": "#1f5fae", "swaybarR": 0.45, "springR": 1.6}},
+        "power": 130, "drive": "FWD", "mass": 1200, "paint": "#1f5fae", "swaybarR": 0.45, "springR": 1.6, "battery": 50}},
     {"id": "coupe", "title": "Coupe", "text": "Two doors, long hood, sloping roof.", "values": {
         "length": 4.55, "width": 1.88, "height": 1.32, "wheelbase": 2.68, "frontOverhang": 0.92,
         "trackF": 1.6, "trackR": 1.6, "clearance": 0.12, "hoodLength": 1.55, "windshieldAngle": 24,
@@ -173,10 +183,10 @@ STYLES = [
         "roofWidth": 0.76, "tireDiaF": 26.0, "tireDiaR": 26.5, "tireWidthF": 245, "tireWidthR": 275,
         "rimDiaF": 18, "rimDiaR": 18, "tireType": "sport", "power": 380, "redline": 7000, "torqueShape": 0.6,
         "mass": 1550, "diff": "lsd", "springF": 1.6, "springR": 1.75, "dampF": 0.45, "dampR": 0.45,
-        "topSpeed": 270, "paint": "#e8b923"}},
+        "topSpeed": 270, "paint": "#e8b923", "battery": 75}},
     {"id": "wagon", "title": "Wagon", "text": "A long roof and a big boot.", "values": {
         "length": 4.85, "height": 1.5, "wheelbase": 2.85, "hoodLength": 1.25, "roofLength": 2.1,
-        "rearAngle": 72, "tailHeight": 1.02, "roofWidth": 0.84, "mass": 1600, "paint": "#2f5d46"}},
+        "rearAngle": 72, "tailHeight": 1.02, "roofWidth": 0.84, "mass": 1600, "paint": "#2f5d46", "battery": 75}},
     {"id": "suv", "title": "SUV", "text": "Tall, roomy and good on rough roads.", "values": {
         "length": 4.8, "width": 1.95, "height": 1.8, "wheelbase": 2.85, "frontOverhang": 0.9,
         "trackF": 1.66, "trackR": 1.66, "clearance": 0.22, "hoodLength": 1.25, "windshieldAngle": 33,
@@ -184,7 +194,7 @@ STYLES = [
         "roofWidth": 0.84, "roundness": 0.5, "tireDiaF": 30.0, "tireDiaR": 30.0, "tireWidthF": 255,
         "tireWidthR": 255, "rimDiaF": 18, "rimDiaR": 18, "tireType": "allterrain", "travelF": 0.24,
         "travelR": 0.26, "power": 280, "drive": "AWD", "gearbox": "automatic", "gears": 8, "mass": 2100,
-        "topSpeed": 210, "paint": "#3d4b57"}},
+        "topSpeed": 210, "paint": "#3d4b57", "battery": 90}},
     {"id": "offroad", "title": "Off-roader", "text": "Big tires, solid axles and lots of travel.", "values": {
         "length": 4.35, "width": 1.92, "height": 1.95, "wheelbase": 2.6, "frontOverhang": 0.72,
         "trackF": 1.68, "trackR": 1.68, "clearance": 0.33, "hoodLength": 1.2, "windshieldAngle": 52,
@@ -195,7 +205,7 @@ STYLES = [
         "travelR": 0.4, "springF": 1.15, "springR": 1.25, "swaybarF": 0.2, "swaybarR": 0.0, "camberF": 0.0,
         "camberR": 0.0, "steerAngle": 38, "power": 285, "redline": 5500, "torqueShape": 0.2, "drive": "AWD",
         "gearbox": "automatic", "gears": 5, "topSpeed": 160, "diff": "locked", "fuel": 80, "mass": 2100,
-        "paint": "#5b6b3a", "trim": "black"}},
+        "paint": "#5b6b3a", "trim": "black", "battery": 90}},
     {"id": "pickup", "title": "Pickup truck", "text": "A cab up front and an open bed at the back.", "values": {
         "rear": "bed", "length": 5.45, "width": 2.0, "height": 1.88, "wheelbase": 3.4, "frontOverhang": 0.95,
         "trackF": 1.72, "trackR": 1.72, "clearance": 0.25, "hoodLength": 1.45, "windshieldAngle": 34,
@@ -205,7 +215,7 @@ STYLES = [
         "suspF": "wishbone", "suspR": "solid", "travelF": 0.24, "travelR": 0.3, "springF": 1.3,
         "springR": 1.45, "swaybarR": 0.1, "camberF": -0.3, "camberR": 0.0, "power": 380, "redline": 5800,
         "torqueShape": 0.3, "gearbox": "automatic", "gears": 6, "topSpeed": 190, "fuel": 100, "mass": 2300,
-        "paint": "#b8bcc2", "trim": "chrome"}},
+        "paint": "#b8bcc2", "trim": "chrome", "battery": 120}},
     {"id": "van", "title": "Van", "text": "A box on wheels: lots of room.", "values": {
         "length": 5.3, "width": 2.0, "height": 2.25, "wheelbase": 3.35, "frontOverhang": 0.85,
         "trackF": 1.72, "trackR": 1.72, "clearance": 0.17, "hoodLength": 0.75, "windshieldAngle": 40,
@@ -214,7 +224,7 @@ STYLES = [
         "tireWidthR": 235, "rimDiaF": 16, "rimDiaR": 16, "rimStyle": "steel", "rimColor": "#3a3d42",
         "suspR": "solid", "travelR": 0.24, "camberR": 0.0, "power": 170, "redline": 5200, "torqueShape": 0.25,
         "drive": "RWD", "gearbox": "automatic", "gears": 6, "topSpeed": 165, "mass": 2400, "fuel": 80,
-        "paint": "#e9ecef"}},
+        "paint": "#e9ecef", "battery": 90}},
     {"id": "roadster", "title": "Roadster", "text": "Two seats and no roof.", "values": {
         "roof": "open", "length": 4.0, "width": 1.75, "height": 1.25, "wheelbase": 2.35, "frontOverhang": 0.82,
         "trackF": 1.5, "trackR": 1.5, "clearance": 0.12, "hoodLength": 1.45, "windshieldAngle": 30,
@@ -222,7 +232,7 @@ STYLES = [
         "roundness": 0.75, "tireDiaF": 24.5, "tireDiaR": 24.5, "tireWidthF": 205, "tireWidthR": 215,
         "rimDiaF": 16, "rimDiaR": 16, "tireType": "sport", "power": 180, "redline": 7200, "torqueShape": 0.65,
         "sound": "b4", "mass": 1050, "springF": 1.7, "springR": 1.8, "diff": "lsd", "topSpeed": 220,
-        "paint": "#2369c4"}},
+        "paint": "#2369c4", "battery": 40}},
     {"id": "supercar", "title": "Supercar", "text": "Low, wide and mid-engined.", "values": {
         "length": 4.5, "width": 1.98, "height": 1.16, "wheelbase": 2.65, "frontOverhang": 1.0,
         "trackF": 1.68, "trackR": 1.65, "clearance": 0.1, "hoodLength": 1.25, "windshieldAngle": 21,
@@ -233,7 +243,7 @@ STYLES = [
         "dampR": 0.5, "swaybarF": 0.7, "swaybarR": 0.5, "camberF": -1.8, "camberR": -2.2, "steerAngle": 32,
         "enginePos": "mid", "power": 650, "redline": 8500, "torqueShape": 0.75, "drive": "RWD", "gears": 7,
         "topSpeed": 330, "diff": "lsd", "mass": 1500, "brakePower": 1.3, "brakeBias": 0.6,
-        "paint": "#d24a12", "metallic": 0.7}},
+        "paint": "#d24a12", "metallic": 0.7, "battery": 90}},
 ]
 STYLE = {s["id"]: s for s in STYLES}
 
@@ -354,6 +364,7 @@ def normalize(spec):
     P.paintRGB = rgb(s["paint"])
     P.rimRGB = rgb(s["rimColor"])
     P.kw = s["power"] * 0.7457
+    P.electric = s["engineType"] == "electric"
     return P, notes
 
 

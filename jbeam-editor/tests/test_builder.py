@@ -11,6 +11,7 @@ from array import array
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import ptcheck  # noqa: E402
 from test_backend import InstallCase  # noqa: E402
 from editor import build, dae, jbeamfile, model, vehiclegen  # noqa: E402
 from editor.vehiclegen import chassis, spec as vgspec  # noqa: E402
@@ -104,6 +105,58 @@ class GeneratorTests(unittest.TestCase):
                 self.assertEqual(len(sc["wheels"]), 4)
                 self.assertEqual(chassis.stability_report(g.structure, _wheels(g)), [])
                 self.assertEqual(chassis.degenerate_nodes(g.structure), [])
+
+    def test_powertrain_drives_the_chosen_wheels(self):
+        want = {"RWD": ["RL", "RR"], "FWD": ["FL", "FR"], "AWD": ["FL", "FR", "RL", "RR"]}
+        for style in STYLES:
+            for engine in ("gas", "electric"):
+                for drive, wheels in want.items():
+                    with self.subTest(style=style, engine=engine, drive=drive):
+                        g = vehiclegen.generate({"style": style, "engineType": engine, "drive": drive})
+                        self.assertEqual(ptcheck.problems(g.parts, want["AWD"], wheels), [])
+        # the check itself notices a broken tree
+        g = vehiclegen.generate({"style": "sedan"})
+        g.parts[g.P.model + "_transmission"]["powertrain"][1][2] = "nothing"
+        self.assertTrue(ptcheck.problems(g.parts, want["AWD"]))
+
+    def test_electric_drive(self):
+        gas = vehiclegen.generate({"style": "sedan"})
+        g = vehiclegen.generate({"style": "sedan", "engineType": "electric"})
+        sc = build_generated(g)
+        self.assertEqual(sc["warnings"], [])
+        self.assertEqual(g.notes, [])
+        m = g.P.model
+        self.assertEqual(set(g.parts) - set(gas.parts), {m + "_battery"})
+        self.assertEqual(set(gas.parts) - set(g.parts), {m + "_fueltank"})
+        motor = g.parts[m + "_engine"]
+        self.assertEqual(motor["powertrain"][1][:2], ["electricMotor", "mainMotor"])
+        self.assertEqual(motor["vehicleController"]["shiftLogicName"], "electricMotor")
+        self.assertEqual(motor["soundConfig"]["sampleName"], "ElectricMotor_02")
+        # full torque from standstill
+        tq = motor["mainMotor"]["torque"][1:]
+        self.assertEqual(tq[0][1], max(t for _, t in tq))
+        bat = g.parts[m + "_battery"]
+        self.assertEqual(bat["mainBattery"]["batteryCapacity"], 75)
+        self.assertEqual(bat["energyStorage"][1], ["electricBattery", "mainBattery"])
+        self.assertNotIn("gearbox", g.parts[m + "_transmission"])
+        # no exhaust: no pipe nodes, no exhaust mesh
+        self.assertFalse({"ex0", "ex1"} & set(g.structure.nodes))
+        self.assertNotIn(m + "_exhaust", g.meshes)
+        self.assertEqual({fb["mesh"] for fb in sc["flexbodies"]} - set(g.meshes), set())
+        # the battery lies low between the axles: same weight, lower centre of gravity
+        st, st0 = g.stats, gas.stats
+        self.assertLess(abs(st["mass"] - st["massTarget"]) / st["massTarget"], 0.08)
+        self.assertLess(st["cgHeight"], st0["cgHeight"] - 0.02)
+        self.assertGreater(st["rollG"], st0["rollG"])
+        self.assertEqual(st["batteryMass"], 450)
+        self.assertTrue(st["electric"] and 300 < st["range"] < 700)
+        self.assertTrue(st["zeroTo100"] and st["zeroTo100"] < st0["zeroTo100"] + 1.5)
+        self.assertGreater(st["topSpeed"], 180)
+        self.assertEqual(st["gears"], [])
+        # a battery too heavy for the vehicle is called out
+        g = vehiclegen.generate({"style": "roadster", "engineType": "electric", "battery": 200})
+        self.assertTrue(any("battery" in n for n in g.notes))
+        self.assertLess(g.stats["batteryMass"], 1200)
 
     def test_wheel_axle_nodes_follow_the_game(self):
         # node1 is the outer axle node ("rr"/"ll"); wheelDir 1 on the right, -1 on the left
@@ -251,6 +304,26 @@ class BuilderApiTests(InstallCase):
             with self.subTest(style=style):
                 self.assertEqual(out["errors"], [])
                 self.assertEqual(out["warnings"], [])
+
+    def test_electric_vehicles_pass_the_checker_and_tune_in_the_garage(self):
+        for spec in ({"style": "sedan", "name": "Volt Sedan", "engineType": "electric"},
+                     {"style": "pickup", "name": "Volt Truck", "engineType": "electric", "drive": "AWD",
+                      "diff": "lsd", "suspR": "solid"}):
+            res = self.app.api_builder_create({"spec": spec})
+            out = self.app.api_check({"model": res["model"]})
+            with self.subTest(spec=spec):
+                self.assertEqual(out["errors"], [])
+                self.assertEqual(out["warnings"], [])
+        sc = self.app.api_build({"model": "volt_sedan", "configName": "base"})
+        self.assertEqual(sc["engine"]["device"], "mainMotor")
+        self.assertTrue(sc["engine"]["electric"])
+        info = self.app.api_build({"model": "volt_sedan", "configName": "base", "garage": {}})["garage"]["info"]
+        self.assertTrue(info["engine"]["electric"])
+        tuned = self.app.api_build({"model": "volt_sedan", "configName": "base", "garage": {"engine": {"power": 1.5}}})
+        self.assertEqual(tuned["warnings"], [])
+        self.assertEqual(tuned["garage"]["notes"], [])
+        t0, t1 = sc["engine"]["torque"][0][1], tuned["engine"]["torque"][0][1]
+        self.assertAlmostEqual(t1 / t0, 1.5, places=2)
 
     def test_preview_payload(self):
         r = self.app.api_builder_preview({"spec": {"style": "coupe", "name": "Speedy"}})

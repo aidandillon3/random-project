@@ -25,8 +25,7 @@ print(json.dumps(out))
   return JSON.parse(execFileSync('python3', ['-c', code], { maxBuffer: 1 << 28 }).toString());
 }
 
-test('generated vehicles settle at the height they were built for', async () => {
-  const all = scenes(['sedan', 'offroad', 'pickup', 'supercar']);
+async function settlesAsBuilt(all) {
   for (const [name, sc] of Object.entries(all)) {
     const { summary: s, sim } = await dropTest(sc, { seconds: 3 });
     assert.ok(s.stable, name + ' exploded');
@@ -40,6 +39,14 @@ test('generated vehicles settle at the height they were built for', async () => 
     }
     assert.ok(s.maxStrain < 0.01, name + ' body bends ' + s.maxStrain);
   }
+}
+
+test('generated vehicles settle at the height they were built for', async () => {
+  await settlesAsBuilt(scenes(['sedan', 'offroad', 'pickup', 'supercar']));
+});
+
+test('electric vehicles, with the battery in the floor, settle as built too', async () => {
+  await settlesAsBuilt(scenes(['sedan', 'pickup', 'roadster'], { engineType: 'electric' }));
 });
 
 test('a structure too light for its beams is unstable', () => {

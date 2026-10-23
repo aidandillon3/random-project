@@ -3,13 +3,14 @@
 Structure collects everything with the part it belongs to; parts.py turns it
 into JBeam. The body is a tube of node rings that follow the skin (see
 shape.py); each axle is a double wishbone or a solid axle with real pivot
-points, springs, dampers, bump stops and an anti-roll bar; the engine is a
-block of eight nodes on soft mounts. Masses are spread so the total matches the
+points, springs, dampers, bump stops and an anti-roll bar; the engine (or
+electric motor) is a block of eight nodes on soft mounts. Masses are spread so the total matches the
 design weight, then raised wherever a node would be too light for the beams on
 it to stay stable at the game's 2000 Hz physics rate.
 """
 import math
 
+from . import electric
 from .shape import S_BELT, S_EDGE, S_FLOOR, S_SIDE, S_TOP, clamp, lerp
 
 DT = 0.0005          # the game's physics step
@@ -804,19 +805,33 @@ def _fmt(v):
 # engine
 # ---------------------------------------------------------------------------
 
+def engine_mass(P):
+    """kg of the engine (with its gearbox) or of the electric motor."""
+    if getattr(P, "electric", False):
+        return electric.motor_mass(P.power)
+    return clamp(70 + 0.38 * P.power + (25 if P.gearbox == "automatic" else 0), 80, 480)
+
+
 def build_engine(S, sh, P, axles, body_names, part="engine"):
     hp = P.power
-    ew = clamp(0.46 + 0.00028 * hp, 0.46, 0.8)
-    el = clamp(0.5 + 0.00035 * hp, 0.5, 0.95)
-    eh = clamp(0.44 + 0.00018 * hp, 0.44, 0.66)
+    electric = getattr(P, "electric", False)
+    if electric:
+        # a motor is small and sits on the axle it drives
+        ew = clamp(0.34 + 0.00012 * hp, 0.34, 0.5)
+        el = clamp(0.36 + 0.00012 * hp, 0.36, 0.5)
+        eh = clamp(0.32 + 0.0001 * hp, 0.32, 0.42)
+    else:
+        ew = clamp(0.46 + 0.00028 * hp, 0.46, 0.8)
+        el = clamp(0.5 + 0.00035 * hp, 0.5, 0.95)
+        eh = clamp(0.44 + 0.00018 * hp, 0.44, 0.66)
     aF, aR = axles["F"], axles["R"]
     if P.enginePos == "front":
-        yc = aF.y + (0.14 if P.drive != "FWD" else -0.02)
+        yc = aF.y + (0.0 if electric else 0.14 if P.drive != "FWD" else -0.02)
         yc = clamp(yc, sh.y0 + el / 2 + 0.12, sh.y_cowl + 0.3 - el / 2)
     elif P.enginePos == "mid":
         yc = aR.y - el / 2 - 0.3
     else:
-        yc = aR.y + 0.32
+        yc = aR.y + (0.0 if electric else 0.32)
         yc = min(yc, sh.y1 - el / 2 - 0.12)
     z0 = max(P.clearance + 0.07, min(aF.zc, aR.zc) - 0.18)
     room = min(sh.top(yc - el / 2), sh.top(yc), sh.top(yc + el / 2)) - 0.05 - z0
@@ -825,7 +840,7 @@ def build_engine(S, sh, P, axles, body_names, part="engine"):
         if room < 0.28:
             S.notes.append("The engine does not fit under the hood: it sticks out of the body.")
     hw = min(ew / 2, sh.x_in() - 0.03)
-    m_e = clamp(70 + 0.38 * hp + (25 if P.gearbox == "automatic" else 0), 80, 480)
+    m_e = engine_mass(P)
     w = m_e / 8.0
     grp = [P.model_group("engine")]
     names = {}
@@ -894,6 +909,18 @@ def assign_masses(S, P, axles, wheels):
     floor_min = 2.0 * len(body)
     if budget < 0.28 * total:
         budget = max(0.28 * total, floor_min)
+    # an electric vehicle's battery lies in the floor between the axles
+    battery, pack = 0.0, []
+    if getattr(P, "electric", False):
+        aF, aR = axles["F"], axles["R"]
+        pack = [n for n in body if n.kind in ("fc", "fl") and aF.y + 0.2 <= n.p[1] <= aR.y - 0.2]
+        want = electric.battery_mass(P.battery)
+        battery = min(want, 0.6 * budget) if pack else 0.0
+        if battery < want - 1:
+            S.notes.append("A %d kWh battery weighs about %d kg, more than this vehicle's weight leaves room for: "
+                           "make it heavier or the battery smaller." % (round(P.battery), round(want, -1)))
+    S.battery_mass = battery
+    budget -= battery
     factor = {"fc": 1.35, "fl": 1.6, "sl": 1.25, "bl": 1.0, "tl": 0.6, "tc": 0.55}
     ys = sorted({round(n.p[1], 4) for n in body})
     span = {}
@@ -909,6 +936,8 @@ def assign_masses(S, P, axles, wheels):
     tot = sum(raw.values()) or 1.0
     for n in body:
         n.w = budget * raw[n.name] / tot
+    for n in pack:
+        n.w += battery / len(pack)
     added = stabilize(S, wheels)
     return added
 

@@ -73,6 +73,7 @@ export function valueText(f, v, imperial = false) {
   }
   if (u === 'kg') return imperial ? fmt(v * 2.20462, 0) + ' lb' : fmt(v, 0) + ' kg';
   if (u === 'km/h') return imperial ? fmt(v / 1.609, 0) + ' mph' : fmt(v, 0) + ' km/h';
+  if (u === 'km') return imperial ? fmt(v / 1.609, 0) + ' mi' : fmt(v, 0) + ' km';
   if (u === 'L') return imperial ? fmt(v / 3.785, 1) + ' gal' : fmt(v, 0) + ' L';
   if (u === 'in') return fmt(v, 1) + '"';
   if (u === 'hp') return fmt(v, 0) + ' hp' + (imperial ? '' : ` (${fmt(v * 0.7457, 0)} kW)`);
@@ -81,6 +82,24 @@ export function valueText(f, v, imperial = false) {
   if (u === '×') return fmt(v, 2) + '×';
   if (!u) return fmt(v, 2);
   return fmt(v, f.step >= 1 ? 0 : 2) + ' ' + u;
+}
+
+// does a setting mean anything with these values? (fields with "when": {key: value} only do when they match)
+export function applies(f, values) {
+  return !f.when || Object.entries(f.when).every(([k, v]) => values[k] === v);
+}
+
+// what drives the wheels, in the words of a vehicle's numbers (stats from the Builder or the importer)
+export function torqueText(st) {
+  return st.electric ? `${fmt(st.torqueNm, 0)} Nm from standstill` : `${fmt(st.torqueNm, 0)} Nm at ${st.torqueRPM} rpm`;
+}
+export function gearsText(st) {
+  return st.electric ? `one reduction, ${fmt(st.finalDrive, 2)}:1` : `${st.gears.length} + final drive ${fmt(st.finalDrive, 2)}`;
+}
+export function batteryRows(st, imperial = false) {
+  if (!st.electric) return [];
+  const kg = st.batteryMass ? ` (${valueText({ unit: 'kg' }, st.batteryMass, imperial)})` : '';
+  return [['Battery', `${fmt(st.battery, 0)} kWh${kg}`], ['Range', `about ${valueText({ unit: 'km' }, st.range, imperial)} at ${valueText({ unit: 'km/h' }, 100, imperial)}`]];
 }
 
 // one setting from a schema field ({type: range|choice|bool|color, ...}); set(value, done) stores it

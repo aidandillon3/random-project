@@ -7,7 +7,7 @@ import { icon } from './icons.js';
 import { V, buildMeshes, frame, rebuild, setMeshes, setPalette } from './view3d.js';
 import { reindex } from './scene.js';
 import { hideHome } from './home.js';
-import { curveChart, section, slider, valueText } from './widgets.js';
+import { applies, batteryRows, curveChart, gearsText, section, slider, torqueText, valueText } from './widgets.js';
 import { closePanel as closeDropTest, runDropTest } from './droptest.js';
 import { $, h, fmt, toast, debounce, openModal, closeModal, setLoading, shortPath, confirmBox } from './util.js';
 
@@ -221,13 +221,13 @@ const GROUP_TEXT = {
   shape: 'The silhouette: how long the hood is, how steep the windshield and back window are, and where the windows start.',
   wheels: 'Tire and rim sizes are real-world numbers (diameter in inches, width in millimetres). Bigger tires lift the vehicle.',
   suspension: 'Springs are set by how fast they bounce: around 1.2 Hz is a comfortable car, 2 Hz and up is a race car. Rates in N/m are worked out from the weight.',
-  engine: 'Power and character make the torque curve; the gearing is worked out from the top speed.',
+  engine: 'Power and character make the torque curve; the gearing is worked out from the top speed. An electric motor needs no gearbox: it turns the wheels through one reduction gear.',
   weight: 'The weight is spread over the structure so it lands where a real vehicle has it. Brake torque follows the weight and tire size.',
   looks: 'Paint and details. The colour can also be changed in the game.',
 };
 
 function groupPanel(body, gid) {
-  const fields = B.schema.fields.filter(f => f.group === gid);
+  const fields = B.schema.fields.filter(f => f.group === gid && applies(f, B.spec));
   const basic = fields.filter(f => f.level === 'basic');
   const extra = fields.filter(f => f.level !== 'basic');
   const g = B.schema.groups.find(x => x.id === gid);
@@ -326,11 +326,11 @@ function renderSide() {
     const st = r.stats;
     box.append(h('div', { class: 'stat-grid' },
       tile('Weight', show({ unit: 'kg' }, st.mass), `${fmt(st.frontShare * 100, 0)} / ${fmt(100 - st.frontShare * 100, 0)} front/rear`),
-      tile('Power', fmt(st.powerHP, 0) + ' hp', `${fmt(st.torqueNm, 0)} Nm at ${st.torqueRPM} rpm`),
+      tile('Power', fmt(st.powerHP, 0) + ' hp', torqueText(st)),
       tile('0–100 km/h', st.zeroTo100 ? fmt(st.zeroTo100, 1) + ' s' : '–', `${fmt(st.hpPerTon, 0)} hp per tonne`),
       tile('Top speed', show({ unit: 'km/h' }, st.topSpeed), 'estimated')));
     const chart = curveChart(st.curve, 1, 0, st.redline);
-    box.append(h('h4', {}, 'Engine'), chart);
+    box.append(h('h4', {}, st.electric ? 'Electric motor' : 'Engine'), chart);
     box.append(h('h4', {}, 'Numbers'), h('div', { class: 'compare', style: { gridTemplateColumns: 'auto 1fr' } },
       ...row('Tires', st.tireF === st.tireR ? st.tireF : `${st.tireF} / ${st.tireR}`),
       ...row('Turning circle', lenText(st.turningCircle)),
@@ -339,7 +339,8 @@ function renderSide() {
       ...row('Breakover', `${fmt(st.breakover, 0)}°`),
       ...row('Tips over at', `${fmt(st.rollG, 2)} g sideways`),
       ...row('Springs', `${fmt(st.springF / 1000, 1)} / ${fmt(st.springR / 1000, 1)} kN/m`),
-      ...row('Gears', `${st.gears.length} + final drive ${fmt(st.finalDrive, 2)}`),
+      ...row('Gears', gearsText(st)),
+      ...batteryRows(st, imperial).flatMap(([k, v]) => row(k, v)),
       ...row('Structure', `${st.nodes} nodes, ${st.beams} beams`)));
     if (st.rollRisk) box.append(h('p', { class: 'note warn' }, icon('warning', 13), ` It can roll over in hard corners (it tips at ${fmt(st.rollG, 2)} g, before the tires slide): make the track wider, or lower the ride height or the body.`));
     for (const n of r.notes || []) box.append(h('p', { class: 'note warn' }, icon('warning', 13), ' ', n));
@@ -414,7 +415,7 @@ function createDialog() {
         h('p', { style: { marginTop: 0 } }, h('b', {}, B.spec.name), ` (${r.model})`),
         h('ul', { class: 'changes' },
           h('li', {}, `${r.scene.nodes.length} nodes, ${r.scene.beams.length} beams, ${r.scene.wheels.length} wheels`),
-          h('li', {}, `${fmt(r.stats.powerHP, 0)} hp, ${r.stats.gears.length}-speed ${B.spec.gearbox}, ${B.spec.drive}`),
+          h('li', {}, `${fmt(r.stats.powerHP, 0)} hp, ${r.stats.electric ? `electric, ${fmt(r.stats.battery, 0)} kWh battery` : `${r.stats.gears.length}-speed ${B.spec.gearbox}`}, ${B.spec.drive}`),
           h('li', {}, `${show({ unit: 'kg' }, r.stats.mass)}, tires ${r.stats.tireF}`)),
         update ? h('p', { class: 'note' }, 'This rewrites the vehicle you made before. Its old files are backed up first.') : null)),
     h('div', { class: 'form', style: { marginTop: '12px' } },

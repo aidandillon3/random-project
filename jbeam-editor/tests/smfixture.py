@@ -17,6 +17,7 @@ SUSP_OFFROAD = "73f838db-783e-4a41-bc0f-9008967780f3"
 SUSP_SPORT = "52855106-a301-4ec1-8b97-5fb9d1a85b6e"
 PISTON = "2f004fdf-bfb0-46f3-a7ac-7711100bdbdb"
 ENGINE = "d4d1a6bd-1d1d-4d55-9df2-c6a0b4ad6dc8"
+ELECTRIC_ENGINE = "ac6e7f8a-1b2c-4d3e-9f40-5a6b7c8d9e0f"
 SEAT = "ffa3a47e-fc0d-4977-802f-bd09e7ec7cb7"
 MOD_WHEEL = "aa11bb22-cc33-4d44-8e55-ff6677889900"
 MOD_ID = "424242"
@@ -53,11 +54,14 @@ def make_game(root):
     {"uuid": "%s", "renderable": "$GAME_DATA/Objects/Renderable/Interactive/obj_interactive_gasengine_03.rend",
      "box": {"x": 3, "y": 3, "z": 2}, "physicsMaterial": "Mechanical", "density": 400.0,
      "scripted": {"filename": "$GAME_DATA/Scripts/interactable/GasEngine.lua", "classname": "GasEngine"}},
+    {"uuid": "%s", "renderable": "$GAME_DATA/Objects/Renderable/Interactive/obj_interactive_electricengine_03.rend",
+     "box": {"x": 3, "y": 3, "z": 2}, "physicsMaterial": "Mechanical", "density": 400.0,
+     "scripted": {"filename": "$GAME_DATA/Scripts/interactable/ElectricEngine.lua", "classname": "ElectricEngine"}},
     {"uuid": "%s", "renderable": "$GAME_DATA/Objects/Renderable/Interactive/obj_interactive_driverseat_01.rend",
      "hull": {"x": 2, "y": 2, "z": 2}, "physicsMaterial": "Mechanical", "density": 200.0,
      "scripted": {"filename": "$GAME_DATA/Scripts/interactable/DriverSeat.lua", "classname": "DriverSeat"}},
   ],
-}""" % (SMALL_WHEEL, BIG_WHEEL, ENGINE, SEAT))
+}""" % (SMALL_WHEEL, BIG_WHEEL, ENGINE, ELECTRIC_ENGINE, SEAT))
     _write(os.path.join(sets, "joints.json"), {"jointList": [
         {"uuid": BEARING, "renderable": "$GAME_DATA/Objects/Renderable/Joints/jnt_bearing.rend", "bearing": {},
          "physicsMaterial": "Mechanical", "density": 500.0},
@@ -71,7 +75,8 @@ def make_game(root):
     _write(os.path.join(game, "Data", "Gui", "Language", "English", "InventoryItemDescriptions.json"), {
         SMALL_WHEEL: {"title": "Small Wheel"}, BIG_WHEEL: {"title": "Big Wheel"}, BEARING: {"title": "Bearing"},
         SUSP_OFFROAD: {"title": "Off-Road Suspension"}, SUSP_SPORT: {"title": "Sport Suspension"},
-        PISTON: {"title": "Piston"}, ENGINE: {"title": "Gas Engine"}, SEAT: {"title": "Driver's Seat"},
+        PISTON: {"title": "Piston"}, ENGINE: {"title": "Gas Engine"}, ELECTRIC_ENGINE: {"title": "Electric Engine"},
+        SEAT: {"title": "Driver's Seat"},
         WOOD: {"title": "Wood Block"}, METAL: {"title": "Metal Block"}, GLASS: {"title": "Glass Block"},
     })
     mod = os.path.join(root, "steamapps", "workshop", "content", "387990", MOD_ID)
@@ -127,9 +132,9 @@ class Blueprint:
         return out
 
 
-def car(suspension=None, steer=True, drive=True, wheel=SMALL_WHEEL, piston=False, spare=False):
+def car(suspension=None, steer=True, drive=True, wheel=SMALL_WHEEL, piston=False, spare=False, engine=ENGINE):
     """A four-wheeled car facing +y (Scrap Mechanic frame): a metal floor, a wooden cabin with a glass
-    windshield, a driver's seat, a gas engine at the back and wheels on bearings, optionally on suspension.
+    windshield, a driver's seat, an engine at the back and wheels on bearings, optionally on suspension.
 
     Returns (blueprint data, info) with the cells the wheels sit at."""
     bp = Blueprint()
@@ -143,7 +148,7 @@ def car(suspension=None, steer=True, drive=True, wheel=SMALL_WHEEL, piston=False
     seat_ctl = {"id": 1, "joints": [], "controllers": [{"id": 2}]}
     seat = bp.part(ch, SEAT, (3, 8, 3), controller=seat_ctl)
     eng_ctl = {"id": 2, "joints": []}
-    bp.part(ch, ENGINE, (2, 1, 3), controller=eng_ctl)
+    bp.part(ch, engine, (2, 1, 3), controller=eng_ctl)
     big = wheel != SMALL_WHEEL
     dia, depth = (3, 1) if wheel == SMALL_WHEEL else (5, 2) if wheel == BIG_WHEEL else (6, 2)
     z_lo = 2 - (dia - 1) // 2                        # wheel centred on the bearing's row

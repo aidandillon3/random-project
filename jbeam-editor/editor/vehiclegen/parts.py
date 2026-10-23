@@ -11,14 +11,14 @@ menus and the editor's Garage work on it like on any other car:
     │ ├ <m>_wheel_F/R        rims and the wheels' axle nodes
     │ │ └ <m>_tire_F/R
     │ └ <m>_wheeldata_F/R    the wheels themselves
-    ├ <m>_engine
-    │ └ <m>_transmission
+    ├ <m>_engine             engine, or electric motor
+    │ └ <m>_transmission     gearbox, or an electric motor's direct drive
     │   └ <m>_differential_F/R
-    └ <m>_fueltank
+    └ <m>_fueltank           or <m>_battery
 """
 import math
 
-from . import lights
+from . import electric, lights
 from .chassis import FLT_MAX, G, clamp, dist
 from .shape import lerp
 
@@ -229,9 +229,7 @@ class PartsBuilder:
         L = P.length
         slots = [["type", "default", "description"],
                  [self.name("suspension_F"), self.name("suspension_F"), "Front Suspension"],
-                 [self.name("suspension_R"), self.name("suspension_R"), "Rear Suspension"],
-                 [self.name("engine"), self.name("engine"), "Engine"],
-                 [self.name("fueltank"), self.name("fueltank"), "Fuel Tank"]]
+                 [self.name("suspension_R"), self.name("suspension_R"), "Rear Suspension"]] + self.power_slots()
         flex = [_place(self.name("body"), [P.model_group("body")]),
                 _place(self.name("interior"), [P.model_group("body")])]
         self.parts[self.name("body")] = {
@@ -502,7 +500,26 @@ class PartsBuilder:
         }
 
     # -- powertrain ----------------------------------------------------------------------
+    def power_slots(self):
+        """The body's slots for the engine or motor and for what feeds it."""
+        if self.P.electric:
+            return [[self.name("engine"), self.name("engine"), "Electric Motor"],
+                    [self.name("battery"), self.name("battery"), "Battery"]]
+        return [[self.name("engine"), self.name("engine"), "Engine"],
+                [self.name("fueltank"), self.name("fueltank"), "Fuel Tank"]]
+
+    def _engine_flex(self):
+        P = self.P
+        flex = getattr(self.g, "engine_flex", None)
+        if flex is None:
+            flex = [(self.name("engine"), [P.model_group("engine")])]
+            if not P.electric:
+                flex.append((self.name("exhaust"), [P.model_group("body")]))
+        return flex
+
     def engine(self):
+        if self.P.electric:
+            return self.motor()
         P, S, g = self.P, self.S, self.g
         e = g.engine
         nodes, beams, _, tris = self.by_part("engine")
@@ -547,8 +564,7 @@ class PartsBuilder:
                                    "offLoadGain": 0.9, "maxLoadMix": 0.8, "minLoadMix": 0,
                                    "fundamentalFrequencyCylinderCount": snd["cyl"], "eqFundamentalGain": -2},
             "vehicleController": {"highShiftUpRPM": int(P.redline - 250)},
-            "flexbodies": _flex([_place(mesh, groups) for mesh, groups in getattr(g, "engine_flex", None) or [
-                (self.name("engine"), [P.model_group("engine")]), (self.name("exhaust"), [P.model_group("body")])]]),
+            "flexbodies": _flex([_place(mesh, groups) for mesh, groups in self._engine_flex()]),
             "nodes": node_table(S, nodes),
             "beams": beam_table(S, beams),
         }
@@ -556,7 +572,63 @@ class PartsBuilder:
             d["triangles"] = tri_table(S, tris, drag=4)
         self.parts[self.name("engine")] = d
 
+    def motor(self):
+        P, S, g = self.P, self.S, self.g
+        e = g.engine
+        nodes, beams, _, tris = self.by_part("engine")
+        d = {
+            "information": _info("%d kW Electric Motor" % round(P.kw), 3000 + P.power * 20, P),
+            "slotType": self.name("engine"),
+            "slots": [["type", "default", "description"],
+                      [self.name("transmission"), self.name("transmission"), "Transmission"]],
+            "powertrain": [["type", "name", "inputName", "inputIndex"],
+                           ["electricMotor", electric.DEVICE, "dummy", 0]],
+            electric.DEVICE: electric.motor_section(e, [e["names"]["1l"], e["names"]["2l"], e["names"]["4r"]]),
+            "soundConfig": electric.sound(P.power),
+            "vehicleController": electric.controller(),
+        }
+        flex = self._engine_flex()
+        if flex:
+            d["flexbodies"] = _flex([_place(mesh, groups) for mesh, groups in flex])
+        d["nodes"] = node_table(S, nodes)
+        d["beams"] = beam_table(S, beams)
+        if tris:
+            d["triangles"] = tri_table(S, tris, drag=4)
+        self.parts[self.name("engine")] = d
+
     def transmission(self):
+        P, g = self.P, self.g
+        pt = [["type", "name", "inputName", "inputIndex"]]
+        if P.electric:
+            # the motor turns the driveshafts itself; the shift logic runs it backwards to reverse
+            d = {"information": _info("Direct Drive", 800, P), "slotType": self.name("transmission")}
+            src = electric.DEVICE
+        else:
+            d = self.gearbox(pt)
+            src = "gearbox"
+        slots = [["type", "default", "description"]]
+        if P.drive == "AWD":
+            locked = P.diff == "locked"
+            opts = {"diffType": "locked", "lockTorque": round(g.engine["peak_torque"] * 30)} if locked else \
+                {"diffType": "viscous", "viscousCoef": 80, "viscousTorque": round(g.engine["peak_torque"] * 2.5)}
+            opts.update({"diffTorqueSplit": 0.5, "uiName": "Center Differential", "defaultVirtualInertia": 0.1,
+                         "friction": 2})
+            pt += [["differential", "transfercase", src, 1, opts],
+                   ["shaft", "driveshaft_F", "transfercase", 1, {"uiName": "Front Driveshaft", "friction": 1}],
+                   ["shaft", "driveshaft_R", "transfercase", 2, {"uiName": "Rear Driveshaft", "friction": 1}]]
+            slots += [[self.name("differential_F"), self.name("differential_F"), "Front Differential"],
+                      [self.name("differential_R"), self.name("differential_R"), "Rear Differential"]]
+        else:
+            ax = "F" if P.drive == "FWD" else "R"
+            pt += [["shaft", "driveshaft_" + ax, src, 1, {"uiName": "Driveshaft", "friction": 1}]]
+            slots += [[self.name("differential_" + ax), self.name("differential_" + ax),
+                       ("Front" if ax == "F" else "Rear") + " Differential"]]
+        d["slots"] = slots
+        d["powertrain"] = pt
+        self.parts[self.name("transmission")] = d
+
+    def gearbox(self, pt):
+        """The transmission part's gearbox (devices added to pt), driven by the engine."""
         P, g = self.P, self.g
         gr = g.gearing
         n = len(gr["gears"])
@@ -566,7 +638,6 @@ class PartsBuilder:
             variables.append(_var("$gear_%d" % i, ":1", "Transmission", r, 0.3, 6, "%s Gear Ratio" % _ordinal(i),
                                   "Torque multiplication ratio", stepDis=0.01))
         ratios = ["$=-$gear_R", 0] + ["$gear_%d" % i for i in range(1, n + 1)]
-        pt = [["type", "name", "inputName", "inputIndex"]]
         d = {"information": _info("%d-Speed %s" % (n, "Automatic" if P.gearbox == "automatic" else "Manual"),
                                   1500, P),
              "slotType": self.name("transmission"), "variables": variables}
@@ -589,33 +660,15 @@ class PartsBuilder:
             d["vehicleController"] = {"calculateOptimalLoadShiftPoints": True, "shiftDownRPMOffsetCoef": 1.2,
                                       "clutchLaunchStartRPM": int(g.engine["idle"] + 700),
                                       "clutchLaunchTargetRPM": int(g.engine["idle"] + 1500)}
-        slots = [["type", "default", "description"]]
-        if P.drive == "AWD":
-            locked = P.diff == "locked"
-            opts = {"diffType": "locked", "lockTorque": round(g.engine["peak_torque"] * 30)} if locked else \
-                {"diffType": "viscous", "viscousCoef": 80, "viscousTorque": round(g.engine["peak_torque"] * 2.5)}
-            opts.update({"diffTorqueSplit": 0.5, "uiName": "Center Differential", "defaultVirtualInertia": 0.1,
-                         "friction": 2})
-            pt += [["differential", "transfercase", "gearbox", 1, opts],
-                   ["shaft", "driveshaft_F", "transfercase", 1, {"uiName": "Front Driveshaft", "friction": 1}],
-                   ["shaft", "driveshaft_R", "transfercase", 2, {"uiName": "Rear Driveshaft", "friction": 1}]]
-            slots += [[self.name("differential_F"), self.name("differential_F"), "Front Differential"],
-                      [self.name("differential_R"), self.name("differential_R"), "Rear Differential"]]
-        else:
-            ax = "F" if P.drive == "FWD" else "R"
-            pt += [["shaft", "driveshaft_" + ax, "gearbox", 1, {"uiName": "Driveshaft", "friction": 1}]]
-            slots += [[self.name("differential_" + ax), self.name("differential_" + ax),
-                       ("Front" if ax == "F" else "Rear") + " Differential"]]
-        d["slots"] = slots
-        d["powertrain"] = pt
-        self.parts[self.name("transmission")] = d
+        return d
 
     def differential(self, ax):
         P, g = self.P, self.g
         a = ax.id
         side_word = axle_word(ax)
         fd = g.gearing["final"]
-        variables = [VAR_HEAD, _var("$finaldrive_" + a, ":1", "Differentials", fd, 1.5, 8, "Final Drive Gear Ratio",
+        lo, hi = (2, 20) if P.electric else (1.5, 8)
+        variables = [VAR_HEAD, _var("$finaldrive_" + a, ":1", "Differentials", fd, lo, hi, "Final Drive Gear Ratio",
                                     "Torque multiplication ratio", stepDis=0.01, subCategory=side_word)]
         opts = {"gearRatio": "$finaldrive_" + a, "uiName": side_word + " Differential",
                 "defaultVirtualInertia": 0.25, "friction": 3}
@@ -649,6 +702,8 @@ class PartsBuilder:
         }
 
     def fueltank(self):
+        if self.P.electric:
+            return self.battery()
         P = self.P
         cap = round(P.fuel)
         self.parts[self.name("fueltank")] = {
@@ -659,6 +714,18 @@ class PartsBuilder:
             "energyStorage": [["type", "name"], ["fuelTank", "mainTank"]],
             "mainTank": {"energyType": "gasoline", "fuelCapacity": cap, "startingFuelCapacity": "$fuel"},
         }
+
+    def battery(self):
+        P = self.P
+        cap = round(P.battery)
+        d = {
+            "information": _info("%d kWh Battery" % cap, 400 + cap * 60, P),
+            "slotType": self.name("battery"),
+            "variables": [VAR_HEAD, _var("$fuel", "kWh", "Chassis", cap, 0, cap, "Battery Level",
+                                         "Charge in the battery at the start", stepDis=0.5)],
+        }
+        d.update(electric.battery_sections(cap))
+        self.parts[self.name("battery")] = d
 
 
 def _axle_val(ax, key, front, rear):

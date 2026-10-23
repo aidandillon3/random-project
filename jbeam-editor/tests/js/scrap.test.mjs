@@ -22,7 +22,8 @@ from editor import smimport, build, model
 root = ${JSON.stringify(root)}
 gf = F.make_game(root)
 make = {"car": lambda: F.car()[0], "truck": lambda: F.car(suspension="offroad", wheel=F.BIG_WHEEL)[0],
-        "trike": F.trike, "six": F.six_wheeler, "solid": F.solid_axles, "solid_off": lambda: F.solid_axles(1)}
+        "trike": F.trike, "six": F.six_wheeler, "solid": F.solid_axles, "solid_off": lambda: F.solid_axles(1),
+        "electric": lambda: F.car(engine=F.ELECTRIC_ENGINE)[0]}
 imp = smimport.Importer()
 out = {}
 for k in ${JSON.stringify(kinds)}:
@@ -39,7 +40,7 @@ print(json.dumps(out))
 }
 
 test('imported creations settle at the height they were built', async () => {
-  const all = scenes(['car', 'truck', 'trike', 'six', 'solid', 'solid_off']);
+  const all = scenes(['car', 'truck', 'trike', 'six', 'solid', 'solid_off', 'electric']);
   for (const [name, sc] of Object.entries(all)) {
     assert.deepEqual(sc.warnings, [], name);
     const { summary: s, sim } = await dropTest(sc, { seconds: 3 });

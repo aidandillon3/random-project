@@ -241,6 +241,24 @@ scenario('builder', async page => {
   await page.screenshot({ path: path.join(OUT, 'builder-pickup.png') });
 });
 
+// the pickup with an electric motor: petrol-only settings go, the battery and its range show up
+scenario('builder-electric', async page => {
+  await page.click('#builderPane .catlist .cat:nth-child(5)');   // engine and drivetrain
+  const names = () => page.$$eval('#builderPane .field .name, #builderPane .slider .name', els => els.map(e => e.textContent.trim()));
+  if (!(await names()).includes('Gearbox')) throw new Error('no gearbox setting: ' + (await names()).join(', '));
+  await page.evaluate(() => [...document.querySelectorAll('#builderPane .seg button')].find(b => b.textContent === 'Electric motor').click());
+  await page.waitForFunction(() => document.querySelector('#builderBusy') && ![...document.querySelectorAll('#builderPane .field .name')].some(e => e.textContent === 'Gearbox'), null, { timeout: 20000 });
+  await page.evaluate(() => [...document.querySelectorAll('#builderPane button')].find(b => /More settings/.test(b.textContent))?.click());
+  const shown = await names();
+  if (!shown.includes('Battery') || shown.includes('Redline') || shown.includes('Fuel tank')) throw new Error('electric settings: ' + shown.join(', '));
+  await page.waitForFunction(() => window.jbe.S.scene && Object.keys(window.jbe.S.scene.parts).some(p => /_battery$/.test(p)), null, { timeout: 20000 });
+  await builderIdle(page);
+  await page.waitForFunction(() => /Range/.test(document.querySelector('#builderSide')?.textContent || ''), null, { timeout: 20000 });
+  const side = await page.$eval('#builderSide', e => e.textContent);
+  if (!/Electric motor/.test(side) || !/from standstill/.test(side) || !/one reduction/.test(side)) throw new Error('side: ' + side);
+  await page.screenshot({ path: path.join(OUT, 'builder-electric.png') });
+});
+
 scenario('builder-drop', async page => {
   await page.evaluate(() => [...document.querySelectorAll('#builderSide button')].find(b => /Drop test/.test(b.textContent)).click());
   await page.waitForFunction(() => /Settles|Holds together|apart/.test(document.querySelector('#dropPanel')?.textContent || ''), null, { timeout: 30000 });
@@ -267,6 +285,11 @@ scenario('builder-create', async page => {
   const warn = await page.evaluate(() => window.jbe.S.scene.warnings);
   if (warn.length) throw new Error('warnings: ' + warn.join('; '));
   console.log('    garage ready after ' + (Date.now() - t0) + ' ms');
+  // made electric in the builder-electric scenario: the Garage tunes its motor
+  if (await page.evaluate(() => !!window.jbe.S.scene.garage.info.engine?.electric)) {
+    await page.evaluate(() => [...document.querySelectorAll('#garageCats .cat')].find(b => /Engine/.test(b.textContent))?.click());
+    await page.waitForFunction(() => /Motor power/.test(document.querySelector('#garageBody')?.textContent || ''), null, { timeout: 20000 });
+  }
 });
 
 const scrapIdle = page => page.waitForFunction(() => window.jbe.S.scene && document.querySelector('#scrapBusy')?.classList.contains('hidden'), null, { timeout: 30000 });
@@ -313,6 +336,17 @@ scenario('scrap-settings', async page => {
   await page.waitForFunction(() => /ui_mud_truck/.test(document.querySelector('#scrapSide code')?.textContent || ''), null, { timeout: 20000 });
   await scrapIdle(page);
   await page.screenshot({ path: path.join(OUT, 'scrap-truck.png') });
+});
+
+scenario('scrap-electric', async page => {
+  // on the engine page: an electric motor instead, with a battery and no gearbox
+  await page.evaluate(() => [...document.querySelectorAll('#scrapPane .seg button')].find(b => b.textContent === 'Electric motor').click());
+  await page.waitForFunction(() => window.jbe.S.scene && Object.keys(window.jbe.S.scene.parts).some(p => /_battery$/.test(p)), null, { timeout: 20000 });
+  await scrapIdle(page);
+  const shown = await page.$$eval('#scrapPane .field .name, #scrapPane .slider .name', els => els.map(e => e.textContent.trim()));
+  if (shown.includes('Gearbox')) throw new Error('electric settings: ' + shown.join(', '));
+  const side = await page.$eval('#scrapSide', e => e.textContent);
+  if (!/Electric motor/.test(side) || !/Range/.test(side)) throw new Error('side: ' + side);
 });
 
 scenario('scrap-drop', async page => {

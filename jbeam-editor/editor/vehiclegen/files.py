@@ -122,8 +122,12 @@ def file_texts(g):
                                                          ("suspension_", "coilover_", "brake_", "wheel_", "tire_",
                                                           "wheeldata_"))],
         m + "_powertrain.jbeam": [k for k in parts if any(k.startswith(m + "_" + w) for w in
-                                                         ("engine", "transmission", "differential_", "fueltank"))],
+                                                         ("engine", "transmission", "differential_", "fueltank",
+                                                          "battery"))],
     }
+    # anything else goes with the main part, so no part is ever left out
+    placed = {k for names in groups.values() for k in names}
+    groups[m + ".jbeam"] += [k for k in parts if k not in placed]
     out = {}
     for fn, names in groups.items():
         out[fn] = jbeamfile.dumps_part_file({k: parts[k] for k in names if k in parts}, comment=head)

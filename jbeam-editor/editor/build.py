@@ -987,12 +987,29 @@ def _table_pairs(t):
     return out
 
 
+def engine_device(vehicle):
+    """(name, electric) of the powertrain device that drives the vehicle: its first combustion engine, else its
+    first electric motor."""
+    found = {}
+    rows = vehicle.get("powertrain")
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, list) and len(r) >= 2 and r[0] in ("combustionEngine", "electricMotor") \
+                and isinstance(r[1], str):
+            found.setdefault(r[0], r[1])
+    if "combustionEngine" in found:
+        return found["combustionEngine"], False
+    if "electricMotor" in found:
+        return found["electricMotor"], True
+    return "mainEngine", False
+
+
 def _engine_summary(vehicle):
-    """The main engine's torque curve and limits, after all parts were merged."""
-    e = vehicle.get("mainEngine")
+    """The main engine's (or electric motor's) torque curve and limits, after all parts were merged."""
+    name, electric = engine_device(vehicle)
+    e = vehicle.get(name)
     if not isinstance(e, dict):
         return None
-    out = {"torque": _table_pairs(e.get("torque"))}
+    out = {"torque": _table_pairs(e.get("torque")), "device": name, "electric": electric}
     for k in ("torqueModMult", "torqueModIntake", "torqueModExhaust"):
         if isinstance(e.get(k), list):
             out[k] = _table_pairs(e.get(k))

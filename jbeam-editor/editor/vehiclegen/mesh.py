@@ -1,4 +1,4 @@
-"""3D models of a generated vehicle: body shell, interior, engine, suspension, rims and tires.
+"""3D models of a generated vehicle: body shell, interior, engine or motor, suspension, rims and tires.
 
 Everything is built from the same numbers as the node structure (the body is
 lofted through Shape.section), modelled where it sits on the vehicle, except
@@ -182,6 +182,7 @@ def materials(g):
         m + "_seat": {"color": [0.1, 0.1, 0.11], "metallic": 0.0, "roughness": 0.9},
         m + "_metal": {"color": [0.22, 0.23, 0.25], "metallic": 0.7, "roughness": 0.45},
         m + "_engine": {"color": [0.35, 0.36, 0.38], "metallic": 0.6, "roughness": 0.5},
+        m + "_hv": {"color": [0.95, 0.42, 0.05], "metallic": 0.0, "roughness": 0.6},
         m + "_chrome": {"color": [0.86, 0.87, 0.9], "metallic": 1.0, "roughness": 0.08},
         m + "_rim": {"color": P.rimRGB, "metallic": 0.85, "roughness": 0.25},
         m + "_tire": {"color": [0.05, 0.05, 0.05], "metallic": 0.0, "roughness": 0.95},
@@ -502,6 +503,17 @@ def engine_mesh(g):
     m = P.model
     M = Mesh(m + "_engine")
     yc, z0, w, l, h = e["y"], e["z0"], e["w"], e["l"], e["h"]
+    if P.electric:
+        # the motor lies across the vehicle with its inverter on top and an orange cable to the battery
+        r = min(l, h) * 0.4
+        zc = z0 + r + 0.02
+        M.tube(m + "_engine", (w / 2 * 0.9, yc, zc), (-w / 2 * 0.9, yc, zc), r, 16)
+        top = zc + r
+        M.box(m + "_black", (0, yc, top + h * 0.08), (w / 2 * 0.62, l / 2 * 0.7, h * 0.08))
+        to_mid = 1 if yc < 0 else -1
+        M.tube(m + "_hv", (w * 0.18, yc + to_mid * l / 2 * 0.7, top + h * 0.08),
+               (w * 0.18, yc + to_mid * (l / 2 + 0.2), z0 + 0.04), 0.018, 6)
+        return M
     M.box(m + "_engine", (0, yc, z0 + h * 0.4), (w / 2 * 0.92, l / 2 * 0.96, h * 0.4))
     M.box(m + "_black", (0, yc, z0 + h * 0.86), (w / 2 * 0.7, l / 2 * 0.86, h * 0.1))
     M.tube(m + "_metal", (0, yc - l / 2 - 0.02, z0 + h * 0.35), (0, yc - l / 2 + 0.03, z0 + h * 0.35), 0.09, 12)
@@ -746,7 +758,8 @@ def build_all(g):
     add(body_mesh(g, mats))
     add(interior_mesh(g))
     add(engine_mesh(g))
-    add(exhaust_mesh(g))
+    if g.exhaust:
+        add(exhaust_mesh(g))
     susp, flex, coil = suspension_meshes(g)
     for M in susp:
         add(M)

@@ -12,7 +12,7 @@ import hashlib
 import json
 import math
 
-from . import chassis, lights, mesh, parts, spec as specmod
+from . import chassis, electric, lights, mesh, parts, spec as specmod
 from .chassis import G, SIDES, Axle, Structure, clamp, dist, v_sub
 from .shape import Shape, lerp
 
@@ -81,7 +81,9 @@ class Generator:
                 chassis.build_wishbone(S, sh, P, ax, low_body)
         chassis.build_engine(S, sh, P, self.axles, low_body)
         self.engine = dict(S.engine)
-        self._exhaust(low_body)
+        self.exhaust = None
+        if not P.electric:
+            self._exhaust(low_body)
         # nothing may be left free to swing out of a plane
         rest = [n for n in S.order if S.nodes[n].part != "body"]
         chassis.brace_degenerate(S, rest, low_body, kind="mount")
@@ -264,6 +266,9 @@ class Generator:
 
     def _engine_curve(self):
         P = self.P
+        if P.electric:
+            self.engine.update(electric.motor(P.power))
+            return
         c = P.torqueShape
         red = P.redline
         fr = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25]
@@ -277,7 +282,7 @@ class Generator:
         idle = int(round(lerp(700, 1050, c), -1))
         self.engine.update({
             "curve": curve, "peak_torque": max(t for _, t in curve), "idle": idle,
-            "max_rpm": int(round(red * 1.12, -2)),
+            "max_rpm": int(round(red * 1.12, -2)), "limit": red,
             "inertia": clamp(0.06 + P.power / 2600.0, 0.05, 0.6) * lerp(1.3, 0.75, c),
             "friction": clamp(8 + P.power / 22.0, 8, 60), "dyn_friction": 0.022 + 0.008 * c,
             "brake_torque": clamp(peak_t * 0.18, 15, 300),
@@ -291,6 +296,10 @@ class Generator:
         e = self.engine
         n = int(P.gears)
         r = max(self.axles["R"].r if P.drive != "FWD" else self.axles["F"].r, 0.2)
+        if P.electric:
+            # one fixed reduction, in the axles' final drive
+            self.gearing = {"gears": [], "reverse": 0.0, "final": round(electric.reduction(e["limit"], r, P.topSpeed), 3)}
+            return
         v_top = P.topSpeed / 3.6
         red = P.redline
         overall_top = (red * 0.98 * 2 * math.pi / 60) * r / v_top
@@ -349,11 +358,11 @@ class Generator:
         brk = math.degrees(2 * math.atan2(P.clearance, wb / 2))
         accel, top = self._performance()
         sp = self.springs
+        roll = rollover(self.axle_list, self.cg[2], P.tireType)
         self.stats = {
             "mass": round(mass), "massTarget": round(P.mass), "frontShare": round(self.front_share, 3),
             "cgHeight": round(self.cg[2], 3),
-            "rollG": rollover(self.axle_list, self.cg[2], P.tireType)[0],
-            "rollRisk": rollover(self.axle_list, self.cg[2], P.tireType)[1],
+            "rollG": roll[0], "rollRisk": roll[1],
             "powerHP": round(P.power), "powerKW": round(P.kw), "torqueNm": round(e["peak_torque"]),
             "torqueRPM": int(round(e["peak_torque_rpm"], -2)), "powerRPM": int(round(e["peak_power_rpm"], -2)),
             "hpPerTon": round(P.power / (mass / 1000.0)),
@@ -365,9 +374,20 @@ class Generator:
             "wheelRateF": round(sp["F"]["wheel_rate"], -2), "wheelRateR": round(sp["R"]["wheel_rate"], -2),
             "nodes": len(self.S.nodes), "beams": len(self.S.beams), "triangles": len(self.S.tris),
             "stabilityAdded": round(getattr(self.S, "stability_added", 0.0), 1),
-            "curve": [[int(r), round(t, 1)] for r, t in e["curve"]], "redline": int(P.redline),
+            "curve": [[int(r), round(t, 1)] for r, t in e["curve"]], "redline": int(e["limit"]),
             "cd": self.cd,
         }
+        self.stats.update(self._energy_stats())
+
+    def _energy_stats(self):
+        """Battery size, weight and range of an electric vehicle (nothing for an engine)."""
+        P = self.P
+        if not P.electric:
+            return {"electric": False}
+        crr = 0.013 if P.tireType in ("street", "sport", "slick") else 0.02
+        return {"electric": True, "battery": round(P.battery), "batteryMass": round(getattr(self.S, "battery_mass", 0)),
+                "range": int(round(electric.range_km(P.battery, self.total_mass, self.cd * self.frontal_area, crr),
+                                   -1))}
 
     def _performance(self):
         """Rough 0-100 km/h time and top speed: power and grip against drag and rolling."""
@@ -375,44 +395,53 @@ class Generator:
         e, gr = self.engine, self.gearing
         mass = self.total_mass
         r = self.axles["R"].r if P.drive != "FWD" else self.axles["F"].r
-        rho = 1.2
         cda = self.cd * self.frontal_area
         crr = 0.013 if P.tireType in ("street", "sport", "slick") else 0.02
-        mu = {"street": 1.0, "sport": 1.1, "allterrain": 0.95, "mud": 0.9, "slick": 1.25}[P.tireType]
+        mu = GRIP[P.tireType]
         driven = 1.0 if P.drive == "AWD" else (self.front_share if P.drive == "FWD" else 1 - self.front_share)
-        curve = e["curve"]
+        return drive_times(e, gr, P.electric, r, mass, cda, crr, mu * mass * G * driven * 1.05)
 
-        def torque(rpm):
-            for (r0, t0), (r1, t1) in zip(curve, curve[1:]):
-                if r0 <= rpm <= r1:
-                    return lerp(t0, t1, (rpm - r0) / max(r1 - r0, 1))
-            return 0.0
 
-        v, t = 0.1, 0.0
-        dt = 0.05
-        top = 0.0
-        t100 = None
-        for _ in range(int(120 / dt)):
-            best = 0.0
-            for g in gr["gears"]:
-                ratio = g * gr["final"]
-                rpm = v / r * ratio * 60 / (2 * math.pi)
-                if rpm > P.redline:
-                    continue
+def drive_times(e, gr, is_electric, r, mass, cda, crr, grip):
+    """(0-100 km/h time, top speed in km/h) from the engine or motor curve, the gearing and the grip (N).
+
+    An engine slips its clutch until it pulls well and drives through the gears; a motor pulls from
+    standstill through its one reduction."""
+    curve = e["curve"]
+    limit = e["limit"]
+    ratios = [g * gr["final"] for g in gr["gears"]] or [gr["final"]]
+    eff, inertia, launch = (0.92, 1.04, 0.15) if is_electric else (0.88, 1.08, 0.35)
+
+    def torque(rpm):
+        for (r0, t0), (r1, t1) in zip(curve, curve[1:]):
+            if r0 <= rpm <= r1:
+                return lerp(t0, t1, (rpm - r0) / max(r1 - r0, 1))
+        return 0.0
+
+    v, t = 0.1, 0.0
+    dt = 0.05
+    top = 0.0
+    t100 = None
+    for _ in range(int(120 / dt)):
+        best = 0.0
+        for ratio in ratios:
+            rpm = v / r * ratio * 60 / (2 * math.pi)
+            if rpm > limit:
+                continue
+            if not is_electric:
                 rpm = max(rpm, e["idle"] + 1500)
-                f = torque(min(rpm, P.redline)) * ratio * 0.88 / r
-                best = max(best, f)
-            best = min(best, mu * mass * G * driven * 1.05)
-            drag = 0.5 * rho * cda * v * v + crr * mass * G
-            a = (best - drag) / (mass * 1.08)
-            if a <= 0.01:
-                break
-            v += a * dt
-            t += dt
-            if t100 is None and v >= 100 / 3.6:
-                t100 = round(t + 0.35, 1)
-            top = max(top, v)
-        return t100, round(top * 3.6)
+            best = max(best, torque(min(rpm, limit)) * ratio * eff / r)
+        best = min(best, grip)
+        drag = 0.5 * 1.2 * cda * v * v + crr * mass * G
+        a = (best - drag) / (mass * inertia)
+        if a <= 0.01:
+            break
+        v += a * dt
+        t += dt
+        if t100 is None and v >= 100 / 3.6:
+            t100 = round(t + launch, 1)
+        top = max(top, v)
+    return t100, round(top * 3.6)
 
 
 GRIP = {"street": 1.0, "sport": 1.1, "allterrain": 0.95, "mud": 0.9, "slick": 1.25}

@@ -416,16 +416,19 @@ function enginePanel(body) {
   const draw = () => { chart.innerHTML = ''; chart.append(curveChart(e.curve, power, rpm, e.maxRPM)); };
   draw();
   const now = h('span', {});
-  const say = (p, r) => { now.textContent = `${fmt(hp0 * p, 0)} hp, ${fmt(e.peakTorque * p, 0)} Nm (stock ${fmt(hp0, 0)} hp, ${fmt(e.peakTorque, 0)} Nm), rev limit ${fmt((e.maxRPM || 0) + r, 0)} rpm`; };
+  const limit = e.electric ? 'top motor speed' : 'rev limit';
+  const say = (p, r) => { now.textContent = `${fmt(hp0 * p, 0)} hp, ${fmt(e.peakTorque * p, 0)} Nm (stock ${fmt(hp0, 0)} hp, ${fmt(e.peakTorque, 0)} Nm), ${limit} ${fmt((e.maxRPM || 0) + r, 0)} rpm`; };
   say(power, rpm);
   const slot = e.slot;
-  body.append(section('Engine power', 'engine',
-    `${slot ? slot.title : e.part}. A tune scales its whole torque curve; the engine's strength limits are raised to match.`,
+  body.append(section(e.electric ? 'Motor power' : 'Engine power', 'engine',
+    e.electric
+      ? `${slot ? slot.title : e.part}. A tune scales the electric motor's whole torque curve.`
+      : `${slot ? slot.title : e.part}. A tune scales its whole torque curve; the engine's strength limits are raised to match.`,
     h('p', { class: 'note' }, now),
     slider({ label: 'Power', min: 50, max: 300, step: 1, value: Math.round(power * 100), show: v => v + ' %',
       onInput: (v, done) => { G.spec.engine = Object.assign(G.spec.engine || {}, { power: v / 100 }); say(v / 100, (G.spec.engine.rpm ?? rpm)); draw2(); changed(); if (done) renderCats(); } }),
-    slider({ label: 'Rev limit', min: -1500, max: 3000, step: 50, value: rpm, show: v => (v > 0 ? '+' : '') + v + ' rpm',
-      help: 'More revs only help if the engine still makes power up there.',
+    slider({ label: e.electric ? 'Top motor speed' : 'Rev limit', min: -1500, max: 3000, step: 50, value: rpm, show: v => (v > 0 ? '+' : '') + v + ' rpm',
+      help: e.electric ? 'A faster-turning motor gives a higher top speed; its power fades towards the top.' : 'More revs only help if the engine still makes power up there.',
       onInput: (v, done) => { G.spec.engine = Object.assign(G.spec.engine || {}, { rpm: v }); say(G.spec.engine.power ?? power, v); draw2(); changed(); if (done) renderCats(); } }),
     chart));
   function draw2() { chart.innerHTML = ''; chart.append(curveChart(e.curve, G.spec.engine?.power ?? power, G.spec.engine?.rpm ?? rpm, e.maxRPM)); }
@@ -440,7 +443,8 @@ function enginePanel(body) {
         b.addEventListener('click', () => pickPart(slot.id, o));
         list.append(b);
       }
-      body.append(section('Engine swap', 'refresh', 'Engines this vehicle can take.', list));
+      body.append(section(e.electric ? 'Motor swap' : 'Engine swap', 'refresh',
+        e.electric ? 'Motors and engines this vehicle can take.' : 'Engines this vehicle can take.', list));
     }
   }
   const g = [...(G.info.vars.gearing || []), ...(G.info.vars.engine || [])];

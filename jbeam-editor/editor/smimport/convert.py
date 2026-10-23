@@ -12,9 +12,8 @@ Builder does, and every setting can be changed before the mod is written.
 import math
 
 from .. import vehiclegen as vg
-from ..vehiclegen import chassis, lights, mesh as vmesh, parts as vparts, spec as specmod
+from ..vehiclegen import chassis, electric, lights, mesh as vmesh, parts as vparts, spec as specmod
 from ..vehiclegen.chassis import FLT_MAX, Corner, Structure, clamp, dist, v_len, v_sub
-from ..vehiclegen.shape import lerp
 from ..vehiclegen.spec import _b, _c, _col, _r
 from . import smmesh, voxel
 
@@ -50,6 +49,8 @@ FIELDS = [
     _r("pressure", "Tire pressure", "wheels", "psi", 8, 65, 0.5, "", "more"),
     _c("rimStyle", "Rim style", "wheels", specmod.RIM_STYLES, "", "more"),
     _col("rimColor", "Rim colour", "wheels", "", "more"),
+    _c("engineType", "Power source", "engine", [["gas", "Petrol engine"], ["electric", "Electric motor"]],
+       "Starts as the creation's engines: electric engines become an electric motor with a battery."),
     _r("power", "Power", "engine", "hp", 20, 1500, 5, "Starts at what the creation's engines would give."),
     _c("drive", "Driven wheels", "engine", [["built", "As built"], ["rear", "Rear"], ["front", "Front"], ["all", "All"]],
        "As built: the wheels on bearings your engines are connected to."),
@@ -63,11 +64,18 @@ FIELDS = [
     _c("sound", "Engine sound", "engine", [["i4", "Inline 4"], ["b4", "Flat 4"]], "", "more"),
     _c("diff", "Differentials", "engine", [["open", "Open"], ["lsd", "Limited slip"], ["locked", "Locked"]], "", "more"),
     _r("fuel", "Fuel tank", "engine", "L", 5, 300, 1, "", "more"),
+    _r("battery", "Battery", "engine", "kWh", 5, 200, 1, "How much energy the battery holds: more drives further.",
+       "more"),
     _r("mass", "Weight", "weight", "kg", 100, 30000, 10, "Starts at what the creation weighs in Scrap Mechanic."),
     _r("brakePower", "Brake power", "weight", "×", 0.4, 2.0, 0.05, "", "more"),
     _r("brakeBias", "Front brake share", "weight", "%", 0.4, 0.85, 0.01, "", "more", display="percent"),
     _b("abs", "Anti-lock brakes (ABS)", "weight"),
 ]
+for _f in FIELDS:
+    if _f["key"] in ("gearbox", "gears", "redline", "torqueShape", "sound", "fuel"):
+        _f["when"] = {"engineType": "gas"}
+    elif _f["key"] == "battery":
+        _f["when"] = {"engineType": "electric"}
 FIELD = {f["key"]: f for f in FIELDS}
 
 # wheel travel (m), spring frequency (Hz) and damping by the kind of suspension a wheel had
@@ -83,6 +91,7 @@ def defaults(an):
     angle = clamp(round(max(angles)), 15, 55) if angles else 32
     hp = an.engine_power()
     r = max((w.radius for w in an.wheels), default=1.5) * 0.25
+    built_electric = bool(an.engines) and all(e.info and e.info.extra.get("electric") for e in an.engines)
     return {
         "turn": "0", "scale": 1.0,
         "steer": "built" if any(w.steered for w in an.wheels) else "front", "steerAngle": angle,
@@ -90,9 +99,10 @@ def defaults(an):
         "axles": "built", "tireType": "allterrain" if main == "offroad" else "street",
         "pressure": round(clamp(30 - (r - 0.35) * 30, 12, 34) * 2) / 2,
         "rimStyle": "steel", "rimColor": "#b8bcc0",
-        "power": round(clamp(hp or 120, 20, 1500) / 5) * 5,
+        "engineType": "electric" if built_electric else "gas", "power": round(clamp(hp or 120, 20, 1500) / 5) * 5,
         "drive": "built" if any(w.driven for w in an.wheels) else "rear", "gearbox": "automatic", "topSpeed": 150,
         "gears": 5, "redline": 6000, "torqueShape": 0.4, "sound": "i4", "diff": "open", "fuel": 50,
+        "battery": round(clamp(an.mass(1.0) / 25, 5, 200)),
         "mass": round(clamp(an.mass(1.0), 100, 30000)), "brakePower": 1.0, "brakeBias": 0.62, "abs": True,
     }
 
@@ -186,9 +196,9 @@ class SMGenerator(vg.Generator):
         self.st, self.defaults = clean(settings, an)
         st = self.st
         raw = settings if isinstance(settings, dict) else {}
-        spec = {k: st[k] for k in ("power", "redline", "torqueShape", "sound", "gearbox", "gears", "topSpeed", "diff",
-                                   "fuel", "brakePower", "brakeBias", "abs", "tireType", "rimStyle", "rimColor",
-                                   "steerAngle")}
+        spec = {k: st[k] for k in ("engineType", "power", "redline", "torqueShape", "sound", "gearbox", "gears",
+                                   "topSpeed", "diff", "fuel", "battery", "brakePower", "brakeBias", "abs", "tireType",
+                                   "rimStyle", "rimColor", "steerAngle")}
         spec["camberF"] = spec["camberR"] = 0.0
         P, _ = specmod.normalize(spec)
         P.name = (str(raw.get("name") or "").strip()[:60]) or (an.name or "Scrap Mechanic creation")[:60]
@@ -241,7 +251,9 @@ class SMGenerator(vg.Generator):
         self._unsprung()
         self._engine(body)
         self.engine = dict(S.engine)
-        self._exhaust(body)
+        self.exhaust = None
+        if not P.electric:
+            self._exhaust(body)
         rest = [n for n in S.order if S.nodes[n].part != "body"]
         chassis.brace_degenerate(S, rest, body, kind="mount")
         self._drive_units()
@@ -255,7 +267,7 @@ class SMGenerator(vg.Generator):
         self._drag()
         self.meshes, self.materials, flex = self._meshes()
         self.susp_flex, self.coil_flex = flex["susp"], flex["coil"]
-        self.engine_flex = [(P.model + "_exhaust", [P.model_group("body")])]
+        self.engine_flex = [] if P.electric else [(P.model + "_exhaust", [P.model_group("body")])]
         self.parts = SMPartsBuilder(self).build()
         self._stats()
         self.notes += [n for n in S.notes if n not in self.notes]
@@ -478,7 +490,7 @@ class SMGenerator(vg.Generator):
             c = [0.0, y, z]
         hw, el, eh = size[0] / 2, size[1], size[2]
         z0 = c[2] - eh / 2
-        m_e = clamp(70 + 0.38 * hp + (25 if P.gearbox == "automatic" else 0), 80, 480)
+        m_e = chassis.engine_mass(P)
         w = m_e / 8.0
         grp = [P.model_group("engine")]
         names = {}
@@ -554,6 +566,9 @@ class SMGenerator(vg.Generator):
         n = int(P.gears)
         driven = [ax for ax in self.axle_list if ax.driven] or self.axle_list
         r = max(sum(ax.r for ax in driven) / len(driven), 0.15)
+        if P.electric:
+            self.gearing = {"gears": [], "reverse": 0.0, "final": round(electric.reduction(e["limit"], r, P.topSpeed), 3)}
+            return
         v_top = P.topSpeed / 3.6
         red = P.redline
         overall_top = (red * 0.98 * 2 * math.pi / 60) * r / v_top
@@ -626,35 +641,7 @@ class SMGenerator(vg.Generator):
         crr = 0.013 if P.tireType in ("street", "sport", "slick") else 0.02
         mu = {"street": 1.0, "sport": 1.1, "allterrain": 0.95, "mud": 0.9, "slick": 1.25}[P.tireType]
         share = clamp(sum(ax.share for ax in driven), 0.05, 1.0)
-        curve = e["curve"]
-
-        def torque(rpm):
-            for (r0, t0), (r1, t1) in zip(curve, curve[1:]):
-                if r0 <= rpm <= r1:
-                    return lerp(t0, t1, (rpm - r0) / max(r1 - r0, 1))
-            return 0.0
-        v, t, dt = 0.1, 0.0, 0.05
-        top, t100 = 0.0, None
-        for _ in range(int(120 / dt)):
-            best = 0.0
-            for g in gr["gears"]:
-                ratio = g * gr["final"]
-                rpm = v / r * ratio * 60 / (2 * math.pi)
-                if rpm > P.redline:
-                    continue
-                rpm = max(rpm, e["idle"] + 1500)
-                best = max(best, torque(min(rpm, P.redline)) * ratio * 0.88 / r)
-            best = min(best, mu * mass * chassis.G * share * 1.05)
-            drag = 0.5 * 1.2 * cda * v * v + crr * mass * chassis.G
-            a = (best - drag) / (mass * 1.08)
-            if a <= 0.01:
-                break
-            v += a * dt
-            t += dt
-            if t100 is None and v >= 100 / 3.6:
-                t100 = round(t + 0.35, 1)
-            top = max(top, v)
-        return t100, round(top * 3.6)
+        return vg.drive_times(e, gr, P.electric, r, mass, cda, crr, mu * mass * chassis.G * share * 1.05)
 
     def _stats(self):
         P = self.P
@@ -694,9 +681,10 @@ class SMGenerator(vg.Generator):
                        "spring": round(sp[ax.id]["spring"], -2), "travel": round(ax.travel, 3)} for ax in axles],
             "nodes": len(self.S.nodes), "beams": len(self.S.beams), "triangles": len(self.S.tris),
             "stabilityAdded": round(getattr(self.S, "stability_added", 0.0), 1),
-            "curve": [[int(r), round(t, 1)] for r, t in e["curve"]], "redline": int(P.redline), "cd": self.cd,
+            "curve": [[int(r), round(t, 1)] for r, t in e["curve"]], "redline": int(e["limit"]), "cd": self.cd,
             "lattice": self.lattice.C * 0.25 * self.st["scale"],
         }
+        self.stats.update(self._energy_stats())
 
     def summary(self):
         s = self.an.summary()
@@ -788,8 +776,9 @@ class SMGenerator(vg.Generator):
                 for M in (vmesh.rim_mesh("%s_rim_%s_%s" % (m, ax.id, c.side.upper()), self, ax, c.s),
                           vmesh.tire_mesh("%s_tire_%s_%s" % (m, ax.id, c.side.upper()), self, ax, c.s)):
                     meshes[M.name] = M
-        ex = vmesh.exhaust_mesh(self)
-        meshes[ex.name] = ex
+        if self.exhaust:
+            ex = vmesh.exhaust_mesh(self)
+            meshes[ex.name] = ex
         used = set()
         for M in meshes.values():
             used.update(k for k, v in M.t.items() if len(v) >= 3)
@@ -840,8 +829,7 @@ class SMPartsBuilder(vparts.PartsBuilder):
         for ax in g.axle_list:
             slots.append([self.name("suspension_" + ax.id), self.name("suspension_" + ax.id),
                           vparts.axle_word(ax) + " Suspension"])
-        slots += [[self.name("engine"), self.name("engine"), "Engine"],
-                  [self.name("fueltank"), self.name("fueltank"), "Fuel Tank"]]
+        slots += self.power_slots()
         self.parts[self.name("body")] = {
             "information": vparts._info(P.name + " Body", 8000, P),
             "slotType": self.name("body"),
@@ -874,42 +862,20 @@ class SMPartsBuilder(vparts.PartsBuilder):
 
     def transmission(self):
         P, g = self.P, self.g
-        gr = g.gearing
-        n = len(gr["gears"])
-        V = vparts._var
-        variables = [vparts.VAR_HEAD,
-                     V("$gear_R", ":1", "Transmission", gr["reverse"], 0.5, 7, "Reverse Gear Ratio",
-                       "Torque multiplication ratio", stepDis=0.01)]
-        for i, r in enumerate(gr["gears"], 1):
-            variables.append(V("$gear_%d" % i, ":1", "Transmission", r, 0.3, 7, "%s Gear Ratio" % vparts._ordinal(i),
-                               "Torque multiplication ratio", stepDis=0.01))
-        variables.append(V("$finaldrive", ":1", "Differentials", gr["final"], 1.5, 12, "Final Drive Gear Ratio",
-                           "Torque multiplication ratio of every driven axle", stepDis=0.01))
-        ratios = ["$=-$gear_R*$finaldrive", 0] + ["$=$gear_%d*$finaldrive" % i for i in range(1, n + 1)]
-        pt = [["type", "name", "inputName", "inputIndex"]]
-        d = {"information": vparts._info("%d-Speed %s" % (n, "Automatic" if P.gearbox == "automatic" else "Manual"),
-                                         1500, P),
-             "slotType": self.name("transmission"), "variables": variables}
         peak = g.engine["peak_torque"]
-        if P.gearbox == "automatic":
-            pt += [["torqueConverter", "torqueConverter", "mainEngine", 1],
-                   ["automaticGearbox", "gearbox", "torqueConverter", 1]]
-            d["torqueConverter"] = {"uiName": "Torque Converter", "converterDiameter": 0.26, "converterStiffness": 10,
-                                    "couplingAVRatio": 0.95, "stallTorqueRatio": 2.0,
-                                    "lockupClutchTorque": round(peak * 1.6)}
-            d["gearbox"] = {"uiName": "Gearbox", "gearRatios": ratios, "parkLockTorque": 3000 + round(P.mass),
-                            "oneWayViscousCoef": 40, "friction": 2, "dynamicFriction": 0.002, "torqueLossCoef": 0.02}
-            d["vehicleController"] = {"automaticModes": "PRND21", "calculateOptimalLoadShiftPoints": True,
-                                      "torqueConverterLockupRPM": int(g.engine["idle"] + 600),
-                                      "torqueConverterLockupMinGear": 2}
+        pt = [["type", "name", "inputName", "inputIndex"]]
+        if P.electric:
+            # no gearbox: one reduction gear after the motor turns every driven wheel
+            d = {"information": vparts._info("Direct Drive", 800, P), "slotType": self.name("transmission"),
+                 "variables": [vparts.VAR_HEAD, vparts._var(
+                     "$finaldrive", ":1", "Transmission", g.gearing["final"], 2, 20, "Reduction Gear Ratio",
+                     "Motor turns for each turn of the driven wheels", stepDis=0.01)]}
+            pt.append(["shaft", "reduction", electric.DEVICE, 1,
+                       {"gearRatio": "$finaldrive", "uiName": "Reduction Gear", "friction": 1}])
+            src = "reduction"
         else:
-            pt += [["frictionClutch", "clutch", "mainEngine", 1], ["manualGearbox", "gearbox", "clutch", 1]]
-            d["clutch"] = {"uiName": "Clutch", "clutchMass": 3, "additionalEngineInertia": 0.01}
-            d["gearbox"] = {"uiName": "Gearbox", "gearRatios": ratios, "friction": 2, "dynamicFriction": 0.002,
-                            "torqueLossCoef": 0.02}
-            d["vehicleController"] = {"calculateOptimalLoadShiftPoints": True, "shiftDownRPMOffsetCoef": 1.2,
-                                      "clutchLaunchStartRPM": int(g.engine["idle"] + 700),
-                                      "clutchLaunchTargetRPM": int(g.engine["idle"] + 1500)}
+            d = self.gearbox(pt)
+            src = "gearbox"
         slots = [["type", "default", "description"]]
         units = g.drive_units
         stage = [0]
@@ -937,7 +903,7 @@ class SMPartsBuilder(vparts.PartsBuilder):
             pt.append(["differential", name, src, idx, opts])
             feed(us[:1], name, 1)
             feed(us[1:], name, 2)
-        feed(units, "gearbox", 1)
+        feed(units, src, 1)
         for u in units:
             if u["kind"] == "diff":
                 slots.append([self.name("differential_" + u["id"]), self.name("differential_" + u["id"]),
@@ -945,6 +911,46 @@ class SMPartsBuilder(vparts.PartsBuilder):
         d["slots"] = slots
         d["powertrain"] = pt
         self.parts[self.name("transmission")] = d
+
+    def gearbox(self, pt):
+        """The gearbox (devices added to pt) with the final drive folded into its gears."""
+        P, g = self.P, self.g
+        gr = g.gearing
+        n = len(gr["gears"])
+        V = vparts._var
+        variables = [vparts.VAR_HEAD,
+                     V("$gear_R", ":1", "Transmission", gr["reverse"], 0.5, 7, "Reverse Gear Ratio",
+                       "Torque multiplication ratio", stepDis=0.01)]
+        for i, r in enumerate(gr["gears"], 1):
+            variables.append(V("$gear_%d" % i, ":1", "Transmission", r, 0.3, 7, "%s Gear Ratio" % vparts._ordinal(i),
+                               "Torque multiplication ratio", stepDis=0.01))
+        variables.append(V("$finaldrive", ":1", "Differentials", gr["final"], 1.5, 12, "Final Drive Gear Ratio",
+                           "Torque multiplication ratio of every driven axle", stepDis=0.01))
+        ratios = ["$=-$gear_R*$finaldrive", 0] + ["$=$gear_%d*$finaldrive" % i for i in range(1, n + 1)]
+        d = {"information": vparts._info("%d-Speed %s" % (n, "Automatic" if P.gearbox == "automatic" else "Manual"),
+                                         1500, P),
+             "slotType": self.name("transmission"), "variables": variables}
+        peak = g.engine["peak_torque"]
+        if P.gearbox == "automatic":
+            pt += [["torqueConverter", "torqueConverter", "mainEngine", 1],
+                   ["automaticGearbox", "gearbox", "torqueConverter", 1]]
+            d["torqueConverter"] = {"uiName": "Torque Converter", "converterDiameter": 0.26, "converterStiffness": 10,
+                                    "couplingAVRatio": 0.95, "stallTorqueRatio": 2.0,
+                                    "lockupClutchTorque": round(peak * 1.6)}
+            d["gearbox"] = {"uiName": "Gearbox", "gearRatios": ratios, "parkLockTorque": 3000 + round(P.mass),
+                            "oneWayViscousCoef": 40, "friction": 2, "dynamicFriction": 0.002, "torqueLossCoef": 0.02}
+            d["vehicleController"] = {"automaticModes": "PRND21", "calculateOptimalLoadShiftPoints": True,
+                                      "torqueConverterLockupRPM": int(g.engine["idle"] + 600),
+                                      "torqueConverterLockupMinGear": 2}
+        else:
+            pt += [["frictionClutch", "clutch", "mainEngine", 1], ["manualGearbox", "gearbox", "clutch", 1]]
+            d["clutch"] = {"uiName": "Clutch", "clutchMass": 3, "additionalEngineInertia": 0.01}
+            d["gearbox"] = {"uiName": "Gearbox", "gearRatios": ratios, "friction": 2, "dynamicFriction": 0.002,
+                            "torqueLossCoef": 0.02}
+            d["vehicleController"] = {"calculateOptimalLoadShiftPoints": True, "shiftDownRPMOffsetCoef": 1.2,
+                                      "clutchLaunchStartRPM": int(g.engine["idle"] + 700),
+                                      "clutchLaunchTargetRPM": int(g.engine["idle"] + 1500)}
+        return d
 
     def diff_unit(self, u):
         P = self.P

@@ -305,12 +305,13 @@ class Info:
     # -- engine and brakes -------------------------------------------------------------
     def _engine(self):
         eng = self.sc.get("engine") or {}
+        dev = eng.get("device") or "mainEngine"
         found = None
         for name, info in self.sc["parts"].items():
             p = self.part(name)
             if p is None:
                 continue
-            me = p.data.get("mainEngine")
+            me = p.data.get(dev)
             if isinstance(me, dict) and isinstance(me.get("torque"), list):
                 found = (name, info)
         if not found:
@@ -327,7 +328,7 @@ class Info:
                 "part": name, "source": src, "meta": meta, "curve": base_curve,
                 "maxRPM": (eng.get("maxRPM") or 0) - (meta.get("rpm", 0) if meta else 0),
                 "peakTorque": peak_t, "peakKW": peak_p[0], "peakRPM": peak_p[1],
-                "power": f, "rpm": meta.get("rpm", 0) if meta else 0}
+                "power": f, "rpm": meta.get("rpm", 0) if meta else 0, "device": dev, "electric": bool(eng.get("electric"))}
 
     def _brakes(self):
         out = []
@@ -550,7 +551,7 @@ class Plan:
                 c["what"].append("%s x %s in" % (fnum(round(d / 0.0254, 1), 1), fnum(round(w / 0.0254, 1), 1)))
             power, rpm = st.get("power", 1), st.get("rpm", 0)
             if abs(power - 1) > 0.004 or abs(rpm) >= 1:
-                c["ops"].append(("engine", power, rpm))
+                c["ops"].append(("engine", power, rpm, (info.engine or {}).get("device") or "mainEngine"))
                 c["meta"].update({"power": round(power, 4), "rpm": round(rpm)})
                 c["what"].append(_engine_words(power, rpm))
             bf = st.get("brakes", 1)
@@ -614,7 +615,7 @@ class Plan:
                 elif op[0] == "tire":
                     _tire(pc, *op[1:])
                 elif op[0] == "engine":
-                    _engine(pc, op[1], op[2])
+                    _engine(pc, op[1], op[2], op[3])
                 elif op[0] == "brake":
                     pc.map_modifiers("pressureWheels", "brakeTorque", lambda v, f=op[1]: scale_value(v, f))
             out[name] = (pc.chunk(), pc.data())
@@ -651,25 +652,26 @@ def _tire(pc, r, w, r0, w0):
         pc.map_row_options("flexbodies", scaled)
 
 
-def _engine(pc, power, rpm):
+def _engine(pc, power, rpm, dev="mainEngine"):
+    """Scale the torque curve of the engine (or electric motor) dev and move its rev limit."""
     if abs(power - 1) > 0.004:
-        pc.map_numbers(["mainEngine", "torque"], 1, lambda row: row[1] * power)
-        for key in ("maxTorqueRating", "maxOverTorqueDamage"):
-            v = pc.get(["mainEngine", key])
+        pc.map_numbers([dev, "torque"], 1, lambda row: row[1] * power)
+        for key in ("maxTorqueRating", "maxOverTorqueDamage", "maximumWantedRegenTorque"):
+            v = pc.get([dev, key])
             if isinstance(v, (int, float)) and not isinstance(v, bool):
-                pc.set(["mainEngine", key], round(v * max(power, 1.0), 1))
+                pc.set([dev, key], round(v * (power if key == "maximumWantedRegenTorque" else max(power, 1.0)), 1))
     if abs(rpm) >= 1:
-        for path in (["mainEngine", "maxRPM"], ["mainEngine", "revLimiterRPM"], ["vehicleController", "highShiftUpRPM"]):
+        for path in ([dev, "maxRPM"], [dev, "revLimiterRPM"], ["vehicleController", "highShiftUpRPM"]):
             v = pc.get(path)
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 pc.set(path, round(v + rpm))
         if rpm > 0:
-            table = pc.get(["mainEngine", "torque"]) or []
+            table = pc.get([dev, "torque"]) or []
             rows = [r for r in table[1:] if isinstance(r, list) and len(r) >= 2 and isinstance(r[0], (int, float))]
-            mx = pc.get(["mainEngine", "maxRPM"])
+            mx = pc.get([dev, "maxRPM"])
             if rows and isinstance(mx, (int, float)) and rows[-1][0] < mx + 250:
                 last = rows[-1]
-                pc.append_rows(["mainEngine", "torque"], [[round(mx + 500), round(float(last[1]) * 0.9, 1)]])
+                pc.append_rows([dev, "torque"], [[round(mx + 500), round(float(last[1]) * 0.9, 1)]])
 
 
 # ---------------------------------------------------------------------------

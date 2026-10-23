@@ -56,7 +56,8 @@ is never changed.
   rear can differ. Body lifts too.
 - **Wheels & tires**: tire size and width (also sizes the vehicle has no part
   for; bigger tires get heavier like real ones), rims, spacers and track width.
-- **Engine**: more or less power and a different rev limit, with the torque curve.
+- **Engine**: more or less power and a different rev limit, with the torque curve
+  (electric vehicles: the motor's power and top speed).
 - **Brakes** and **Paint**, and **Fine tuning** for the vehicle's own sliders.
 - **Drop test**: drops the vehicle onto the ground in a quick physics simulation
   and tells you whether it sits at the right height and holds together.
@@ -71,7 +72,9 @@ pickup, van, roadster, supercar) and shape it with sliders: length, width,
 height, wheelbase, overhangs, track width, ground clearance, hood and roof
 lines, tire and rim sizes, independent or solid-axle suspension, wheel travel,
 spring and damper settings, anti-roll bars, engine power and character, gearbox,
-driven wheels, weight and brakes.
+driven wheels, weight and brakes. Or make it electric: a motor with full torque
+from standstill, no gearbox, and a battery in the floor that lowers the centre
+of gravity; the Builder shows how far a charge goes.
 
 Everything is generated for you: the body and its node structure, double
 wishbone or solid axle suspension with real pivot points, coilovers and bump
@@ -93,7 +96,7 @@ as a BeamNG vehicle straight away, adjust it and create it.
 - The wheels on bearings your **driver's seat** is connected to steer; the ones
   your **engines** are connected to are driven, through proper differentials
   (any number of axles, lone wheels too). The front is found from the steered
-  wheels.
+  wheels. Electric engines become an electric motor with a battery.
 - The blocks become a stiff node structure that follows their shape, drawn in
   the creation's own colours; the main colour is the paint, so you can repaint it
   in the game. Parts on the suspension move with their wheel, and two wheels on
@@ -101,8 +104,8 @@ as a BeamNG vehicle straight away, adjust it and create it.
   spare wheels stay part of the body. Head and tail lights are added on the
   front and back so it can be driven at night.
 - Settings: size (1× is Scrap Mechanic's own scale), which way is the front,
-  steering, wheel travel, springs, tires, power, driven wheels, gearbox, top
-  speed and weight.
+  steering, wheel travel, springs, tires, petrol or electric, power, driven
+  wheels, gearbox, top speed and weight.
 
 The editor reads the game's own part list to know what every part is, and the
 part lists of Workshop mods a creation uses. If Scrap Mechanic is not found, set

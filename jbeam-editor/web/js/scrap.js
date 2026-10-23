@@ -7,7 +7,7 @@ import { icon } from './icons.js';
 import { V, buildMeshes, clearView as clearDrawn, frame, rebuild, setMeshes, setPalette } from './view3d.js';
 import { reindex } from './scene.js';
 import { hideHome } from './home.js';
-import { curveChart, fieldControl, section, valueText } from './widgets.js';
+import { applies, batteryRows, curveChart, fieldControl, gearsText, section, torqueText, valueText } from './widgets.js';
 import { closePanel as closeDropTest, runDropTest } from './droptest.js';
 import { $, h, fmt, toast, debounce, openModal, closeModal, setLoading, shortPath, confirmBox } from './util.js';
 
@@ -38,7 +38,7 @@ const show = (f, v) => valueText(f, v, imperial());
 const GROUP_TEXT = {
   fit: 'The creation is turned so its wheels roll forward, with the steered wheels at the front. Change the size to make a model car or a giant.',
   wheels: 'Every wheel on a bearing becomes a real wheel on a coil-over. Scrap Mechanic off-road suspension starts soft and long, sport suspension firm and short, and wheels with none get a short, firm ride.',
-  engine: 'Power starts at what your engines give in Scrap Mechanic. The gearing is worked out from the top speed.',
+  engine: 'Power starts at what your engines give in Scrap Mechanic, and electric engines become an electric motor with a battery. The gearing is worked out from the top speed.',
   weight: 'The weight is spread over the structure the way the blocks are, so it balances like your creation.',
 };
 
@@ -353,9 +353,14 @@ function renderFound() {
       ...rows.flatMap(([k, v]) => [h('span', { class: 'k' }, k), h('span', {}, v)]))));
 }
 
+// the settings as the page should show them: what the last preview used, with every change made since
+function values() {
+  return { ...(M.result?.settings || {}), ...M.settings };
+}
+
 function groupPanel(body, gid) {
   const r = M.result;
-  const fields = r.schema.fields.filter(f => f.group === gid);
+  const fields = r.schema.fields.filter(f => f.group === gid && applies(f, values()));
   const basic = fields.filter(f => f.level === 'basic');
   const extra = fields.filter(f => f.level !== 'basic');
   const g = r.schema.groups.find(x => x.id === gid);
@@ -375,11 +380,10 @@ function groupPanel(body, gid) {
 
 function control(f) {
   const r = M.result;
-  const v = r.settings[f.key];
+  const v = values()[f.key];
   const set = (val, done) => {
     M.settings = { ...M.settings, [f.key]: val };
     if (f.key === 'mass') M.settings.massAuto = false;
-    r.settings[f.key] = val;
     if (f.key === 'turn' || f.key === 'scale') M.fresh = true;
     changed(!done && f.type === 'range');
   };
@@ -428,13 +432,13 @@ function renderSide() {
   const st = r.stats;
   box.append(h('div', { class: 'stat-grid' },
     tile('Weight', show({ unit: 'kg' }, st.mass), `${fmt(st.frontShare * 100, 0)} / ${fmt(100 - st.frontShare * 100, 0)} front/rear`),
-    tile('Power', fmt(st.powerHP, 0) + ' hp', `${fmt(st.torqueNm, 0)} Nm at ${st.torqueRPM} rpm`),
+    tile('Power', fmt(st.powerHP, 0) + ' hp', torqueText(st)),
     tile('0–100 km/h', st.zeroTo100 ? fmt(st.zeroTo100, 1) + ' s' : '–', `${fmt(st.hpPerTon, 0)} hp per tonne`),
     tile('Top speed', show({ unit: 'km/h' }, st.topSpeed), 'estimated')));
   box.append(h('h4', {}, 'Axles'), h('div', { class: 'compare', style: { gridTemplateColumns: 'auto 1fr' } },
     ...st.axles.flatMap(a => [h('span', { class: 'k' }, a.name),
       h('span', {}, `${a.wheels === 2 ? 'pair' : a.wheels + ' wheel'} · ${a.tire}${a.steer ? ' · steers' : ''}${a.driven ? ' · driven' : ''}`)])));
-  box.append(h('h4', {}, 'Engine'), curveChart(st.curve, 1, 0, st.redline));
+  box.append(h('h4', {}, st.electric ? 'Electric motor' : 'Engine'), curveChart(st.curve, 1, 0, st.redline));
   const len = m => show({ unit: 'm' }, m);
   box.append(h('h4', {}, 'Numbers'), h('div', { class: 'compare', style: { gridTemplateColumns: 'auto 1fr' } },
     ...row('Size', `${len(st.length)} × ${len(st.width)} × ${len(st.height)}`),
@@ -442,7 +446,8 @@ function renderSide() {
     ...row('Ground clearance', len(st.clearance)),
     ...row('Turning circle', st.turningCircle ? len(st.turningCircle) : '–'),
     ...row('Tips over at', `${fmt(st.rollG, 2)} g sideways`),
-    ...row('Gears', `${st.gears.length} + final drive ${fmt(st.finalDrive, 2)}`),
+    ...row('Gears', gearsText(st)),
+    ...batteryRows(st, imperial()).flatMap(([k, v]) => row(k, v)),
     ...row('Structure', `${st.nodes} nodes, ${st.beams} beams (${fmt(st.lattice * 100, 0)} cm grid)`)));
   if (st.rollRisk) box.append(h('p', { class: 'note warn' }, icon('warning', 13), ` It can roll over in hard corners (it tips at ${fmt(st.rollG, 2)} g, before the tires slide): it is tall for how far apart its wheels are. In Scrap Mechanic, put the wheels further out or build it lower.`));
   for (const n of r.notes || []) box.append(h('p', { class: 'note warn' }, icon('warning', 13), ' ', n));
@@ -515,7 +520,7 @@ function createDialog() {
         h('p', { style: { marginTop: 0 } }, h('b', {}, r.settings.name), ` (${r.model})`),
         h('ul', { class: 'changes' },
           h('li', {}, `${r.scene.nodes.length} nodes, ${r.scene.beams.length} beams, ${r.scene.wheels.length} wheels`),
-          h('li', {}, `${fmt(st.powerHP, 0)} hp, ${st.gears.length}-speed ${r.settings.gearbox}`),
+          h('li', {}, `${fmt(st.powerHP, 0)} hp, ${st.electric ? `electric, ${fmt(st.battery, 0)} kWh battery` : `${st.gears.length}-speed ${r.settings.gearbox}`}`),
           h('li', {}, `${show({ unit: 'kg' }, st.mass)}, ${st.axles.length} axle${st.axles.length > 1 ? 's' : ''}`)),
         update ? h('p', { class: 'note' }, 'This rewrites the vehicle you imported before. Its old files are backed up first.') : null)),
     h('div', { class: 'form', style: { marginTop: '12px' } },

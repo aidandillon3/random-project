@@ -13,6 +13,7 @@ from array import array
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import ptcheck  # noqa: E402
 import smfixture as F  # noqa: E402
 from test_backend import InstallCase  # noqa: E402
 from editor import build, jbeamfile, model, smimport  # noqa: E402
@@ -65,6 +66,8 @@ class GameTests(SMCase):
         self.assertEqual(db.get(F.PISTON).role, "piston")
         eng = db.get(F.ENGINE)
         self.assertEqual((eng.role, eng.level, eng.size), ("engine", 3, (3, 3, 2)))
+        self.assertFalse(eng.extra["electric"])
+        self.assertTrue(db.get(F.ELECTRIC_ENGINE).extra["electric"])
         self.assertEqual(db.get(F.SEAT).role, "driverseat")
         self.assertEqual(db.get(F.GLASS).role, "glass")
         self.assertEqual(db.get(F.WOOD).density, 250.0)
@@ -258,6 +261,36 @@ class ConvertTests(SMCase):
         self.assertEqual(gb[1], 0)
         self.assertTrue(all("$finaldrive" in str(x) for x in gb if x != 0))
         self.assertIn("$finaldrive", [v[0] for v in tr["variables"][1:]])
+
+    def test_electric_engines_make_an_electric_vehicle(self):
+        data = F.car(engine=F.ELECTRIC_ENGINE)[0]
+        an = self.analysis(data, "volt")
+        self.assertEqual(convert.clean({}, an)[1]["engineType"], "electric")
+        self.assertEqual(convert.clean({}, self.analysis(F.car()[0], "petrol"))[1]["engineType"], "gas")
+        for settings in ({}, {"drive": "all"}, {"drive": "front", "diff": "locked"}):
+            with self.subTest(settings=settings):
+                g = self.convert(data, settings, "volt")
+                sc = self.scene(g)
+                self.assertEqual(sc["warnings"], [])
+                names = [w["name"] for w in sc["wheels"]]
+                self.assertEqual(ptcheck.problems(g.parts, names, names if settings.get("drive") == "all" else None), [])
+                m = g.P.model
+                self.assertIn(m + "_battery", g.parts)
+                self.assertNotIn(m + "_fueltank", g.parts)
+                # the motor turns the wheels through one reduction gear, with no gearbox and no exhaust
+                pt = {r[1]: r for r in g.parts[m + "_transmission"]["powertrain"][1:]}
+                self.assertEqual(pt["reduction"][2], "mainMotor")
+                self.assertEqual(pt["reduction"][4]["gearRatio"], "$finaldrive")
+                self.assertFalse(any("exhaust" in name for name in g.meshes))
+                self.assertFalse(any(n.extra.get("isExhaust") for n in g.structure.nodes.values() if n.extra))
+                st = g.stats
+                self.assertTrue(st["electric"])
+                self.assertGreater(st["range"], 50)
+                self.assertTrue(st["zeroTo100"] and st["topSpeed"] > 100)
+        # and back to an engine when asked
+        g = self.convert(data, {"engineType": "gas"}, "volt")
+        self.assertIn(g.P.model + "_fueltank", g.parts)
+        self.assertEqual(ptcheck.problems(g.parts, [w["name"] for w in self.scene(g)["wheels"]]), [])
 
     def test_odd_layouts(self):
         g = self.convert(F.trike(), name="trike")
