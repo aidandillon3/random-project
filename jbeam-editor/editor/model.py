@@ -294,7 +294,8 @@ class Model:
             "configs": self.configs,
             "defaultConfig": self.default_config_name(),
             "mainParts": self.main_parts(),
-            "editableRoots": [{"id": r.id, "label": r.label, "path": r.path} for r in self.editable_roots()],
+            "editableRoots": [{"id": r.id, "label": r.label, "path": r.path, "offInGame": r.off_in_game}
+                              for r in self.editable_roots()],
             "zipRoots": [{"id": r.id, "label": r.label, "path": r.path, "origin": r.origin}
                          for r in self.ws.roots if r.kind == "zip" and not r.inactive
                          and r.files_under("vehicles/%s" % self.name)],

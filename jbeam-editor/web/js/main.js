@@ -256,6 +256,13 @@ function updateBanner() {
   if (!b) { b = h('div', { id: 'banner', class: 'hidden' }); $('#center').append(b); }
   b.innerHTML = '';
   const sm = S.summary;
+  const off = (sm?.editableRoots || []).filter(r => r.offInGame);
+  if (sm && sm.editableRoots.length && off.length) {
+    b.append(h('span', {}, `${off.map(r => r.label).join(', ')} is switched off in the game's mod manager. You can edit it here; turn it on in the game to drive your changes.`),
+      h('button', { class: 'small', title: 'Hide', onclick: () => b.classList.add('hidden') }, '✕'));
+    b.classList.remove('hidden');
+    return;
+  }
   if (!sm || sm.editableRoots.length) { b.classList.add('hidden'); return; }
   const modZip = sm.zipRoots.find(r => r.origin === 'mod zip');
   if (modZip) {

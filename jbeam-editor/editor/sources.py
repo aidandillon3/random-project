@@ -203,7 +203,9 @@ def discover(cfg):
                 full = os.path.join(unpacked, d)
                 if os.path.isdir(os.path.join(full, "vehicles")):
                     r = Root("folder", full, d, True, "unpacked")
-                    r.inactive = d.lower() in inactive
+                    # your own unpacked mods stay editable even when switched off in the game
+                    r.inactive = False
+                    r.off_in_game = d.lower() in inactive
                     roots.append(r)
         # loose files directly in the user folder (old style)
         if os.path.isdir(os.path.join(user, "vehicles")):
@@ -229,6 +231,8 @@ def discover(cfg):
     for r in roots:
         if not hasattr(r, "inactive"):
             r.inactive = False
+        if not hasattr(r, "off_in_game"):
+            r.off_in_game = r.inactive
     return roots
 
 
