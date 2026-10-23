@@ -446,6 +446,15 @@ class ScrapApiTests(InstallCase):
         # the groups cover every triangle once
         self.assertEqual(sum(g[1] for g in body[5]), body[3])
 
+    def test_imports_pass_the_checker(self):
+        for c in self.app.api_scrap_list({})["creations"]:
+            for st in ({}, {"drive": "all", "steer": "all", "diff": "lsd", "gearbox": "manual", "axles": "independent"}):
+                res = self.app.api_scrap_create({"id": c["id"], "settings": dict(st, name="Chk %s %d" % (c["name"], len(st)))})
+                out = self.app.api_check({"model": res["model"]})
+                with self.subTest(creation=c["name"], settings=st):
+                    self.assertEqual(out["errors"], [])
+                    self.assertEqual(out["warnings"], [])
+
     def test_blueprint_from_a_path(self):
         folder = os.path.join(self.tmp, "elsewhere", "thing")
         F.save_creation(folder, F.trike(), "Odd Trike")

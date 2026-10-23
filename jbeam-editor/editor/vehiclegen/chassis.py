@@ -90,6 +90,7 @@ class Structure:
         self.order = []
         self.beams = []
         self._pairs = set()
+        self._where = set()
         self.tris = []
         self.torsionbars = []
         self.kinds = {}          # beam kind -> dict of beam options
@@ -107,12 +108,15 @@ class Structure:
         self.kinds[name] = opts
 
     def beam(self, a, b, part, kind, sec="beams", dup_ok=False, **extra):
+        """A beam between a and b, unless that part already has one there (the game warns about duplicates)."""
         if a == b:
             return None
         key = (min(a, b), max(a, b), kind)
-        if not dup_ok and key in self._pairs:
+        where = (min(a, b), max(a, b), part, sec)
+        if not dup_ok and (key in self._pairs or where in self._where):
             return None
         self._pairs.add(key)
+        self._where.add(where)
         bm = Beam(a, b, part, kind, extra, sec)
         self.beams.append(bm)
         return bm

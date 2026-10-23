@@ -199,6 +199,18 @@ def _wheels(g):
 
 
 class BuilderApiTests(InstallCase):
+    def test_every_style_passes_the_checker(self):
+        # the same full check the editor's Check button runs: no errors, and nothing the game would warn about
+        for style in STYLES:
+            spec = {"style": style, "name": "Check " + style}
+            if style in ("pickup", "offroad"):
+                spec.update({"suspR": "solid", "drive": "AWD", "diff": "lsd"})
+            res = self.app.api_builder_create({"spec": spec})
+            out = self.app.api_check({"model": res["model"]})
+            with self.subTest(style=style):
+                self.assertEqual(out["errors"], [])
+                self.assertEqual(out["warnings"], [])
+
     def test_preview_payload(self):
         r = self.app.api_builder_preview({"spec": {"style": "coupe", "name": "Speedy"}})
         self.assertEqual(r["model"], "speedy")
