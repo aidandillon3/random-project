@@ -215,6 +215,10 @@ class ConvertTests(SMCase):
         self.assertEqual(len(paint), 1)
         self.assertEqual([round(c * 255) for c in g.materials[paint[0]]["color"]], [0x4a, 0x4a, 0x4a])
 
+    def test_lights(self):
+        from test_builder import check_lights
+        check_lights(self, self.convert(F.car()[0], name="lit"))
+
     def test_every_way_round_is_the_same_vehicle(self):
         data = F.car()[0]
         base = self.wheel_centres(self.scene(self.convert(data, name="round0")))

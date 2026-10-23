@@ -12,7 +12,7 @@ Builder does, and every setting can be changed before the mod is written.
 import math
 
 from .. import vehiclegen as vg
-from ..vehiclegen import chassis, mesh as vmesh, parts as vparts, spec as specmod
+from ..vehiclegen import chassis, lights, mesh as vmesh, parts as vparts, spec as specmod
 from ..vehiclegen.chassis import FLT_MAX, Corner, Structure, clamp, dist, v_len, v_sub
 from ..vehiclegen.shape import lerp
 from ..vehiclegen.spec import _b, _c, _col, _r
@@ -228,6 +228,7 @@ class SMGenerator(vg.Generator):
         lat.build(S, "body", [P.model_group("body")])
         body = [n for n in S.order if S.nodes[n].part == "body"]
         self.body_names = body
+        self.lamps = self._lamps(body)
         self._make_axles()
         self.wheels = {}
         for ax in self.axle_list:
@@ -405,6 +406,22 @@ class SMGenerator(vg.Generator):
         self.P.drive = "AWD" if len(driven) == len(axles) and len(axles) > 1 else (
             "FWD" if all(ax in first for ax in driven) and len(axles) > 1 else "RWD")
         self.P.steerAngle = st["steerAngle"]
+
+    def _lamps(self, body):
+        """Head and tail lights on the front and back of the blocks, so it can be driven at night."""
+        S, lat = self.S, self.lattice
+        lo, hi = lat.bounds()
+        width = hi[0] - lo[0]
+        lamps = []
+        for kind, y_face, inward in (("head", lo[1], 0.3), ("tail", hi[1], -0.3)):
+            for side, s_ in (("l", 1), ("r", -1)):
+                x = clamp(s_ * min(0.6, max(0.25, 0.3 * width)), lo[0] + 0.12, hi[0] - 0.12)
+                col = lat.column(x, y_face + inward, reach=0.35)
+                z = col[0] + 0.6 * (col[1] - col[0]) if col else (lo[2] + hi[2]) / 2
+                lamps.append((kind, side, (x, y_face, max(z, lo[2] + 0.1))))
+        made = lights.add_lamps(S, self.P, lamps, body)
+        chassis.brace_degenerate(S, [n for n in S.order if S.nodes[n].kind == "lamp"], body, kind="lamp")
+        return made
 
     def _drive_units(self):
         """What each output of the gearbox turns: an axle's differential, two lone wheels' one, or a lone wheel."""
@@ -849,6 +866,9 @@ class SMPartsBuilder(vparts.PartsBuilder):
             "beams": vparts.beam_table(S, beams, {"deformLimitExpansion": 1.2}),
             "triangles": vparts.tri_table(S, tris, drag=round(g.drag_per_tri, 2)),
         }
+        pr = lights.props(g.lamps)
+        if pr:
+            self.parts[self.name("body")]["props"] = pr
 
     def transmission(self):
         P, g = self.P, self.g

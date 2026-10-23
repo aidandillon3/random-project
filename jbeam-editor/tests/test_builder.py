@@ -140,6 +140,11 @@ class GeneratorTests(unittest.TestCase):
                 after = chassis.dist(p_in, (p_arm[0] + 0.01, p_arm[1], p_arm[2]))
                 self.assertEqual(math.copysign(1, after - before), math.copysign(1, opts["factor"]), (susp, a, b))
 
+    def test_lights_shine_from_the_lamps(self):
+        for style in ("sedan", "pickup", "roadster"):
+            g = vehiclegen.generate({"style": style})
+            check_lights(self, g)
+
     def test_springs_hold_the_design_ride_height(self):
         g = vehiclegen.generate({"style": "suv"})
         S = g.structure
@@ -184,6 +189,37 @@ class GeneratorTests(unittest.TestCase):
             total += 1
             good += chassis.v_dot(n, chassis.v_sub(cen, axis)) > 0
         self.assertGreater(good / total, 0.93)
+
+
+def check_lights(tc, g):
+    """Head, tail, brake and reverse lights set up the way BeamNG's own vehicles have them, on the front and
+    back faces of the body."""
+    S = g.structure
+    ys = [S.nodes[n].p[1] for n in S.order if S.nodes[n].part == "body" and S.nodes[n].kind != "lamp"]
+    y_front, y_back = min(ys), max(ys)
+    table = g.parts[g.P.model + "_body"]["props"]
+    rows = [r for r in table[1:] if isinstance(r, list)]
+    tc.assertEqual(sorted(r[0] for r in rows), sorted(["lowbeam", "highbeam", "brake", "lowhighbeam", "reverse"] * 2))
+    cookie = False
+    for r in table[1:]:
+        if isinstance(r, dict):
+            cookie = cookie or "cookieName" in r
+            continue
+        func, mesh, ref, xn, yn, rot = r[:6]
+        tc.assertEqual(mesh, "SPOTLIGHT")
+        pr, px, py = S.pos(ref), S.pos(xn), S.pos(yn)
+        # the X node straight below the reference, the Y node across at the same height toward +x
+        tc.assertLess(px[2], pr[2])
+        tc.assertAlmostEqual(px[0], pr[0])
+        tc.assertGreater(py[0], pr[0])
+        tc.assertAlmostEqual(py[2], pr[2])
+        front = func in ("lowbeam", "highbeam")
+        tc.assertEqual(rot["x"], 180 if front else 0, func)
+        tc.assertEqual(r[-1]["baseTranslation"]["z"], -0.1 if front else 0.1)
+        tc.assertAlmostEqual(pr[1], y_front if front else y_back, delta=0.02, msg=func)
+        # rear lights come before the headlights' options (the cookie texture) are set
+        tc.assertEqual(cookie, front, func)
+    tc.assertEqual(chassis.degenerate_nodes(S, [n for n in S.order if S.nodes[n].kind == "lamp"]), [])
 
 
 def _gen(g):

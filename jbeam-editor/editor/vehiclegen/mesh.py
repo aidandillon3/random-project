@@ -309,25 +309,44 @@ def _caps(M, sh, P, rings, info, mats):
         yy = y + dy
         bumper = m + ("_trim" if P.trim != "body" else "_paint")
         _panel(M, bumper, yy, -w * 0.93, w * 0.93, zb + 0.015, zb + min(0.16, (zsh - zb) * 0.45), out)
+        lamps = lamp_layout(sh)
         if front:
-            lz1 = min(zbelt - 0.015, zsh + 0.05)
-            lz0 = max(lz1 - clamp((zsh - zb) * 0.3, 0.07, 0.2), zb + 0.2)
+            lz0 = lamps["lz0"]
             gz0 = zb + min(0.17, (zsh - zb) * 0.48) + 0.02
             gz1 = max(lz0 - 0.015, gz0 + 0.06)
             if gz1 > gz0 + 0.04:
                 _panel(M, m + "_black", yy, -w * 0.38, w * 0.38, gz0, gz1, out)
-            if lz1 > lz0 + 0.025:
-                for s in (1, -1):
-                    _panel(M, m + "_headlight", yy, *sorted((s * w * 0.46, s * w * 0.88)), lz0, lz1, out)
+            for x0, x1, z0, z1 in lamps["head"]:
+                _panel(M, m + "_headlight", yy, x0, x1, z0, z1, out)
         else:
-            lz0, lz1 = zsh - 0.1, min(zbelt - 0.015, zsh + 0.04)
-            if lz1 > lz0 + 0.025:
-                for s in (1, -1):
-                    _panel(M, m + "_taillight", yy, *sorted((s * w * 0.6, s * w * 0.92)), lz0, lz1, out)
+            for x0, x1, z0, z1 in lamps["tail"]:
+                _panel(M, m + "_taillight", yy, x0, x1, z0, z1, out)
             # number plate recess
             pz0 = zb + min(0.17, (zsh - zb) * 0.48) + 0.02
             if pz0 + 0.12 < zbelt:
                 _panel(M, m + "_black", yy + 0.001, -0.26, 0.26, pz0, pz0 + 0.12, out)
+
+
+def lamp_layout(sh):
+    """Where the head and tail lamps are: {"head": [(x0, x1, z0, z1)] on the front face (y0),
+    "tail": [...] on the back face (y1)}, left lamp first."""
+    out = {"head": [], "tail": [], "lz0": 0.0}
+    for front in (True, False):
+        y = sh.y0 if front else sh.y1
+        w, zb, zsh, zbelt = sh.half_width(y), sh.bottom(y), sh.shoulder(y), sh.belt(y)
+        if front:
+            lz1 = min(zbelt - 0.015, zsh + 0.05)
+            lz0 = max(lz1 - clamp((zsh - zb) * 0.3, 0.07, 0.2), zb + 0.2)
+            out["lz0"] = lz0
+            span = (0.46, 0.88)
+        else:
+            lz0, lz1 = zsh - 0.1, min(zbelt - 0.015, zsh + 0.04)
+            span = (0.6, 0.92)
+        if lz1 > lz0 + 0.025:
+            for s in (1, -1):
+                x0, x1 = sorted((s * w * span[0], s * w * span[1]))
+                out["head" if front else "tail"].append((x0, x1, lz0, lz1))
+    return out
 
 
 def _panel(M, mat, y, x0, x1, z0, z1, out):

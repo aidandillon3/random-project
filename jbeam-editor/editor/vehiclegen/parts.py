@@ -18,6 +18,7 @@ menus and the editor's Garage work on it like on any other car:
 """
 import math
 
+from . import lights
 from .chassis import FLT_MAX, G, clamp, dist
 from .shape import lerp
 
@@ -255,6 +256,9 @@ class PartsBuilder:
             "beams": beam_table(S, beams, {"deformLimitExpansion": 1.2}),
             "triangles": tri_table(S, tris, drag=round(g.drag_per_tri, 2)),
         }
+        pr = lights.props(getattr(g, "lamps", None))
+        if pr:
+            self.parts[self.name("body")]["props"] = pr
 
     # -- suspension ----------------------------------------------------------------------
     def suspension(self, ax):

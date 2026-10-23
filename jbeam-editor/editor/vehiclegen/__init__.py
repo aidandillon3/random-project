@@ -12,7 +12,7 @@ import hashlib
 import json
 import math
 
-from . import chassis, mesh, parts, spec as specmod
+from . import chassis, lights, mesh, parts, spec as specmod
 from .chassis import G, SIDES, Axle, Structure, clamp, dist, v_sub
 from .shape import Shape, lerp
 
@@ -72,6 +72,7 @@ class Generator:
             self._wheel_nodes(ax)
         rings = chassis.build_body(S, sh, P)
         body_names = [n for n in S.order if S.nodes[n].part == "body"]
+        self.lamps = self._lamps(body_names)
         low_body = [n for n in body_names if S.nodes[n].kind in ("fc", "fl", "sl", "bl")]
         for ax in self.axle_list:
             if ax.solid:
@@ -137,6 +138,20 @@ class Generator:
             "generated_mass": generated * len(ax.corners), "axle_load": loads, "style_title": style,
             "size_text": specmod.tire_size_text(tw * 1000, ax.r * 2 / specmod.INCH, rim_in),
         }
+
+    def _lamps(self, body_names):
+        """Light sources behind the head and tail lamps the body is drawn with."""
+        sh = self.shape
+        lay = mesh.lamp_layout(sh)
+        lamps = []
+        for kind, y in (("head", sh.y0), ("tail", sh.y1)):
+            for x0, x1, z0, z1 in lay[kind]:
+                cx = (x0 + x1) / 2
+                lamps.append((kind, "l" if cx > 0 else "r", (cx, y, (z0 + z1) / 2)))
+        made = lights.add_lamps(self.S, self.P, lamps, body_names)
+        chassis.brace_degenerate(self.S, [n for n in self.S.order if self.S.nodes[n].kind == "lamp"], body_names,
+                                 kind="lamp")
+        return made
 
     def _exhaust(self, body_names):
         S, P, sh = self.S, self.P, self.shape
