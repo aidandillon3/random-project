@@ -75,7 +75,8 @@ driven wheels, weight and brakes.
 
 Everything is generated for you: the body and its node structure, double
 wishbone or solid axle suspension with real pivot points, coilovers and bump
-stops, wheels, engine, gearbox, differentials and fuel tank. Spring rates come
+stops, wheels, engine, gearbox, differentials, fuel tank, and head, tail, brake
+and reverse lights that light up the road at night. Spring rates come
 from the weight and how soft you want the ride; gearing from the power and top
 speed. **Create vehicle** writes it as a mod; open it again in the Builder later
 to change it.
@@ -95,8 +96,10 @@ as a BeamNG vehicle straight away, adjust it and create it.
   wheels.
 - The blocks become a stiff node structure that follows their shape, drawn in
   the creation's own colours; the main colour is the paint, so you can repaint it
-  in the game. Parts on the suspension move with their wheel. Pistons are fixed
-  at their saved length; spare wheels stay part of the body.
+  in the game. Parts on the suspension move with their wheel, and two wheels on
+  one sprung beam become a solid axle. Pistons are fixed at their saved length;
+  spare wheels stay part of the body. Head and tail lights are added on the
+  front and back so it can be driven at night.
 - Settings: size (1× is Scrap Mechanic's own scale), which way is the front,
   steering, wheel travel, springs, tires, power, driven wheels, gearbox, top
   speed and weight.
