@@ -8,16 +8,19 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import zipfile
 from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-from . import build, daewrite, jbeam_check, jbeamfile, meshes, model, patch, sources
+from . import appwindow, build, daewrite, jbeam_check, jbeamfile, meshes, model, patch, sources
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(HERE, "web")
+APP_ID = "jbeam-editor"
+VERSION = "2.0"
 
 
 class App:
@@ -29,6 +32,8 @@ class App:
         self.ws = model.Workspace(self.cfg, os.path.join(data_dir, "cache"))
         self.meshes = meshes.MeshLibrary(self.ws, os.path.join(data_dir, "cache"))
         self.lock = threading.RLock()
+        self.lifetime = None      # appwindow.Lifetime when the editor runs in its own window
+        self.window_mode = None   # how the window was opened
 
     # -- config --------------------------------------------------------------
     def _load_cfg(self):
@@ -44,6 +49,7 @@ class App:
             cfg["game_folder"] = sources.find_game_folder()
         cfg.setdefault("extra_folders", [])
         cfg.setdefault("author", "")
+        cfg.setdefault("window", "auto")
         return cfg
 
     def _save_cfg(self):
@@ -61,11 +67,35 @@ class App:
                 "gameFound": bool(self.cfg.get("game_folder")) and os.path.isdir(self.cfg.get("game_folder")),
                 "userFound": bool(self.cfg.get("user_folder")) and os.path.isdir(self.cfg.get("user_folder")),
                 "dataDir": self.data_dir,
+                "version": VERSION,
+                "window": {"mode": self.window_mode, **appwindow.available()},
+                "platform": sys.platform,
             }
+
+    def thumb(self, model):
+        """(bytes, content type) of a vehicle's picture (vehicles/<model>/default.jpg or .png)."""
+        with self.lock:
+            for r in self.ws.roots:
+                if r.inactive:
+                    continue
+                for name in ("default.jpg", "default.png", "default.jpeg"):
+                    rel = "vehicles/%s/%s" % (model, name)
+                    if r.has(rel):
+                        try:
+                            data = r.read(rel)
+                        except (OSError, KeyError):
+                            continue
+                        return data, "image/png" if name.endswith(".png") else "image/jpeg"
+        return None, None
+
+    def api_ping(self, req):
+        return {"app": APP_ID, "version": VERSION, "dataDir": os.path.abspath(self.data_dir)}
 
     def api_config(self, req):
         with self.lock:
-            for k in ("user_folder", "game_folder", "author"):
+            if req.get("window") in appwindow.WINDOW_MODES:
+                self.cfg["window"] = req["window"]
+            for k in ("user_folder", "game_folder", "author", "sm_folder"):
                 if k in req:
                     self.cfg[k] = (req[k] or "").strip()
             if "extra_folders" in req:
@@ -340,6 +370,62 @@ class App:
             self.meshes.forget()
             return {"path": dest}
 
+    def api_shortcut(self, req):
+        """Put "JBeam Editor" shortcuts on the desktop and in the Start menu (Windows)."""
+        if not sys.platform.startswith("win"):
+            raise ValueError("shortcuts can only be made on Windows; start it with: python run.py")
+        exe_dir = os.path.dirname(sys.executable)
+        target = os.path.join(exe_dir, "pythonw.exe")
+        if not os.path.isfile(target):
+            target = sys.executable
+        env = dict(os.environ, JBE_TARGET=target, JBE_ARGS='"%s"' % os.path.join(HERE, "run.py"),
+                   JBE_DIR=HERE, JBE_ICON=os.path.join(WEB, "img", "icon.ico"))
+        script = (
+            "$ws = New-Object -ComObject WScript.Shell; $made = @();"
+            "foreach ($f in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {"
+            "  if (-not $f) { continue };"
+            "  $p = Join-Path $f 'JBeam Editor.lnk'; $s = $ws.CreateShortcut($p);"
+            "  $s.TargetPath = $env:JBE_TARGET; $s.Arguments = $env:JBE_ARGS; $s.WorkingDirectory = $env:JBE_DIR;"
+            "  $s.IconLocation = $env:JBE_ICON; $s.Description = 'JBeam Editor for BeamNG.drive'; $s.Save(); $made += $p };"
+            "$made -join [char]10")
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                           env=env, capture_output=True, text=True, timeout=60,
+                           creationflags=0x08000000)
+        if r.returncode != 0:
+            raise ValueError("PowerShell could not make the shortcut: " + (r.stderr or r.stdout).strip()[:400])
+        return {"made": [x for x in r.stdout.splitlines() if x.strip()]}
+
+    _install = {"state": "idle", "log": ""}
+
+    def api_install_native(self, req):
+        """Install pywebview (the optional native window) with pip, in the background."""
+        st = App._install
+        if req.get("start") and st["state"] != "running":
+            st.update(state="running", log="")
+
+            def run():
+                try:
+                    r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--upgrade", "pywebview"],
+                                       capture_output=True, text=True, timeout=900,
+                                       **({"creationflags": 0x08000000} if sys.platform.startswith("win") else {}))
+                    st["log"] = (r.stdout + r.stderr)[-4000:]
+                    st["state"] = "done" if r.returncode == 0 else "failed"
+                except Exception as e:  # pip missing, no network...
+                    st.update(state="failed", log=str(e))
+            threading.Thread(target=run, daemon=True).start()
+        return {"state": st["state"], "log": st["log"], "installed": appwindow.have_pywebview()}
+
+    def api_log(self, req):
+        """The editor's own log file (written when it runs without a console)."""
+        path = os.path.join(self.data_dir, "editor.log")
+        text = ""
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()[-20000:]
+        except OSError:
+            pass
+        return {"path": path, "text": text}
+
     def api_reveal(self, req):
         path = req.get("path") or ""
         if not os.path.exists(path):
@@ -374,11 +460,13 @@ def _config_out(cfg, scene):
 
 
 ROUTES = {
+    "/api/ping": "api_ping",
     "/api/state": "api_state", "/api/config": "api_config", "/api/open": "api_open",
     "/api/build": "api_build", "/api/save": "api_save", "/api/part_text": "api_part_text",
     "/api/pc_save": "api_pc_save", "/api/check": "api_check", "/api/meshes": "api_meshes",
     "/api/import_mesh": "api_import_mesh", "/api/export": "api_export", "/api/unpack": "api_unpack",
     "/api/reveal": "api_reveal", "/api/new_part": "api_new_part", "/api/new_mod": "api_new_mod",
+    "/api/shortcut": "api_shortcut", "/api/install_native": "api_install_native", "/api/log": "api_log",
 }
 
 
@@ -389,16 +477,17 @@ def make_handler(app):
         def log_message(self, fmt, *args):
             pass
 
-        def _send(self, code, body, ctype):
+        def _send(self, code, body, ctype, cache=False):
             if isinstance(body, str):
                 body = body.encode("utf-8")
-            gz = len(body) > 20000 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+            gz = len(body) > 20000 and "gzip" in (self.headers.get("Accept-Encoding") or "") \
+                and not ctype.startswith("image/")
             if gz:
                 body = gzip.compress(body, 5)
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", "max-age=3600" if cache else "no-store")
             if gz:
                 self.send_header("Content-Encoding", "gzip")
             self.end_headers()
@@ -408,6 +497,14 @@ def make_handler(app):
             path = urlparse(self.path).path
             if path == "/":
                 path = "/index.html"
+            if path == "/api/events":
+                return self._events()
+            if path == "/api/thumb":
+                q = parse_qs(urlparse(self.path).query)
+                data, ctype = app.thumb((q.get("model") or [""])[0])
+                if data is None:
+                    return self._send(404, "no picture", "text/plain")
+                return self._send(200, data, ctype, cache=True)
             if path.startswith("/api/"):
                 return self._api(path, {})
             full = os.path.normpath(os.path.join(WEB, path.lstrip("/")))
@@ -427,6 +524,29 @@ def make_handler(app):
             except ValueError:
                 return self._send(400, json.dumps({"error": "bad JSON"}), "application/json")
             self._api(path, req)
+
+        def _events(self):
+            """A page holds this open while it is shown, so the editor knows when its window closed."""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.close_connection = True
+            lt = app.lifetime
+            if lt:
+                lt.connect()
+            try:
+                self.wfile.write(b"retry: 1000\nevent: hello\ndata: {}\n\n")
+                self.wfile.flush()
+                while True:
+                    time.sleep(4)
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+            except OSError:
+                pass
+            finally:
+                if lt:
+                    lt.disconnect()
 
         def _api(self, path, req):
             name = ROUTES.get(path)

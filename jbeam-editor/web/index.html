@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>JBeam Editor</title>
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="css/style.css">
 <script type="importmap">
 { "imports": {
@@ -14,97 +15,156 @@
 </head>
 <body>
 <header id="topbar">
-  <div class="brand">JBeam Editor</div>
-  <label class="field">Vehicle <select id="vehicleSelect"></select></label>
-  <label class="field">Config <select id="configSelect"></select></label>
-  <button id="btnSaveConfig" title="Save the parts and tuning you picked as a .pc config">Save config…</button>
-  <span class="sep"></span>
-  <button id="btnUndo" title="Undo (Ctrl+Z)">↶ Undo</button>
-  <button id="btnRedo" title="Redo (Ctrl+Y)">↷ Redo</button>
-  <button id="btnSave" class="primary" title="Write your changes into the .jbeam files (Ctrl+S)">Save</button>
-  <span class="sep"></span>
-  <button id="btnImport" title="Load an .obj, .glb, .stl or .dae model to build a part from">Import 3D model…</button>
-  <button id="btnCheck" title="Look for mistakes the game would complain about">Check</button>
-  <button id="btnExport" title="Pack your mod folder into a zip you can share">Export mod…</button>
+  <button id="btnHome" class="brand" title="Home: pick a vehicle or start something new">
+    <img src="img/icon.svg" alt="" width="26" height="26"><span>JBeam Editor</span>
+  </button>
+  <div id="vehicleBox" class="hidden">
+    <button id="btnVehicle" class="chip" title="Switch vehicle"><span id="vehName">Vehicle</span><i data-icon="chevronDown" data-size="14"></i></button>
+    <label class="field" title="Which saved configuration of this vehicle to show">
+      <select id="configSelect"></select>
+    </label>
+  </div>
+  <nav id="modeTabs" class="hidden" aria-label="Modes">
+    <button data-mode="garage" title="Lift kits, wheels and tires, engine, paint: easy changes"><i data-icon="wrench"></i><span>Garage</span></button>
+    <button data-mode="parts" title="Pick a part for every slot, like the game's parts menu"><i data-icon="parts"></i><span>Parts</span></button>
+    <button data-mode="tuning" title="The vehicle's tuning sliders"><i data-icon="sliders"></i><span>Tuning</span></button>
+    <button data-mode="structure" title="Nodes, beams, collision and weights (advanced)"><i data-icon="nodes"></i><span>Structure</span></button>
+    <button data-mode="model" title="Model a 3D part and fit it to the vehicle"><i data-icon="cube"></i><span>Model</span></button>
+  </nav>
+  <div id="builderTitle" class="hidden"><i data-icon="build"></i><span>Vehicle Builder</span></div>
   <span class="grow"></span>
-  <button id="btnSettings" title="BeamNG folders">Settings</button>
-  <button id="btnHelp" title="How to use the editor">Help</button>
+  <div id="editBox" class="hidden">
+    <button id="btnUndo" class="icon-btn" title="Undo (Ctrl+Z)"><i data-icon="undo"></i></button>
+    <button id="btnRedo" class="icon-btn" title="Redo (Ctrl+Y)"><i data-icon="redo"></i></button>
+    <button id="btnSave" class="primary" title="Write your changes into the files (Ctrl+S)"><i data-icon="save"></i><span>Save</span></button>
+    <button id="btnMore" class="icon-btn" title="More: save config, import, check, export"><i data-icon="more"></i></button>
+  </div>
+  <button id="btnSettings" class="icon-btn" title="Settings"><i data-icon="settings"></i></button>
+  <button id="btnHelp" class="icon-btn" title="Help"><i data-icon="help"></i></button>
 </header>
 
 <main id="layout">
   <aside id="left" class="panel">
-    <nav class="tabs" id="leftTabs">
-      <button data-tab="parts" class="active">Parts</button>
-      <button data-tab="tuning">Tuning</button>
-      <button data-tab="info">Problems</button>
-    </nav>
-    <section class="tab" id="tab-parts">
-      <input id="partSearch" type="search" placeholder="Find a slot or part…">
+    <section class="pane" data-pane="garage" id="garagePane"></section>
+    <section class="pane" data-pane="parts">
+      <div class="pane-head">
+        <h2>Parts</h2>
+        <p class="note">Choose a part for each slot, the same as the game's parts menu. Click a slot's name to see that part.</p>
+        <div class="search"><i data-icon="search" data-size="16"></i><input id="partSearch" type="search" placeholder="Find a slot or part…"></div>
+      </div>
       <div id="partsTree"></div>
     </section>
-    <section class="tab hidden" id="tab-tuning"><div id="tuning"></div></section>
-    <section class="tab hidden" id="tab-info"><div id="problems"></div></section>
+    <section class="pane" data-pane="tuning">
+      <div class="pane-head"><h2>Tuning</h2><p class="note">The sliders the vehicle's parts offer (the same as the game's Tuning menu).</p></div>
+      <div id="tuning"></div>
+    </section>
+    <section class="pane" data-pane="structure" id="structurePane">
+      <div class="pane-head"><h2>Structure</h2><p class="note">The physics skeleton: nodes (mass points), beams (springs between them) and collision triangles.</p></div>
+      <div class="card" id="activePartBox" title="New nodes, beams and triangles are written into this part">
+        <b>Part you're editing</b>
+        <p class="note">New nodes, beams and triangles go into this part. Clicking a node switches to its part unless "Stay" is ticked.</p>
+        <div style="display:flex;gap:8px;align-items:center"><select id="activePart" style="flex:1;min-width:0"></select>
+        <label class="chk" title="Keep adding to this part even when you click nodes of other parts"><input type="checkbox" id="optPin"> Stay</label></div>
+      </div>
+      <div id="structureInfo"></div>
+      <h3 class="sect">Problems</h3>
+      <div id="problems"></div>
+    </section>
+    <section class="pane" data-pane="model" id="modelPane"></section>
+    <section class="pane" data-pane="builder" id="builderPane"></section>
   </aside>
 
   <section id="center">
-    <div id="toolbar">
-      <div class="group" id="tools">
-        <button data-tool="select" title="Select and move (Q): click, Shift+click to add, drag a box; drag the arrows to move">⬚ Select / move</button>
-        <button data-tool="node" title="Add node (N): click where it goes">＋ Node</button>
-        <button data-tool="beam" title="Connect (B): click two nodes to join them with a beam">⟋ Beam</button>
-        <button data-tool="tri" title="Collision triangle (T): click three nodes">◺ Triangle</button>
-      </div>
-      <div class="group">
-        <label class="chk" title="Edit left and right sides together (M)"><input type="checkbox" id="optMirror"> Mirror</label>
-        <label class="field small" title="Snap moves to a grid">Snap
-          <select id="optSnap"><option value="0">off</option><option value="0.005">5 mm</option><option value="0.01">1 cm</option><option value="0.05">5 cm</option><option value="0.1">10 cm</option></select>
-        </label>
-      </div>
-      <div class="group" id="activePartBox" title="New nodes, beams and triangles are written into this part">
-        <span>Adding to</span> <select id="activePart"></select>
-        <label class="chk" title="Keep adding to this part even when you click nodes of other parts"><input type="checkbox" id="optPin"> Stay</label>
-      </div>
-      <div class="group right">
-        <details class="viewmenu">
-          <summary>View ▾</summary>
-          <div class="menu">
-            <label><input type="checkbox" id="vNodes" checked> Nodes</label>
-            <label><input type="checkbox" id="vBeams" checked> Beams</label>
-            <label><input type="checkbox" id="vTris" checked> Collision triangles</label>
-            <label><input type="checkbox" id="vWheels" checked> Wheels</label>
-            <label><input type="checkbox" id="vMesh" checked> 3D model</label>
-            <label>Model opacity <input type="range" id="vMeshOpacity" min="0.05" max="1" step="0.05" value="0.35"></label>
-            <label><input type="checkbox" id="vLabels" checked> Names of selected nodes</label>
-            <label><input type="checkbox" id="vStability"> Colour nodes by stability</label>
-            <label><input type="checkbox" id="vOnlyActive"> Only show the part I'm editing</label>
-            <label>Node size <input type="range" id="vNodeSize" min="3" max="16" step="1" value="7"></label>
-            <hr>
-            <button data-view="front">Front (1)</button> <button data-view="side">Side (3)</button>
-            <button data-view="top">Top (7)</button> <button data-view="all">Fit (Home)</button>
-          </div>
-        </details>
-      </div>
-    </div>
     <div id="viewport"></div>
     <div id="labels"></div>
     <div id="boxsel" class="hidden"></div>
+    <div id="toolbar" class="floatbar">
+      <div class="group" id="tools">
+        <button data-tool="select" title="Select and move (Q): click, Shift+click to add, drag a box; drag the arrows to move"><i data-icon="select"></i><span>Select</span></button>
+        <button data-tool="node" title="Add node (N): click where it goes"><i data-icon="node"></i><span>Node</span></button>
+        <button data-tool="beam" title="Connect (B): click two nodes to join them with a beam"><i data-icon="beam"></i><span>Beam</span></button>
+        <button data-tool="tri" title="Collision triangle (T): click three nodes"><i data-icon="triangle"></i><span>Triangle</span></button>
+      </div>
+      <div class="group">
+        <label class="chk" title="Edit left and right sides together (M)"><input type="checkbox" id="optMirror"><i data-icon="mirror" data-size="16"></i>Mirror</label>
+        <label class="chk" title="Snap moves to a grid"><i data-icon="magnet" data-size="16"></i>
+          <select id="optSnap"><option value="0">No snap</option><option value="0.005">5 mm</option><option value="0.01">1 cm</option><option value="0.05">5 cm</option><option value="0.1">10 cm</option></select>
+        </label>
+      </div>
+    </div>
+    <div id="viewControls" class="floatbar vertical">
+      <button class="icon-btn" data-view="all" title="Fit the vehicle in view (Home)"><i data-icon="fit"></i></button>
+      <button class="icon-btn" data-view="front" title="Front view (1)"><b>F</b></button>
+      <button class="icon-btn" data-view="side" title="Side view (3)"><b>S</b></button>
+      <button class="icon-btn" data-view="top" title="Top view (7)"><b>T</b></button>
+      <button class="icon-btn" id="btnDisplay" title="What to show"><i data-icon="layers"></i></button>
+    </div>
+    <div id="displayMenu" class="popover hidden">
+      <h4>Show</h4>
+      <label><input type="checkbox" id="vMesh" checked> 3D model</label>
+      <label class="sub">Opacity <input type="range" id="vMeshOpacity" min="0.05" max="1" step="0.05" value="0.35"></label>
+      <label><input type="checkbox" id="vNodes" checked> Nodes</label>
+      <label class="sub">Size <input type="range" id="vNodeSize" min="3" max="16" step="1" value="7"></label>
+      <label><input type="checkbox" id="vBeams" checked> Beams</label>
+      <label><input type="checkbox" id="vTris" checked> Collision triangles</label>
+      <label><input type="checkbox" id="vWheels" checked> Wheels</label>
+      <label><input type="checkbox" id="vGround" checked> Ground grid</label>
+      <hr>
+      <label><input type="checkbox" id="vLabels" checked> Names of selected nodes</label>
+      <label><input type="checkbox" id="vStability"> Colour nodes by stability</label>
+      <label><input type="checkbox" id="vOnlyActive"> Only the part I'm editing</label>
+    </div>
     <div id="hint"></div>
     <div id="loading" class="hidden"><div class="spinner"></div><span id="loadingText">Loading…</span></div>
   </section>
 
   <aside id="right" class="panel">
-    <section id="props"></section>
-    <section id="weights"></section>
+    <section class="pane" data-pane="structure">
+      <section id="props"></section>
+      <section id="weights"></section>
+    </section>
+    <section class="pane" data-pane="garage" id="garageSide"></section>
+    <section class="pane" data-pane="parts tuning" id="vehicleSide"></section>
+    <section class="pane" data-pane="model" id="modelSide"></section>
+    <section class="pane" data-pane="builder" id="builderSide"></section>
   </aside>
 </main>
 
 <footer id="status">
+  <button id="healthChip" class="chip small" title="Problems the editor found"></button>
   <span id="statusLeft"></span>
   <span class="grow"></span>
   <span id="statusRight"></span>
 </footer>
 
-<div id="modal" class="hidden"><div class="box"><div class="head"><span id="modalTitle"></span><button id="modalClose" title="Close">✕</button></div><div id="modalBody"></div></div></div>
+<div id="home">
+  <div class="home-inner">
+    <header class="home-head">
+      <img src="img/icon.svg" alt="" width="56" height="56">
+      <div>
+        <h1>JBeam Editor</h1>
+        <p>Modify and build BeamNG.drive vehicles, end to end. No JBeam knowledge needed.</p>
+      </div>
+      <span class="grow"></span>
+      <div id="homeStatus"></div>
+      <button class="icon-btn" id="homeSettings" title="Settings"><i data-icon="settings"></i></button>
+      <button class="icon-btn" id="homeHelp" title="Help"><i data-icon="help"></i></button>
+    </header>
+    <h2 class="home-q">What do you want to do?</h2>
+    <div id="homeActions" class="action-grid"></div>
+    <div id="homeRecent"></div>
+    <div class="gallery-head">
+      <h2 id="galleryTitle">Pick a vehicle</h2>
+      <div class="search"><i data-icon="search" data-size="16"></i><input id="vehSearch" type="search" placeholder="Search vehicles…"></div>
+      <div class="seg" id="vehFilter">
+        <button data-f="all" class="active">All</button><button data-f="mine">My mods</button><button data-f="game">Game</button>
+      </div>
+    </div>
+    <div id="vehGrid" class="veh-grid"></div>
+  </div>
+</div>
+
+<div id="modal" class="hidden"><div class="box"><div class="head"><span id="modalTitle"></span><button id="modalClose" class="icon-btn" title="Close"><i data-icon="close"></i></button></div><div id="modalBody"></div></div></div>
 <div id="toasts"></div>
 <input type="file" id="fileInput" class="hidden" accept=".obj,.glb,.gltf,.stl,.dae">
 

@@ -17,12 +17,25 @@ import { $, closeModal, fmt, h, numInput, openModal, setLoading, toast } from '.
 const UNITS = { m: 1, cm: 0.01, mm: 0.001, in: 0.0254 };
 const I = { outer: null, mesh: null, geo: null, file: '', up: 'Y', unit: 'm', scale: 1, rot: [0, 0, 0], keepPos: false, centre: null };
 
+export function startImport() {
+  if (!S.scene) return toast('Open a vehicle first.');
+  $('#fileInput').value = '';
+  $('#fileInput').click();
+}
+
+// a card in the 3D view to drop a file on or click (a file dialog needs a click to open)
+export function showImportPrompt() {
+  $('#importPrompt')?.remove();
+  const card = h('div', { id: 'importPrompt', class: 'dropcard' },
+    h('h3', {}, 'Import a 3D model'),
+    h('p', {}, 'Drop an .obj, .glb, .gltf, .stl or .dae file here, or choose one.'),
+    h('div', { class: 'btnrow', style: { justifyContent: 'center' } },
+      h('button', { class: 'primary', onclick: () => { card.remove(); startImport(); } }, 'Choose a file…'),
+      h('button', { onclick: () => card.remove() }, 'Not now')));
+  $('#center').append(card);
+}
+
 export function initImporter() {
-  $('#btnImport').addEventListener('click', () => {
-    if (!S.scene) return toast('Open a vehicle first.');
-    $('#fileInput').value = '';
-    $('#fileInput').click();
-  });
   $('#fileInput').addEventListener('change', e => { const f = e.target.files[0]; if (f) loadFile(f); });
   const vp = $('#viewport');
   vp.addEventListener('dragover', e => { e.preventDefault(); });
@@ -37,6 +50,7 @@ export function initImporter() {
 export function importActive() { return !!I.outer; }
 
 async function loadFile(file) {
+  $('#importPrompt')?.remove();
   const ext = file.name.split('.').pop().toLowerCase();
   setLoading(true, 'Reading ' + file.name + '…');
   try {

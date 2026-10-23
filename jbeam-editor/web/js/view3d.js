@@ -25,9 +25,11 @@ const COL_HOVER = new THREE.Color(0xffffff);
 
 export function initView() {
   const el = $('#viewport');
-  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setClearColor(0x15171c);
+  renderer.setClearColor(0x000000, 0);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
   el.append(renderer.domElement);
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(45, 1, 0.02, 2000);
@@ -39,16 +41,26 @@ export function initView() {
   controls.zoomToCursor = true;
   controls.addEventListener('change', () => { V.dirty = true; });
 
-  scene.add(new THREE.HemisphereLight(0xdde6ff, 0x30302a, 1.6));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+  scene.add(new THREE.HemisphereLight(0xdde6ff, 0x2c2a26, 1.5));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.6);
   sun.position.set(4, -6, 10);
   scene.add(sun);
+  const rim = new THREE.DirectionalLight(0x9ec4ff, 0.6);
+  rim.position.set(-6, 8, 4);
+  scene.add(rim);
 
-  const grid = new THREE.GridHelper(40, 40, 0x3a4150, 0x262b35);
+  const ground = new THREE.Group();
+  const grid = new THREE.GridHelper(40, 40, 0x3a4150, 0x232831);
   grid.rotation.x = Math.PI / 2;
-  scene.add(grid);
+  ground.add(grid);
+  const fine = new THREE.GridHelper(8, 80, 0x2a303a, 0x1d2129);
+  fine.rotation.x = Math.PI / 2;
+  fine.position.z = -0.001;
+  ground.add(fine);
   const axes = new THREE.AxesHelper(0.6);
-  scene.add(axes);
+  ground.add(axes);
+  scene.add(ground);
+  V.ground = ground;
 
   for (const g of ['mesh', 'wheels', 'tris', 'beams', 'nodes', 'overlay', 'imports']) {
     V.groups[g] = new THREE.Group();
@@ -56,7 +68,7 @@ export function initView() {
   }
 
   V.meshMaterial = new THREE.MeshStandardMaterial({
-    color: 0x9aa4b5, roughness: 0.75, metalness: 0.05, transparent: true, opacity: V.meshOpacity,
+    color: 0xaab3c2, roughness: 0.55, metalness: 0.1, transparent: true, opacity: V.meshOpacity,
     depthWrite: false, side: THREE.DoubleSide,
   });
 
@@ -369,6 +381,17 @@ export function updateMeshVisibility() {
     m.visible = !S.hiddenParts.has(p) && !(S.onlyActive && S.activePart && p !== S.activePart);
   }
   V.groups.mesh.visible = V.visible.mesh;
+  V.dirty = true;
+}
+
+export function setGround(on) {
+  if (V.ground) V.ground.visible = on;
+  V.dirty = true;
+}
+
+// paint colour on the model (Garage paint preview); null goes back to plain grey
+export function setMeshColor(rgb) {
+  V.meshMaterial.color.setRGB(...(rgb || [0.667, 0.702, 0.761]), THREE.SRGBColorSpace);
   V.dirty = true;
 }
 

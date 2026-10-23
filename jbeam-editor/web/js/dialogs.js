@@ -324,32 +324,81 @@ export function addSlotDialog(part) {
 
 // ---- settings -----------------------------------------------------------------------------------
 export function settingsDialog(first = false) {
-  const c = S.appConfig;
+  const c = S.appConfig || {};
+  const st = S.appState || {};
   const user = h('input', { type: 'text', value: c.user_folder || '', placeholder: 'C:\\Users\\you\\AppData\\Local\\BeamNG\\BeamNG.drive\\current' });
   const game = h('input', { type: 'text', value: c.game_folder || '', placeholder: 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\BeamNG.drive' });
   const extra = h('textarea', { rows: 3, placeholder: 'One folder per line (each holding a vehicles folder)' }, (c.extra_folders || []).join('\n'));
   const author = h('input', { type: 'text', value: c.author || '', placeholder: 'Your name (written into new parts)' });
-  for (const i of [user, game, extra, author]) i.addEventListener('keydown', e => e.stopPropagation());
+  const sm = h('input', { type: 'text', value: c.sm_folder || '', placeholder: 'Found automatically if Scrap Mechanic is installed with Steam' });
+  for (const i of [user, game, extra, author, sm]) i.addEventListener('keydown', e => e.stopPropagation());
+  const win = st.window || {};
+  const winSel = h('select', {},
+    h('option', { value: 'auto' }, 'Automatic (best available)'),
+    h('option', { value: 'native', disabled: !win.native }, 'Native window' + (win.native ? '' : ' (not installed)')),
+    h('option', { value: 'app', disabled: !win.app }, 'App window (Edge/Chrome, no tabs)' + (win.app ? '' : ' (not found)')),
+    h('option', { value: 'browser' }, 'A tab in my web browser'));
+  winSel.value = c.window || 'auto';
+  const winNote = h('span', { class: 'note' }, win.mode ? `Right now it is open as: ${({ native: 'a native window', app: 'an app window', browser: 'a browser tab' })[win.mode] || win.mode}.` : '');
+  const installOut = h('div', { class: 'note' });
+  const installBtn = h('button', { class: 'small', disabled: win.native, onclick: async () => {
+    installBtn.disabled = true;
+    installOut.textContent = 'Installing pywebview with pip… this can take a minute.';
+    try {
+      await api.installNative(true);
+      for (let t = 0; t < 600; t++) {
+        await new Promise(r => setTimeout(r, 1500));
+        const r = await api.installNative(false);
+        if (r.state === 'done') { installOut.textContent = 'Installed. Restart the editor to use the native window.'; break; }
+        if (r.state === 'failed') { installOut.textContent = 'It did not install: ' + r.log.slice(-400); installBtn.disabled = false; break; }
+      }
+    } catch (e) { installOut.textContent = e.message; installBtn.disabled = false; }
+  } }, win.native ? 'Native window installed' : 'Install native window');
+  const shortcutBtn = h('button', { class: 'small', disabled: st.platform && !st.platform.startsWith('win'), onclick: async () => {
+    try {
+      const r = await api.shortcut();
+      toast('Made shortcuts: ' + r.made.map(shortPath).join(', '), 'ok', 8000);
+    } catch (e) { toast(e.message, 'err', 8000); }
+  } }, 'Make desktop and Start menu shortcuts');
   const err = h('div', { class: 'err' });
   const save = async () => {
     try {
       setLoading(true, 'Looking for vehicles…');
-      const st = await api.config({ user_folder: user.value, game_folder: game.value, author: author.value,
-        extra_folders: extra.value.split('\n') });
+      const st2 = await api.config({ user_folder: user.value, game_folder: game.value, author: author.value,
+        extra_folders: extra.value.split('\n'), window: winSel.value, sm_folder: sm.value });
       closeModal();
-      await A.loadState(st);
+      await A.loadState(st2);
     } catch (e) { err.textContent = e.message; } finally { setLoading(false); }
   };
+  const sect = t => h('h4', { style: { margin: '18px 0 8px', color: 'var(--muted)', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '.06em' } }, t);
   openModal('Settings', h('div', {},
-    first ? h('p', {}, 'Tell the editor where BeamNG keeps your mods and where the game is installed. It found what it could.') : null,
+    first ? h('p', {}, 'Tell the editor where BeamNG keeps your mods and where the game is installed. It filled in what it could find.') : null,
+    sect('BeamNG.drive'),
     h('div', { class: 'form' },
       h('span', { class: 'k' }, 'BeamNG user folder'), user,
       h('span', { class: 'k' }, 'Game folder (read-only)'), game,
       h('span', { class: 'k' }, 'Extra folders'), extra,
       h('span', { class: 'k' }, 'Author name'), author),
     h('p', { class: 'note' }, 'Your editable mods live in the user folder under mods\\unpacked. The game folder is only read, never changed. Backups of every file the editor changes go to ', h('code', {}, (S.dataDir || 'data') + '\\backups'), '.'),
+    sect('Scrap Mechanic'),
+    h('div', { class: 'form' }, h('span', { class: 'k' }, 'Game folder'), sm),
+    sect('Window'),
+    h('div', { class: 'form' },
+      h('span', { class: 'k' }, 'Show the editor in'), h('span', {}, winSel, ' ', winNote),
+      h('span', { class: 'k' }, 'Shortcuts'), h('span', {}, shortcutBtn),
+      h('span', { class: 'k' }, 'Native window'), h('span', {}, installBtn, installOut),
+      h('span', { class: 'k' }, 'Log'), h('span', {}, h('button', { class: 'small', onclick: showLog }, 'Show the editor\'s log'))),
     err,
     h('div', { class: 'actions' }, h('button', { onclick: closeModal }, 'Cancel'), h('button', { class: 'primary', onclick: save }, 'Save'))));
+}
+
+async function showLog() {
+  try {
+    const r = await api.log();
+    openModal('Editor log', h('div', {},
+      h('p', { class: 'note' }, r.path),
+      h('pre', { class: 'code', style: { maxHeight: '60vh', overflow: 'auto', whiteSpace: 'pre-wrap' } }, r.text || '(empty: the editor writes a log only when it runs without a console)')), { wide: true });
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 // ---- save config ------------------------------------------------------------------------------------
@@ -422,35 +471,37 @@ export async function checkDialog() {
 // ---- help ----------------------------------------------------------------------------------------------------
 export function helpDialog() {
   openModal('How to use the JBeam Editor', h('div', { class: 'help', html: `
-<h3>Getting around</h3>
+<h3>The modes</h3>
+<ul>
+<li><b>Garage</b>: the easy way to change a vehicle. Lift or lower it, pick bigger wheels and tires, widen the track,
+add engine power, paint it. Everything shows in 3D straight away; <b>Save my version</b> writes it as your own config of the car
+(the original stays as it was).</li>
+<li><b>Parts</b>: pick a part for every slot, like the game's parts menu.</li>
+<li><b>Tuning</b>: the sliders the vehicle's parts offer (springs, gearing, tire pressure and so on).</li>
+<li><b>Structure</b>: the physics skeleton for detailed work: nodes, beams, collision triangles and weights.</li>
+<li><b>Model</b>: model a part (bumper, rack, light bar…) in the editor and fit it to the vehicle.</li>
+</ul>
+<p>From the home screen you can also <b>build a new vehicle</b> from sliders and <b>import a Scrap Mechanic creation</b>.</p>
+<h3>Getting around the 3D view</h3>
 <p><kbd>Right-drag</kbd> orbit, <kbd>Middle-drag</kbd> pan, <kbd>Wheel</kbd> zoom (toward the mouse). <kbd>Alt</kbd>+<kbd>Left-drag</kbd> also orbits.
-<kbd>F</kbd> zooms to what's selected, <kbd>Home</kbd> shows everything, <kbd>1</kbd> front, <kbd>3</kbd> side, <kbd>7</kbd> top.</p>
-<h3>Picking parts</h3>
-<p>The Parts tab works like the game's parts menu: pick a part for each slot and the vehicle rebuilds. Click a slot's name to select that part's nodes.
-👁 hides a part. ⋯ opens the part's menu: edit its JBeam text, make a new part for the slot (a copy, a braced box, or empty),
-or add a slot to it for upfits. Parts from the game or a zip are read-only (🔒); "Make an editable copy" puts your own copy in a mod folder.</p>
-<h3>Editing</h3>
+<kbd>Home</kbd> shows everything, <kbd>1</kbd> front, <kbd>3</kbd> side, <kbd>7</kbd> top, <kbd>F</kbd> zooms to the selection.
+The layers button at the top right picks what is shown (model, nodes, beams…).</p>
+<h3>Structure editing</h3>
 <ul>
 <li><kbd>Q</kbd> Select: click, <kbd>Shift</kbd>+click adds, <kbd>Ctrl</kbd>+click toggles, drag a box. Drag the arrows to move nodes.</li>
 <li><kbd>N</kbd> Node: click to place a node. It is joined to the nodes you had selected, so you can click out a chain.</li>
 <li><kbd>B</kbd> Beam: click two nodes. With 2+ nodes selected, <kbd>B</kbd> joins them in order and <kbd>Shift</kbd>+<kbd>B</kbd> braces them all together.</li>
 <li><kbd>T</kbd> Triangle: click three nodes for a collision triangle (green side faces out; <kbd>I</kbd> flips).</li>
-<li><kbd>M</kbd> Mirror: left and right sides change together (names ending in l / r, X flipped).</li>
-<li><kbd>Delete</kbd> removes the selection (beams and triangles on deleted nodes go too).</li>
-<li><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> undo and redo, <kbd>Ctrl</kbd>+<kbd>S</kbd> saves into the .jbeam files.</li>
+<li><kbd>M</kbd> Mirror: left and right sides change together. <kbd>Delete</kbd> removes the selection.</li>
+<li><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> undo and redo, <kbd>Ctrl</kbd>+<kbd>S</kbd> saves.</li>
 </ul>
-<p>"Adding to" is the part new nodes, beams and triangles go into. Clicking a node switches it to that node's part unless "Stay" is ticked.</p>
+<p>Game parts are read-only: in Parts, ⋯ next to a slot > <i>Make an editable copy</i> puts your own copy in a mod folder.</p>
 <h3>Weights and stability</h3>
-<p>BeamNG simulates 2000 steps a second. A node that is too light for the stiff beams holding it shakes or explodes. The editor works this out for every node:
-green is fine, yellow is close, red is unstable (View ▸ Colour nodes by stability). Auto-weight on the right fixes it: either just the unstable nodes,
-or spread a total mass so stiff spots get more weight.</p>
-<h3>3D models</h3>
-<p>Import 3D model loads an .obj, .glb/.gltf, .stl or .dae. Place it, then "Make part" writes the mesh into your mod, builds a braced node cage around it
-with collision, sets stable weights and attaches it to the vehicle. The game bends the mesh with the cage.</p>
-<h3>Saving</h3>
-<p>Save writes only what you changed into the files and keeps their layout. Every file is checked before it is written and a backup is kept.
-Save config writes a .pc config with your parts and tuning. Export mod packs your mod folder into a zip.</p>
-<p>In the game, press <kbd>Ctrl</kbd>+<kbd>R</kbd> to reload the vehicle after saving.</p>` }), { wide: true });
+<p>BeamNG simulates 2000 steps a second. A node that is too light for the stiff beams holding it shakes or explodes. The editor checks every node:
+green is fine, yellow is close, red is unstable. Auto-weight fixes it, or spreads a total mass so stiff spots get more weight.</p>
+<h3>Saving and the game</h3>
+<p>Your changes go into mods\\unpacked in your BeamNG user folder, so the game loads them as a mod. Only what you changed is written, the files keep their layout,
+and a backup is kept. In the game press <kbd>Ctrl</kbd>+<kbd>R</kbd> to reload the vehicle after saving.</p>` }), { wide: true });
 }
 
 export function fmtMass(v) { return fmt(v, 1) + ' kg'; }

@@ -1,7 +1,7 @@
 // Talking to the local Python server.
 
 async function post(path, body) {
-  const r = await fetch(path, {
+  const r = await fetch(path.replace(/^\//, ''), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
@@ -31,6 +31,9 @@ export const api = {
   reveal: path => post('/api/reveal', { path }),
   newPart: body => post('/api/new_part', body),
   newMod: (model, name) => post('/api/new_mod', { model, name }),
+  shortcut: () => post('/api/shortcut'),
+  installNative: start => post('/api/install_native', { start }),
+  log: () => post('/api/log'),
   async meshes(model, names) {
     const buf = await post('/api/meshes', { model, names });
     const dv = new DataView(buf);

@@ -26,7 +26,10 @@ export function setTool(t) {
   updateGizmo();
 }
 
+const LOOK_HINT = 'Right-drag to turn the view, middle-drag to pan, wheel to zoom. Home shows the whole vehicle.';
+
 export function updateHint(extra) {
+  if (S.lookMode && !extra) { $('#hint').textContent = S.scene ? (S.modeHint || LOOK_HINT) : ''; return; }
   let txt = HINTS[S.tool] || '';
   if (S.tool !== 'select' && !partEditable(S.activePart)) txt = 'Pick a part you can edit in "Adding to" first. ' + txt;
   $('#hint').textContent = extra || txt;
@@ -53,6 +56,7 @@ function local(e) {
 
 function onDown(e) {
   if (e.button !== 0 || e.altKey || !S.scene) return;
+  if (S.lookMode && S.mode !== 'model') return;   // the look-only modes don't select
   if (V.gizmo.axis) return;   // the gizmo handles this drag
   const [x, y] = local(e);
   down = { x, y, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, moved: false };
@@ -67,7 +71,7 @@ function onMove(e) {
     if (down.moved) {
       const b = $('#boxsel');
       b.classList.remove('hidden');
-      Object.assign(b.style, { left: Math.min(x, down.x) + 'px', top: (Math.min(y, down.y) + 40) + 'px',
+      Object.assign(b.style, { left: Math.min(x, down.x) + 'px', top: (Math.min(y, down.y) + V.el.offsetTop) + 'px',
         width: Math.abs(x - down.x) + 'px', height: Math.abs(y - down.y) + 'px' });
     }
     return;

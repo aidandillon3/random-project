@@ -8,6 +8,7 @@ import { deleteSelection, flipSelectedTris, connectSelected, frameSelection } fr
 import { frame } from './view3d.js';
 import { $, debounce, fmt, h, num, numInput, popupMenu, textInput, toast } from './util.js';
 import { addSlotDialog, newPartDialog, partTextDialog } from './dialogs.js';
+import { icon } from './icons.js';
 
 const editable = el => !!S.scene.files[el.f]?.editable;
 
@@ -65,10 +66,10 @@ function slotNode(slot, depth, q) {
       if (hidden) S.hiddenParts.delete(chosen); else S.hiddenParts.add(chosen);
       emit('visibility');
       renderParts();
-    } }, hidden ? '◌' : '👁'));
+    } }, icon(hidden ? 'eyeOff' : 'eye', 15)));
   }
   if (slot.path !== '/' || chosen) {
-    const more = h('button', { title: 'More: edit, new part, add slot' }, '⋯');
+    const more = h('button', { title: 'More: edit, new part, add slot' }, icon('more', 15));
     more.addEventListener('click', () => popupMenu(more, [
       chosen ? [canEdit ? 'Edit JBeam text…' : 'View JBeam text (read-only)…', () => partTextDialog(chosen)] : null,
       chosen ? ['Select its nodes', () => focusPart(chosen)] : null,
@@ -88,7 +89,7 @@ function slotNode(slot, depth, q) {
     h('span', { class: 'twisty', onclick: () => { if (open) expanded.delete(slot.path); else expanded.add(slot.path); renderParts(); } },
       kids.length ? (open ? '▾' : '▸') : ''),
     label, sel,
-    chosen && !canEdit ? h('span', { class: 'lock', title: 'Read-only (from the game or a zip). Use ⋯ > Make an editable copy.' }, '🔒') : null,
+    chosen && !canEdit ? h('span', { class: 'lock', title: 'Read-only (from the game or a zip). Use ⋯ > Make an editable copy.' }, icon('file', 13)) : null,
     icons);
 
   const box = h('div', { class: 'slot' + (depth === 0 ? ' root' : '') }, row);
@@ -173,8 +174,78 @@ export function renderProblems() {
   for (const d of sm?.duplicates || []) add('wrn', `Part "${d.part}" is in two files. The game uses ${d.kept} and ignores ${d.ignored}.`);
   for (const w of sc.warnings) add('wrn', w);
   if (box.children.length === 1) box.append(h('p', { class: 'good' }, 'No problems found.'));
-  const n = (sm?.errors?.length || 0) + sc.warnings.length + unstable.length;
-  $('#leftTabs [data-tab=info]').textContent = n ? `Problems (${n})` : 'Problems';
+}
+
+// for the status bar: how many things need a look
+export function problemCount() {
+  const sc = S.scene, sm = S.summary;
+  if (!sc) return { errors: 0, warnings: 0 };
+  let unstable = 0;
+  for (const n of sc.nodes) if (!n.del && n.level === 2) unstable++;
+  return { errors: (sm?.errors?.length || 0) + unstable, warnings: (sm?.duplicates?.length || 0) + sc.warnings.length };
+}
+
+// =====================================================================================
+// Vehicle summary (right side in Parts and Tuning)
+// =====================================================================================
+export function vehicleDims() {
+  const sc = S.scene;
+  if (!sc) return null;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const n of sc.nodes) if (!n.del) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], n.p[k]); hi[k] = Math.max(hi[k], n.p[k]); }
+  const wheels = sc.wheels.map(w => {
+    const a = sc.nodes[w.n1].p, b = sc.nodes[w.n2].p;
+    const c = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+    const o = sc.optsets[w.o] || {};
+    const r = num(w.radius, num(o.radius, 0.3)) || 0.3;
+    for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], c[k] - (k === 1 || k === 2 ? r : 0)); hi[k] = Math.max(hi[k], c[k] + (k === 1 || k === 2 ? r : 0)); }
+    return { name: w.name, c, r, width: num(w.width, num(o.tireWidth, null)), psi: num(w.pressurePSI, num(o.pressurePSI, null)) };
+  });
+  const front = wheels.filter(w => w.c[1] < 0), rear = wheels.filter(w => w.c[1] >= 0);
+  const avg = (list, f) => list.length ? list.reduce((s, w) => s + f(w), 0) / list.length : null;
+  const track = list => list.length >= 2 ? Math.max(...list.map(w => w.c[0])) - Math.min(...list.map(w => w.c[0])) : null;
+  const yF = avg(front, w => w.c[1]), yR = avg(rear, w => w.c[1]);
+  // ground: the lowest tire contact; ride height is from there to the lowest body node
+  const groundZ = wheels.length ? Math.min(...wheels.map(w => w.c[2] - w.r)) : lo[2];
+  return {
+    length: hi[1] - lo[1], width: hi[0] - lo[0], height: hi[2] - groundZ,
+    wheelbase: yF !== null && yR !== null ? yR - yF : null,
+    trackF: track(front), trackR: track(rear),
+    tireF: avg(front, w => w.r * 2), tireR: avg(rear, w => w.r * 2),
+    widthF: avg(front.filter(w => w.width), w => w.width), widthR: avg(rear.filter(w => w.width), w => w.width),
+    groundZ, wheels,
+  };
+}
+
+export function statTile(label, value, unit = '', extra = null) {
+  return h('div', { class: 'stat' }, h('div', { class: 'k' }, label),
+    h('div', { class: 'v' }, value, unit ? h('small', {}, ' ' + unit) : null), extra);
+}
+
+export function renderVehicleSide() {
+  const box = $('#vehicleSide');
+  if (!box) return;
+  box.innerHTML = '';
+  const sc = S.scene;
+  if (!sc) return;
+  const d = vehicleDims();
+  const m = v => v === null || v === undefined ? '–' : fmt(v, 2);
+  box.append(h('h3', {}, S.summary?.name || S.model),
+    h('div', { class: 'stat-grid' },
+      statTile('Mass', fmt(totalMass(), 0), 'kg'),
+      statTile('Wheels', String(sc.wheels.length)),
+      statTile('Length', m(d.length), 'm'), statTile('Width', m(d.width), 'm'),
+      statTile('Height', m(d.height), 'm'), statTile('Wheelbase', m(d.wheelbase), 'm'),
+      statTile('Track F / R', d.trackF ? `${fmt(d.trackF, 2)} / ${fmt(d.trackR ?? 0, 2)}` : '–', 'm'),
+      statTile('Tires F / R', d.tireF ? `${fmt(d.tireF * 39.37, 1)}" / ${fmt((d.tireR ?? d.tireF) * 39.37, 1)}"` : '–', '')),
+    h('p', { class: 'note' }, 'Sizes are measured from the nodes and wheels; tire size is the outside diameter.'));
+  const active = Object.keys(sc.parts).length;
+  box.append(h('div', { class: 'card' },
+    h('b', {}, 'Parts on this vehicle'),
+    h('p', { class: 'note' }, `${active} parts are in use. Parts from the game are read-only; changes are saved as your own copies in a mod folder.`),
+    h('div', { class: 'btnrow' },
+      h('button', { onclick: () => A.setMode('garage') }, icon('wrench', 15), 'Garage'),
+      h('button', { onclick: () => A.setMode('structure') }, icon('nodes', 15), 'Structure'))));
 }
 
 export function selectNodes(list) {

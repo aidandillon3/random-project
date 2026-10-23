@@ -20,6 +20,9 @@ export const S = {
   redo: [],
   pending: [],          // ops not yet written to disk
   appConfig: {},
+  appState: null,       // /api/state result
+  mode: null,           // garage, parts, tuning, structure, model or builder
+  lookMode: true,       // a mode that only looks at the vehicle (no structure tools)
 };
 
 // actions main.js provides to the other modules (save, rebuild, reload)
