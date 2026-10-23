@@ -84,8 +84,33 @@ async function setRange(page, label, value) {
 }
 const nodeZ = (page, id) => page.evaluate(id => { const S = window.jbe.S; return S.scene.nodes[S.scene.nodeById.get(id)].p[2]; }, id);
 
+scenario('garage-build', async page => {
+  // the Garage opens on the quick builds; the off-road one lifts and puts bigger tires on in one click
+  await page.click('#modeTabs [data-mode=garage]');
+  await page.waitForSelector('#garagePane .optcard', { timeout: 15000 });
+  const before = await page.evaluate(() => {
+    const S = window.jbe.S;
+    return { z: S.scene.nodes[S.scene.nodeById.get('fh1r')].p[2], r: Math.max(...S.scene.wheels.map(w => w.radius)) };
+  });
+  await page.evaluate(() => [...document.querySelectorAll('#garagePane .optcard')].find(b => /Off-road/.test(b.textContent)).click());
+  await page.waitForFunction(b => {
+    const S = window.jbe.S;
+    if (S.building) return false;
+    const z = S.scene.nodes[S.scene.nodeById.get('fh1r')].p[2];
+    return Math.abs(z - (b.z - 3 * 0.0254)) < 1e-4 && Math.max(...S.scene.wheels.map(w => w.radius)) > b.r * 1.1;
+  }, before, { timeout: 20000 });
+  await page.screenshot({ path: path.join(OUT, 'garage-offroad.png') });
+  // and back to stock
+  await page.evaluate(() => [...document.querySelectorAll('#garagePane button')].find(b => /Back to stock/.test(b.textContent)).click());
+  await page.waitForFunction(b => {
+    const S = window.jbe.S;
+    return !S.building && Math.abs(S.scene.nodes[S.scene.nodeById.get('fh1r')].p[2] - b.z) < 1e-4;
+  }, before, { timeout: 20000 });
+});
+
 scenario('garage-lift', async page => {
   await page.click('#modeTabs [data-mode=garage]');
+  await page.click('#garageCats .cat:nth-child(2)');
   await page.waitForSelector('#garagePane .slider', { timeout: 15000 });
   const z0 = await nodeZ(page, 'fh1r');
   await setRange(page, 'Lift', 4);
@@ -95,7 +120,7 @@ scenario('garage-lift', async page => {
 });
 
 scenario('garage-tires', async page => {
-  await page.click('#garageCats .cat:nth-child(2)');
+  await page.click('#garageCats .cat:nth-child(3)');
   await page.waitForSelector('#garageBody .optrow');
   const rows = await page.$$('#garageBody .gsec:first-child .optrow');
   await rows[1].click();
@@ -238,7 +263,7 @@ scenario('builder-create', async page => {
   const w = await page.evaluate(() => window.jbe.S.scene.wheels.length);
   if (w !== 4) throw new Error('wheels after opening: ' + w);
   const t0 = Date.now();
-  await page.waitForFunction(() => window.jbe.S.scene.garage && document.querySelector('#garagePane .slider'), null, { timeout: 40000 });
+  await page.waitForFunction(() => window.jbe.S.scene.garage && document.querySelector('#garageBody .gsec'), null, { timeout: 40000 });
   const warn = await page.evaluate(() => window.jbe.S.scene.warnings);
   if (warn.length) throw new Error('warnings: ' + warn.join('; '));
   console.log('    garage ready after ' + (Date.now() - t0) + ' ms');
@@ -309,7 +334,7 @@ scenario('scrap-create', async page => {
   await waitIdle(page);
   const w = await page.evaluate(() => window.jbe.S.scene.wheels.length);
   if (w !== 4) throw new Error('wheels after opening: ' + w);
-  await page.waitForFunction(() => window.jbe.S.scene.garage && document.querySelector('#garagePane .slider'), null, { timeout: 40000 });
+  await page.waitForFunction(() => window.jbe.S.scene.garage && document.querySelector('#garageBody .gsec'), null, { timeout: 40000 });
   const warn = await page.evaluate(() => window.jbe.S.scene.warnings);
   if (warn.length) throw new Error('warnings: ' + warn.join('; '));
 });

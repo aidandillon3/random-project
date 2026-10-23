@@ -6,7 +6,7 @@ import { icon } from './icons.js';
 import { V, setMeshColor } from './view3d.js';
 import { vehicleDims, statTile } from './panels.js';
 import { rootPicker } from './dialogs.js';
-import { $, h, fmt, toast, debounce, openModal, closeModal, setLoading, num, shortPath } from './util.js';
+import { $, h, fmt, toast, debounce, openModal, closeModal, setLoading, num, shortPath, confirmBox } from './util.js';
 import { curveChart, section, slider } from './widgets.js';
 import { runDropTest } from './droptest.js';
 
@@ -14,12 +14,13 @@ const G = {
   spec: {},          // what the person changed (sent with every build)
   info: null,        // the server's view of the vehicle (axles, engine, brakes, body parts, variables)
   changes: [], notes: [],
-  cat: 'lift',
+  cat: 'builds',
   linked: true,      // same lift front and rear
   customOpen: {},    // axle id -> custom tire sliders shown
 };
 
 const CATS = [
+  { id: 'builds', icon: 'sparkle', title: 'Quick builds' },
   { id: 'lift', icon: 'lift', title: 'Lift & suspension' },
   { id: 'wheels', icon: 'wheel', title: 'Wheels & tires' },
   { id: 'engine', icon: 'engine', title: 'Engine' },
@@ -134,13 +135,15 @@ export function render() {
   if (!G.info) {
     body.append(h('p', { class: 'note' }, S.scene ? 'Looking at the vehicle…' : 'Open a vehicle first.'));
   } else {
-    ({ lift: liftPanel, wheels: wheelsPanel, engine: enginePanel, brakes: brakesPanel, paint: paintPanel, tune: tunePanel })[G.cat](body);
+    ({ builds: buildsPanel, lift: liftPanel, wheels: wheelsPanel, engine: enginePanel, brakes: brakesPanel, paint: paintPanel,
+      tune: tunePanel })[G.cat](body);
   }
   renderSide();
 }
 
 function catHasChange(id) {
   const s = G.spec;
+  if (id === 'builds') return false;
   if (id === 'lift') return Object.values(s.axles || {}).some(a => 'lift' in a) || 'bodyLift' in s;
   if (id === 'wheels') return Object.values(s.axles || {}).some(a => 'spacer' in a || 'customTire' in a);
   if (id === 'engine') return !!s.engine;
@@ -159,6 +162,61 @@ function renderCats() {
     b.addEventListener('click', () => { G.cat = c.id; render(); });
     box.append(b);
   }
+}
+
+// ---- quick builds ---------------------------------------------------------------------------------------
+// each one sets up the other categories in one go (sizes relative to the vehicle's own), all still adjustable
+const IN = 0.0254;
+const BUILDS = [
+  { id: 'offroad', icon: 'wheel', title: 'Off-road', text: '3" lift, taller and wider tires, a wider stance and a little more power.',
+    lift: 3 * IN, tire: [1.12, 1.18], spacer: 1 * IN, power: 1.1, brakes: 1.15 },
+  { id: 'monster', icon: 'lift', title: 'Monster truck', text: '10" lift on giant tires, a much wider stance and lots more power.',
+    lift: 10 * IN, tire: [1.6, 1.7], spacer: 5 * IN, power: 1.6, brakes: 1.6 },
+  { id: 'lowered', icon: 'car', title: 'Lowered street', text: '1.5" lower on wider tires, a slightly wider stance and a tune.',
+    lift: -1.5 * IN, tire: [1.0, 1.12], spacer: 0.5 * IN, power: 1.15, brakes: 1.1 },
+  { id: 'rally', icon: 'sparkle', title: 'Rally', text: '1.5" lift for more suspension room, slightly taller tires and a tune.',
+    lift: 1.5 * IN, tire: [1.04, 1.0], spacer: 0.5 * IN, power: 1.2, brakes: 1.1 },
+  { id: 'drag', icon: 'engine', title: 'Drag', text: '60% more power, wide rear tires and stronger brakes.',
+    lift: 0, tire: [1.0, 1.0], rearTire: [1.04, 1.35], spacer: 0, power: 1.6, brakes: 1.3 },
+];
+
+function buildsPanel(body) {
+  const grid = h('div', { class: 'optcards' });
+  for (const b of BUILDS) {
+    const btn = h('button', { class: 'optcard' }, h('span', { class: 't' }, icon(b.icon, 14), ' ', b.title), h('span', { class: 'd' }, b.text));
+    btn.addEventListener('click', () => applyBuild(b));
+    grid.append(btn);
+  }
+  body.append(section('Quick builds', 'sparkle',
+    'One click sets up a whole look. Everything stays adjustable in the other categories, and nothing is kept until you press "Save my version".',
+    grid, h('button', { class: 'small', onclick: resetAll, disabled: !S.garageDirty && !Object.keys(G.spec).length }, 'Back to stock')));
+}
+
+async function applyBuild(b) {
+  const info = G.info;
+  const mine = Object.keys(G.spec).filter(k => k !== 'paints');
+  if (mine.length && !(await confirmBox('Use the ' + b.title.toLowerCase() + ' build?',
+    'It replaces the Garage changes you made so far (your paint stays).', 'Use it'))) return;
+  const spec = { axles: {} };
+  const last = info.axles[info.axles.length - 1];
+  for (const ax of info.axles) {
+    const a = spec.axles[ax.id] = {};
+    if (ax.slots.length) a.lift = +b.lift.toFixed(4);
+    if (ax.canSpacer) a.spacer = +b.spacer.toFixed(4);
+    const [fd, fw] = b.rearTire && ax === last && info.axles.length > 1 ? b.rearTire : b.tire;
+    if (ax.tire && (Math.abs(fd - 1) > 0.001 || Math.abs(fw - 1) > 0.001)) {
+      a.customTire = { diameter: +(ax.radius * 2 * fd).toFixed(4), width: +((ax.width || 0.2) * fw).toFixed(4) };
+    }
+  }
+  if (info.engine?.slot) spec.engine = { power: b.power };
+  if (info.brakes.length) spec.brakes = { torque: b.brakes };
+  if (G.spec.paints) spec.paints = G.spec.paints;
+  G.spec = spec;
+  G.linked = true;
+  G.customOpen = {};
+  changed();
+  render();
+  toast(`${b.title} build set up. Look through the categories to adjust it, then save your version.`, 'ok', 6000);
 }
 
 // ---- lift ------------------------------------------------------------------------------------------------
