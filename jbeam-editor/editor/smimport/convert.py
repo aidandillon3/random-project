@@ -207,6 +207,14 @@ class SMGenerator(vg.Generator):
         an, P, st = self.an, self.P, self.st
         fr = an.orient(int(st["turn"]), st["scale"])
         self.frame = fr
+        self.chassis_bodies = set(an.chassis)
+        for w in an.decor:
+            self.chassis_bodies.add(w.body)
+            self.chassis_bodies.update(w.unsprung)
+        if an.decor:
+            n = len(an.decor)
+            self.notes.append("%d wheel%s that %s not stand on the ground (a spare?) %s part of the body." % (
+                n, "s" if n > 1 else "", "do" if n > 1 else "does", "are" if n > 1 else "is"))
         self.S = S = Structure()
         S.kinds.update(chassis.beam_kinds(P))
         S.kinds.update(voxel.lattice_kinds(P.mass))
@@ -265,7 +273,7 @@ class SMGenerator(vg.Generator):
         cells = {}
         total = 0
         for s in an.bp.shapes:
-            if s.body not in an.chassis:
+            if s.body not in self.chassis_bodies:
                 continue
             lo = [math.floor(s.lo[k] + 1e-6) for k in range(3)]
             hi = [max(math.ceil(s.hi[k] - 1e-6), lo[k] + 1) for k in range(3)]
@@ -285,7 +293,7 @@ class SMGenerator(vg.Generator):
                             e[0] += m
         for j in an.bp.joints:
             ba, bb = an.bp.body_of(j.a), an.bp.body_of(j.b)
-            if ba in an.chassis and (bb in an.chassis or bb < 0):
+            if ba in self.chassis_bodies and (bb in self.chassis_bodies or bb < 0):
                 c = fr.cell(tuple(int(round(v)) for v in j.pos))
                 e = cells.get(c)
                 if e is None:
@@ -299,7 +307,7 @@ class SMGenerator(vg.Generator):
     # -- axles -----------------------------------------------------------------------------------
     def _make_axles(self):
         an, st = self.an, self.st
-        ws = sorted(an.wheels, key=lambda w: w.p[1])
+        ws = sorted(an.used, key=lambda w: w.p[1])
         clusters = []
         for w in ws:
             if clusters and abs(w.p[1] - clusters[-1][0].p[1]) < 0.35:
@@ -346,7 +354,7 @@ class SMGenerator(vg.Generator):
             self.notes.append("All the wheels are on one axle, so the vehicle cannot stand on its own.")
         # steering
         mode = st["steer"]
-        if not any(w.steered for w in an.wheels):
+        if not any(w.steered for w in an.used):
             if mode == "built":
                 mode = "front"
             if mode == "front":
@@ -365,7 +373,7 @@ class SMGenerator(vg.Generator):
                 ax.steer_angle = round(st["steerAngle"] * 0.6, 1)
         # driven wheels
         dmode = st["drive"]
-        if not any(w.driven for w in an.wheels):
+        if not any(w.driven for w in an.used):
             if dmode == "built":
                 dmode = "rear"
             if dmode == "rear":
@@ -633,9 +641,9 @@ class SMGenerator(vg.Generator):
             turning = round((wb / math.sin(ang) + axles[0].track / 2) * 2, 1)
         accel, top = self._performance()
         lo, hi = self.lattice.bounds()
-        xs = [lo[0], hi[0]] + [w.p[0] + s * w.w / 2 for w in self.an.wheels for s in (-1, 1)]
-        ys = [lo[1], hi[1]] + [w.p[1] + s * w.r for w in self.an.wheels for s in (-1, 1)]
-        zs = [hi[2]] + [w.p[2] + w.r for w in self.an.wheels]
+        xs = [lo[0], hi[0]] + [w.p[0] + s * w.w / 2 for w in self.an.used for s in (-1, 1)]
+        ys = [lo[1], hi[1]] + [w.p[1] + s * w.r for w in self.an.used for s in (-1, 1)]
+        zs = [hi[2]] + [w.p[2] + w.r for w in self.an.used]
         sp = self.springs
         self.dims = {"length": max(ys) - min(ys), "width": max(xs) - min(xs), "height": max(zs)}
         clearance = max(lo[2], 0.0)
@@ -675,7 +683,7 @@ class SMGenerator(vg.Generator):
         # one material per Scrap Mechanic colour; the most used one is the paint
         use = {}
         for s in bp.shapes:
-            if s.body in an.chassis or s.body in an.unsprung_bodies:
+            if s.body in self.chassis_bodies or s.body in an.unsprung_bodies:
                 key = self._colour_key(s)
                 n = max((s.hi[0] - s.lo[0]) * (s.hi[1] - s.lo[1]) * (s.hi[2] - s.lo[2]), 1)
                 use[key] = use.get(key, 0) + n
@@ -728,7 +736,7 @@ class SMGenerator(vg.Generator):
             smmesh.add_cells(M, cells, to_m, lambda key: mat_of[key])
             return M
 
-        body = solid(m + "_body", an.chassis)
+        body = solid(m + "_body", self.chassis_bodies)
         if not body.tri_count():
             body.box(m + "_metal", (0, 0, 0.5), (0.1, 0.1, 0.1))
         meshes[body.name] = body

@@ -127,7 +127,7 @@ class Blueprint:
         return out
 
 
-def car(suspension=None, steer=True, drive=True, wheel=SMALL_WHEEL, piston=False):
+def car(suspension=None, steer=True, drive=True, wheel=SMALL_WHEEL, piston=False, spare=False):
     """A four-wheeled car facing +y (Scrap Mechanic frame): a metal floor, a wooden cabin with a glass
     windshield, a driver's seat, a gas engine at the back and wheels on bearings, optionally on suspension.
 
@@ -136,7 +136,7 @@ def car(suspension=None, steer=True, drive=True, wheel=SMALL_WHEEL, piston=False
     ch = bp.body()
     floor = bp.block(ch, METAL, (0, 0, 2), (8, 16, 1), "4a4a4a")
     bp.block(ch, WOOD, (0, 7, 3), (1, 5, 4), "c23b22")
-    bp.block(ch, WOOD, (7, 7, 3), (1, 5, 4), "c23b22")
+    right_wall = bp.block(ch, WOOD, (7, 7, 3), (1, 5, 4), "c23b22")
     bp.block(ch, WOOD, (0, 7, 7), (8, 5, 1), "c23b22")
     bp.block(ch, WOOD, (1, 7, 3), (6, 1, 4), "c23b22")
     bp.block(ch, GLASS, (1, 11, 3), (6, 1, 4), "c8e6ff")
@@ -174,6 +174,11 @@ def car(suspension=None, steer=True, drive=True, wheel=SMALL_WHEEL, piston=False
                 seat_ctl["joints"].append({"id": j, "leftAngleLimit": 28, "rightAngleLimit": 28, "unlocked": False})
             if name == "R" and drive:
                 eng_ctl["joints"].append({"id": j, "reverse": side == "R"})
+    if spare:
+        # a spare wheel on a bearing high up on the cabin's right wall
+        sb = bp.body()
+        w = bp.part(sb, SMALL_WHEEL, (9, 8, 4), xaxis=2, zaxis=1, color="222222")
+        bp.joint(BEARING, right_wall, w, (8, 9, 5), 2, 1)
     if piston:
         pb = bp.body()
         box = bp.block(pb, WOOD, (3, 14, 4), (2, 2, 1), "ffcc00")

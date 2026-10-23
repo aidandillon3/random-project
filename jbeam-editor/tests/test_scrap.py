@@ -273,6 +273,14 @@ class ConvertTests(SMCase):
         self.assertEqual(sc["warnings"], [])
         self.assertAlmostEqual(self.wheel_centres(sc)["FL"][2], 0.75)
 
+    def test_spare_wheels_stay_on_the_body(self):
+        g = self.convert(F.car(spare=True)[0], name="spare")
+        sc = self.scene(g)
+        self.assertEqual(sc["warnings"], [])
+        self.assertEqual(sorted(self.wheel_centres(sc)), ["FL", "FR", "RL", "RR"])
+        self.assertEqual(self.wheel_centres(sc)["FL"], (1.375, -1.25, 0.375))
+        self.assertTrue(any("spare" in n for n in g.notes), g.notes)
+
     def test_mod_wheels_and_pistons(self):
         g = self.convert(F.car(wheel=F.MOD_WHEEL, piston=True)[0], name="monster")
         sc = self.scene(g)

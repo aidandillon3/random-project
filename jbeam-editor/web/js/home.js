@@ -156,7 +156,8 @@ export function renderGallery() {
       h('span', { class: 'meta' },
         h('span', { class: 'name' }, v.name || v.model),
         h('span', { class: 'sub' }, v.brand || v.type || v.model,
-          v.editable ? h('span', { class: 'badge mine' }, 'My mod') : null)));
+          v.builder ? h('span', { class: 'badge mine' }, 'Built') : v.scrap ? h('span', { class: 'badge mine' }, 'Scrap Mechanic')
+            : v.editable ? h('span', { class: 'badge mine' }, 'My mod') : null)));
     card.addEventListener('click', () => A.openVehicle(v.model, { intent }));
     grid.append(card);
   }

@@ -482,7 +482,17 @@ add engine power, paint it. Everything shows in 3D straight away; <b>Save my ver
 <li><b>Structure</b>: the physics skeleton for detailed work: nodes, beams, collision triangles and weights.</li>
 <li><b>Model</b>: model a part (bumper, rack, light bar…) in the editor and fit it to the vehicle.</li>
 </ul>
-<p>From the home screen you can also <b>build a new vehicle</b> from sliders and <b>import a Scrap Mechanic creation</b>.</p>
+<h3>Making vehicles</h3>
+<ul>
+<li><b>Vehicle Builder</b> (home screen > <i>Build a new vehicle</i>): pick a body style and shape it with sliders. The body, suspension,
+wheels, engine and gearbox are generated and work in the game. <b>Create vehicle</b> writes it as a mod; reopen it from the Garage with
+<i>Edit in the Builder</i> to change it later.</li>
+<li><b>Scrap Mechanic import</b> (home screen > <i>Import from Scrap Mechanic</i>): pick a creation saved with the lift. Wheels on bearings
+become real wheels on suspension; the bearings your driver's seat is connected to steer, the ones your engines are connected to are driven.
+If the preview faces the wrong way, set <i>Front of the vehicle</i> to <i>Turned around</i>.</li>
+<li><b>Drop test</b> (Garage, Builder and import): drops the vehicle onto the ground in a quick physics test and tells you whether it sits
+at the height it was built for and holds together.</li>
+</ul>
 <h3>Getting around the 3D view</h3>
 <p><kbd>Right-drag</kbd> orbit, <kbd>Middle-drag</kbd> pan, <kbd>Wheel</kbd> zoom (toward the mouse). <kbd>Alt</kbd>+<kbd>Left-drag</kbd> also orbits.
 <kbd>Home</kbd> shows everything, <kbd>1</kbd> front, <kbd>3</kbd> side, <kbd>7</kbd> top, <kbd>F</kbd> zooms to the selection.

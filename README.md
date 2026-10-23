@@ -21,9 +21,11 @@ See [`body-tracker/README.md`](body-tracker/README.md) for setup and calibration
 
 ## JBeam Editor
 
-A visual editor for BeamNG.drive vehicles: the game's parts menu, a 3D view where you click and drag
-nodes, beams and collision triangles, weights with an automatic stability fix, new parts and upfits,
-and 3D model import. See [`jbeam-editor/README.md`](jbeam-editor/README.md).
+Make and change BeamNG.drive vehicles in its own window: a Garage for lift kits, wheels, tires,
+engine and paint; a Vehicle Builder that makes a complete drivable vehicle from sliders; a Scrap
+Mechanic importer that turns your creations into BeamNG vehicles; a 3D Model Workshop for parts;
+and the game's parts menu, tuning and full node/beam editing with a stability check and a drop test.
+See [`jbeam-editor/README.md`](jbeam-editor/README.md).
 
 ## Local Agent
 

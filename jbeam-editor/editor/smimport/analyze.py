@@ -303,16 +303,26 @@ class Analysis:
 
     # -- turning it into a vehicle ---------------------------------------------------------------
     def orient(self, turn=0, scale=1.0):
-        """Pick the frame: wheel axles left-right, steered wheels at the front. turn: extra quarter turns."""
+        """Pick the frame: wheel axles left-right, steered wheels at the front. turn: extra quarter turns.
+
+        Wheels that roll the other way, or hang clear of the ground without being steered or driven (a
+        spare on the roof), are left out of the wheels the vehicle stands on (self.used / self.decor)."""
         ws = self.wheels
         lat_x = sum(1 for w in ws if abs(w.axis[0]) >= abs(w.axis[1]))
         lateral_is_x = lat_x * 2 >= len(ws)
+        lat = 0 if lateral_is_x else 1
+        aligned = [w for w in ws if abs(w.axis[lat]) >= 0.7] or ws
+        ground = min(w.center[2] - w.radius for w in aligned)
+        used = [w for w in aligned if (w.center[2] - w.radius) - ground <= max(0.5, 0.35 * w.radius)
+                or w.steered or w.driven]
+        self.used = used
+        self.decor = [w for w in ws if w not in used]
         fwd_axis = 1 if lateral_is_x else 0
-        cen = [sum(w.center[k] for w in ws) / len(ws) for k in range(3)]
-        steered = [w for w in ws if w.steered]
+        cen = [sum(w.center[k] for w in used) / len(used) for k in range(3)]
+        steered = [w for w in used if w.steered]
         sign = 1
         self.front_guess = "default"
-        if steered and len(steered) < len(ws):
+        if steered and len(steered) < len(used):
             sc = sum(w.center[fwd_axis] for w in steered) / len(steered)
             if abs(sc - cen[fwd_axis]) > 0.5:
                 sign = 1 if sc > cen[fwd_axis] else -1
@@ -330,9 +340,9 @@ class Analysis:
             w.p = fr.point(w.center)
             w.r = w.radius * fr.scale
             w.w = w.width * fr.scale
-        ground = min(w.p[2] - w.r for w in ws)
-        xs = [w.p[0] for w in ws]
-        ys = [w.p[1] for w in ws]
+        ground = min(w.p[2] - w.r for w in used)
+        xs = [w.p[0] for w in used]
+        ys = [w.p[1] for w in used]
         origin = (-(max(xs) + min(xs)) / 2, -(max(ys) + min(ys)) / 2, -ground)
         fr.origin = origin
         for w in ws:

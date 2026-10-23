@@ -64,7 +64,7 @@ async function open(model = null) {
         toast(`The creation ${model} was made from is not on this computer any more (${shortPath(r.source.path || '')}). Pick it again.`, 'err', 10000);
         M.creation = null;
       } else {
-        M.creation = { id: r.source.id || 'file:' + r.source.path, name: r.source.name, source: 'file', icon: false };
+        M.creation = { id: 'file:' + r.source.path, name: r.source.name, source: 'file', icon: false };
         M.settings = { ...r.settings };
         M.source = model;
       }

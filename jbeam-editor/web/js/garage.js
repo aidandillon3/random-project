@@ -117,6 +117,16 @@ export function render() {
     h('div', { class: 'seg', style: { marginTop: '4px' } },
       h('button', { class: metric ? '' : 'active', onclick: () => { metric = false; store.set('metric', false); render(); renderSide(); } }, 'Inches'),
       h('button', { class: metric ? 'active' : '', onclick: () => { metric = true; store.set('metric', true); render(); renderSide(); } }, 'Centimetres'))));
+  const made = (S.vehicles || []).find(v => v.model === S.model);
+  if (made?.builder || made?.scrap) {
+    pane.append(h('div', { class: 'card', style: { margin: '0 0 12px' } },
+      h('b', {}, made.builder ? 'Made with the Vehicle Builder' : 'Imported from Scrap Mechanic'),
+      h('p', { class: 'note' }, made.builder
+        ? 'To change its size, body, suspension or engine, open its design in the Builder and update it.'
+        : 'To change its size, ride or power, or bring in changes you made in Scrap Mechanic, import it again.'),
+      h('button', { class: 'small', onclick: () => (made.builder ? A.openBuilder(S.model) : A.openScrap(S.model)) },
+        icon(made.builder ? 'build' : 'scrap', 14), made.builder ? 'Edit in the Builder' : 'Import again')));
+  }
   pane.append(h('div', { class: 'catlist', id: 'garageCats' }));
   renderCats();
   const body = h('div', { id: 'garageBody' });

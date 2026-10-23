@@ -314,6 +314,16 @@ scenario('scrap-create', async page => {
   if (warn.length) throw new Error('warnings: ' + warn.join('; '));
 });
 
+scenario('scrap-reimport', async page => {
+  // the Garage knows where the vehicle came from and takes it back to the importer
+  await page.evaluate(() => [...document.querySelectorAll('#garagePane button')].find(b => /Import again/.test(b.textContent)).click());
+  await page.waitForFunction(() => window.jbe.S.mode === 'scrap' && document.querySelector('#scrapSide button.primary'), null, { timeout: 30000 });
+  await scrapIdle(page);
+  const st = await page.evaluate(() => ({ btn: document.querySelector('#scrapSide button.primary').textContent,
+    name: document.querySelector('#scrapSide input[type=text]').value, wheels: window.jbe.S.scene.wheels.length }));
+  if (!/Update vehicle/.test(st.btn) || st.name !== 'UI Mud Truck' || st.wheels !== 4) throw new Error(JSON.stringify(st));
+});
+
 // --------------------------------------------------------------------------------------------
 (async () => {
   const install = fs.mkdtempSync(path.join(os.tmpdir(), 'jbe-ui-install-'));
