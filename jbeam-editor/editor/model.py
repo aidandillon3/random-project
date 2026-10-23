@@ -366,7 +366,27 @@ class Model:
             "duplicates": [{"part": p, "kept": self.files[a].rel, "ignored": self.files[b].rel}
                            for p, a, b in self.duplicates],
             "partCount": len(self.parts),
+            "defaultPaint": self.default_paint(),
         }
+
+    def default_paint(self):
+        """The vehicle's own main paint colour [r, g, b] from its info.json, or None."""
+        info = self.info if isinstance(self.info, dict) else {}
+        paints = info.get("paints")
+        name = info.get("defaultPaintName1")
+        if isinstance(paints, dict) and isinstance(paints.get(name), dict):
+            c = paints[name].get("baseColor")
+            if isinstance(c, list) and len(c) >= 3 and all(isinstance(x, (int, float)) for x in c[:3]):
+                return [max(0.0, min(1.0, float(x))) for x in c[:3]]
+        colors, dc = info.get("colors"), info.get("default_color")
+        if isinstance(colors, dict) and isinstance(colors.get(dc), str):
+            try:
+                c = [float(x) for x in colors[dc].split()]
+            except ValueError:
+                return None
+            if len(c) >= 3:
+                return [max(0.0, min(1.0, x)) for x in c[:3]]
+        return None
 
 
 def _label(v):

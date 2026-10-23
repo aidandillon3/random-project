@@ -3,8 +3,9 @@
 BeamNG finds a flexbody's mesh by the name of an object (a <node>) in any
 .dae file of the vehicle or of vehicles/common. This module pulls each named
 object's triangles out, already placed by its node transforms, in Z-up
-metres. Compiled .cdae files can't be read; those flexbodies simply show no
-mesh.
+metres, with the material each run of triangles uses (its name as in the
+<material> element, which is what materials.json maps to). Compiled .cdae
+files can't be read; those flexbodies simply show no mesh.
 """
 import io
 import math
@@ -87,10 +88,12 @@ def _read_geometry(geom):
                     verts[ch.get("id")] = inp.get("source", "").lstrip("#")
     pos_src = None
     tris = array("I")
+    prims = []          # (first index, index count, material symbol)
     for prim in mesh:
         t = _tag(prim)
         if t not in ("triangles", "polylist", "polygons"):
             continue
+        start = len(tris)
         offs = 0
         voff = None
         for inp in prim:
@@ -128,19 +131,23 @@ def _read_geometry(geom):
                     idx = array("I", map(int, sub.text.split()))[voff::offs]
                     for j in range(1, len(idx) - 1):
                         tris.extend((idx[0], idx[j], idx[j + 1]))
+        if len(tris) > start:
+            prims.append((start, len(tris) - start, prim.get("material") or ""))
     if pos_src is None or pos_src not in sources:
         return None
     text, stride = sources[pos_src]
     floats = array("f", map(float, text.split()))
     if stride != 3:
         floats = array("f", (floats[i + k] for i in range(0, len(floats), stride) for k in range(3)))
-    return floats, tris
+    return floats, tris, prims
 
 
 def extract(data):
-    """{object name: (positions array('f'), indices array('I'))} for a .dae file's bytes."""
+    """{object name: (positions array('f'), indices array('I'), [(first index, count, material)])}
+    for a .dae file's bytes."""
     geoms = {}
     scenes = []
+    mat_names = {}      # <material> id -> name
     up = "Z_UP"
     unit = 1.0
     for event, el in ET.iterparse(io.BytesIO(data), events=("end",)):
@@ -150,6 +157,8 @@ def extract(data):
             if g is not None:
                 geoms[el.get("id")] = g
             el.clear()
+        elif t == "material" and el.get("id"):
+            mat_names[el.get("id")] = el.get("name") or re.sub(r"-material$", "", el.get("id"))
         elif t == "up_axis":
             up = (el.text or "Z_UP").strip()
         elif t == "unit":
@@ -165,11 +174,11 @@ def extract(data):
 
     out = {}
 
-    def place(name, mat, geom_id):
+    def place(name, mat, geom_id, bind):
         g = geoms.get(geom_id)
         if g is None:
             return
-        src, tri = g
+        src, tri, prims = g
         n = len(src) // 3
         pos = array("f", bytes(4 * 3 * n))
         a = mat
@@ -183,13 +192,25 @@ def extract(data):
             elif up == "X_UP":
                 X, Y, Z = Y, Z, X
             pos[3 * i], pos[3 * i + 1], pos[3 * i + 2] = X * unit, Y * unit, Z * unit
+        groups = [(st, cnt, bind.get(sym) or mat_names.get(sym) or sym) for st, cnt, sym in prims]
         if name in out:
-            p0, t0 = out[name]
+            p0, t0, g0 = out[name]
             base = len(p0) // 3
+            first = len(t0)
             p0.extend(pos)
             t0.extend(i + base for i in tri)
+            g0.extend((st + first, cnt, m_) for st, cnt, m_ in groups)
         else:
-            out[name] = (pos, array("I", tri))
+            out[name] = (pos, array("I", tri), groups)
+
+    def bindings(inst):
+        """symbol -> material name from an instance_geometry's bind_material."""
+        out_ = {}
+        for el in inst.iter():
+            if _tag(el) == "instance_material" and el.get("symbol"):
+                target = (el.get("target") or "").lstrip("#")
+                out_[el.get("symbol")] = mat_names.get(target) or re.sub(r"-material$", "", target)
+        return out_
 
     def walk(node, parent):
         m = _mat_mul(parent, _node_matrix(node))
@@ -197,7 +218,7 @@ def extract(data):
         for ch in node:
             t = _tag(ch)
             if t == "instance_geometry":
-                place(name, m, ch.get("url", "").lstrip("#"))
+                place(name, m, ch.get("url", "").lstrip("#"), bindings(ch))
             elif t == "node":
                 walk(ch, m)
 
@@ -207,6 +228,15 @@ def extract(data):
                 walk(ch, _IDENT)
     # objects named after their geometry, for files without a scene
     if not out:
-        for gid, (pos, tri) in geoms.items():
-            out[gid.replace("-mesh", "")] = (pos, tri)
+        for gid, (pos, tri, prims) in geoms.items():
+            out[gid.replace("-mesh", "")] = (pos, tri, [(st, cnt, mat_names.get(sym, sym)) for st, cnt, sym in prims])
+    for name, (pos, tri, groups) in out.items():
+        # neighbouring runs of the same material become one
+        merged = []
+        for st, cnt, m_ in sorted(groups):
+            if merged and merged[-1][2] == m_ and merged[-1][0] + merged[-1][1] == st:
+                merged[-1] = (merged[-1][0], merged[-1][1] + cnt, m_)
+            else:
+                merged.append((st, cnt, m_))
+        groups[:] = merged
     return out

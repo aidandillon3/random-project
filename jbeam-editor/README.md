@@ -132,8 +132,9 @@ Press **Help** in the editor for the mouse and keyboard controls.
 
 - After saving, press Ctrl+R in the game to reload a spawned vehicle, or Ctrl+L
   to reload the vehicle list after creating a new vehicle.
-- In the editor's 3D view textures are not shown, and wheels made by
-  `pressureWheels` without a model are drawn as simple cylinders.
+- The editor's 3D view shows plain material colours, paint and glass, but not
+  textures; wheels made by `pressureWheels` without a model are drawn as simple
+  cylinders.
 - The stability colours and the drop test are a guide worked out from the
   official vehicles, not the game's own simulation.
 

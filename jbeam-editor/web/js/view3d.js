@@ -360,25 +360,35 @@ export function setMeshes(meshData) {
 }
 
 // colours for meshes that name their materials; updated in place so a new paint shows at once
-export function setPalette(materials) {
+// materials by name for meshes with material groups: the Builder's and importer's own, or a vehicle's
+// (read from its materials files; doubleSide for meshes made elsewhere, whose faces may point either way)
+export function setPalette(materials, { doubleSide = false } = {}) {
   for (const [name, d] of Object.entries(materials || {})) {
     let m = V.palette.get(name);
     if (!m) {
-      m = new THREE.MeshStandardMaterial({ side: THREE.FrontSide });
+      m = new THREE.MeshStandardMaterial({ side: doubleSide ? THREE.DoubleSide : THREE.FrontSide });
       V.palette.set(name, m);
     }
-    m.color.setRGB(...d.color, THREE.SRGBColorSpace);
+    m.side = doubleSide ? THREE.DoubleSide : THREE.FrontSide;
+    m.userData.color = d.color;
+    m.userData.paint = !!d.paint;
+    m.color.setRGB(...(d.paint && V.paint ? V.paint : d.color), THREE.SRGBColorSpace);
     m.metalness = d.metallic ?? 0;
     m.roughness = d.roughness ?? 0.5;
-    const op = d.opacity ?? 1;
-    m.transparent = op < 1;
-    m.opacity = op;
-    m.depthWrite = op >= 1;
+    m.userData.opacity = d.opacity ?? 1;
     const em = d.glow && d.emissive ? d.emissive.map(c => c * 0.18) : [0, 0, 0];
     m.emissive.setRGB(...em);
-    m.needsUpdate = true;
+    applyOpacity(m);
   }
   V.dirty = true;
+}
+
+function applyOpacity(m) {
+  const op = (m.userData.opacity ?? 1) * (V.meshOpacity ?? 1);
+  m.transparent = op < 0.999;
+  m.opacity = op;
+  m.depthWrite = op > 0.95;
+  m.needsUpdate = true;
 }
 
 export function buildMeshes() {
@@ -433,9 +443,14 @@ export function setGround(on) {
   V.dirty = true;
 }
 
-// paint colour on the model (Garage paint preview); null goes back to plain grey
+// paint colour on the model (Garage paint preview); null goes back to the vehicle's own. Materials that take
+// the paint get it; a vehicle without any (or without readable materials) shows it on the whole model
 export function setMeshColor(rgb) {
-  V.meshMaterial.color.setRGB(...(rgb || [0.667, 0.702, 0.761]), THREE.SRGBColorSpace);
+  V.paint = rgb || null;
+  for (const m of V.palette.values()) {
+    if (m.userData.paint) m.color.setRGB(...(rgb || m.userData.color), THREE.SRGBColorSpace);
+  }
+  V.meshMaterial.color.setRGB(...(rgb && !V.vehiclePaint ? rgb : [0.667, 0.702, 0.761]), THREE.SRGBColorSpace);
   V.dirty = true;
 }
 
@@ -445,6 +460,7 @@ export function setMeshOpacity(v) {
   V.meshMaterial.depthWrite = v > 0.95;
   V.meshMaterial.transparent = v <= 0.95;
   V.meshMaterial.needsUpdate = true;
+  for (const m of V.palette.values()) applyOpacity(m);
   V.dirty = true;
 }
 

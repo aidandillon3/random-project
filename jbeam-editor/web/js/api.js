@@ -55,13 +55,14 @@ export const api = {
     const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, n)));
     const base = 4 + n;
     const out = {};
-    for (const [name, [po, pc, io, ic, file]] of Object.entries(head.meshes)) {
+    for (const [name, [po, pc, io, ic, file, groups]] of Object.entries(head.meshes)) {
       out[name] = {
         pos: new Float32Array(buf, base + po, pc),
         idx: new Uint32Array(buf, base + io, ic),
         file,
+        groups: groups && groups.length ? groups : null,
       };
     }
-    return { meshes: out, missing: head.missing };
+    return { meshes: out, missing: head.missing, materials: head.materials || {} };
   },
 };

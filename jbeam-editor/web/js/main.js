@@ -3,8 +3,8 @@
 import { S, A, on, emit, clearSelection } from './state.js';
 import { api } from './api.js';
 import { partEditable, reindex, totalMass } from './scene.js';
-import { V, buildMeshes, frame, initView, rebuild, redraw, refreshColors, setGround, setMeshOpacity, setMeshes,
-  setNodeSize, setVehicleOffset, setVisible, updateGizmo, updateMeshVisibility, viewPreset } from './view3d.js';
+import { V, buildMeshes, frame, initView, rebuild, redraw, refreshColors, setGround, setMeshColor, setMeshOpacity, setMeshes,
+  setNodeSize, setPalette, setVehicleOffset, setVisible, updateGizmo, updateMeshVisibility, viewPreset } from './view3d.js';
 import { connectSelected, deleteSelection, escape, flipSelectedTris, frameSelection, initTools, makeTriangle, setTool,
   updateHint } from './tools.js';
 import { compactOps, redo, undo } from './edit.js';
@@ -61,6 +61,8 @@ async function openVehicle(model, { intent = null, mode = null, configName } = {
   $('#optPin').checked = false;
   for (const g of V.meshCache.values()) g.dispose();
   V.meshCache.clear();
+  V.vehiclePaint = false;
+  V.paint = null;
   store.set('model', model);
   remember(model);
   hideHome();
@@ -168,6 +170,9 @@ async function loadMeshes() {
     try {
       const r = await api.meshes(S.model, want);
       if (token !== meshToken) return;
+      setPalette(r.materials, { doubleSide: true });
+      V.vehiclePaint = V.vehiclePaint || Object.values(r.materials).some(m => m.paint);
+      setMeshColor(V.paint);     // now that it is known whether the model has paint of its own
       setMeshes(r.meshes);
       S.missingMeshes = r.missing;
     } catch (e) {

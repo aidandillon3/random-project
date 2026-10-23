@@ -378,6 +378,28 @@ class ScrapApiTests(InstallCase):
         with self.assertRaisesRegex(ValueError, "not imported from Scrap Mechanic"):
             self.app.api_scrap_load({"model": "testcar"})
 
+    def test_created_vehicle_shows_its_colours(self):
+        c = self.creation("Rusty Hatch")
+        res = self.app.api_scrap_create({"id": c["id"], "settings": {"name": "Colour Check"}})
+        sc = self.app.api_build({"model": res["model"], "configName": "base"})
+        names = sorted({fb["mesh"] for fb in sc["flexbodies"]})
+        blob = self.app.api_meshes({"model": res["model"], "names": names})
+        n = int.from_bytes(blob[:4], "little")
+        head = json.loads(blob[4:4 + n].decode("utf-8"))
+        self.assertEqual(head["missing"], [])
+        body = head["meshes"]["colour_check_body"]
+        mats = {g[2] for g in body[5]}
+        self.assertGreaterEqual(len(mats), 3)            # floor, cabin and glass at least
+        for m in mats:
+            self.assertIn(m, head["materials"])
+        info = [head["materials"][m] for m in mats]
+        self.assertEqual(sum(1 for i in info if i.get("paint")), 1)
+        self.assertEqual(sum(1 for i in info if i.get("glass")), 1)
+        reds = [i for i in info if [round(x * 255) for x in i["color"]] == [0xc2, 0x3b, 0x22]]
+        self.assertEqual(len(reds), 1)                    # the wooden cabin's colour
+        # the groups cover every triangle once
+        self.assertEqual(sum(g[1] for g in body[5]), body[3])
+
     def test_blueprint_from_a_path(self):
         folder = os.path.join(self.tmp, "elsewhere", "thing")
         F.save_creation(folder, F.trike(), "Odd Trike")

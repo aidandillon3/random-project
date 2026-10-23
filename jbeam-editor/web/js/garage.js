@@ -411,14 +411,15 @@ function brakesPanel(body) {
 function defaultPaints() {
   const p = S.config?.paints;
   if (Array.isArray(p) && p.length) return JSON.parse(JSON.stringify(p));
-  return [0, 1, 2].map(() => ({ baseColor: [0.85, 0.85, 0.85, 1], metallic: 0.2, roughness: 0.5, clearcoat: 1, clearcoatRoughness: 0.05 }));
+  const own = S.summary?.defaultPaint;
+  return [0, 1, 2].map(() => ({ baseColor: own ? [...own, 1] : [0.85, 0.85, 0.85, 1], metallic: 0.2, roughness: 0.5, clearcoat: 1, clearcoatRoughness: 0.05 }));
 }
 const hex = c => '#' + c.slice(0, 3).map(v => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')).join('');
 const rgb = s => [1, 3, 5].map(k => parseInt(s.slice(k, k + 2), 16) / 255);
 
 function paintPreview() {
   const p = G.spec.paints || (S.config?.paints?.length ? S.config.paints : null);
-  setMeshColor(p ? p[0].baseColor.slice(0, 3) : null);
+  setMeshColor(p ? p[0].baseColor.slice(0, 3) : (S.summary?.defaultPaint || null));
 }
 
 function paintPanel(body) {
