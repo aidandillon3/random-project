@@ -337,6 +337,8 @@ class Generator:
         self.stats = {
             "mass": round(mass), "massTarget": round(P.mass), "frontShare": round(self.front_share, 3),
             "cgHeight": round(self.cg[2], 3),
+            "rollG": rollover(self.axle_list, self.cg[2], P.tireType)[0],
+            "rollRisk": rollover(self.axle_list, self.cg[2], P.tireType)[1],
             "powerHP": round(P.power), "powerKW": round(P.kw), "torqueNm": round(e["peak_torque"]),
             "torqueRPM": int(round(e["peak_torque_rpm"], -2)), "powerRPM": int(round(e["peak_power_rpm"], -2)),
             "hpPerTon": round(P.power / (mass / 1000.0)),
@@ -396,6 +398,19 @@ class Generator:
                 t100 = round(t + 0.35, 1)
             top = max(top, v)
         return t100, round(top * 3.6)
+
+
+GRIP = {"street": 1.0, "sport": 1.1, "allterrain": 0.95, "mud": 0.9, "slick": 1.25}
+
+
+def rollover(axles, cg_height, tire_type):
+    """(sideways g at which the vehicle starts to tip, does it tip before the tires slide).
+
+    Static stability: half the track over the centre of gravity height, less a tenth for body roll."""
+    tot = sum(ax.share for ax in axles) or 1.0
+    track = sum(ax.track * ax.share for ax in axles) / tot
+    g_tip = round(0.9 * track / (2 * max(cg_height, 0.05)), 2)
+    return g_tip, g_tip < GRIP.get(tire_type, 1.0)
 
 
 def axle_shares(ys, y_cg):

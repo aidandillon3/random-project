@@ -337,9 +337,11 @@ function renderSide() {
       ...row('Ground clearance', lenText(B.spec.clearance)),
       ...row('Approach / departure', `${fmt(st.approach, 0)}° / ${fmt(st.departure, 0)}°`),
       ...row('Breakover', `${fmt(st.breakover, 0)}°`),
+      ...row('Tips over at', `${fmt(st.rollG, 2)} g sideways`),
       ...row('Springs', `${fmt(st.springF / 1000, 1)} / ${fmt(st.springR / 1000, 1)} kN/m`),
       ...row('Gears', `${st.gears.length} + final drive ${fmt(st.finalDrive, 2)}`),
       ...row('Structure', `${st.nodes} nodes, ${st.beams} beams`)));
+    if (st.rollRisk) box.append(h('p', { class: 'note warn' }, icon('warning', 13), ` It can roll over in hard corners (it tips at ${fmt(st.rollG, 2)} g, before the tires slide): make the track wider, or lower the ride height or the body.`));
     for (const n of r.notes || []) box.append(h('p', { class: 'note warn' }, icon('warning', 13), ' ', n));
   } else {
     box.append(h('p', { class: 'note' }, 'Building the preview…'));

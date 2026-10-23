@@ -629,13 +629,20 @@ def build_wishbone(S, sh, P, ax, body_names, top=None):
     ax.mr = abs(v_norm(v_sub(S.pos(hi), S.pos(lo)))[2])
 
 
-def build_solid(S, sh, P, ax, body_names):
+def build_solid(S, sh, P, ax, body_names, top=None):
+    """A solid axle under ax. top(x, y): height of the body there (default: the shape's).
+
+    The axle's middle is at ax.x0 (0 unless the pair of wheels is off the vehicle's centre line)."""
     part = "susp_" + ax.id
     k = ax.k
     T2 = ax.track / 2
     p = ax.p
     zc, y = ax.zc, ax.y
     tc = ax.toward_center
+    x0 = getattr(ax, "x0", 0.0)
+
+    def mirror(q, s):
+        return (x0 + q[0] * s, q[1], q[2])
     m_ax = clamp(45 + 0.014 * P.mass, 45, 160) * (1.15 if ax.driven else 0.85)
     w_ax = m_ax / 9.0
     hub_w = clamp(3.4 * (P.mass / 1500.0) ** 0.4, 2.4, 8.0)
@@ -648,9 +655,9 @@ def build_solid(S, sh, P, ax, body_names):
         a["1" + side] = S.node("%sa1%s" % (p, side), mirror((xa, y, zc), s), part, w=w_ax, groups=[g_ax], kind="axle").name
         a["2" + side] = S.node("%sa2%s" % (p, side), mirror((xa, y, zc - 0.11 * k), s), part, w=w_ax, groups=[g_ax],
                                kind="axle").name
-    a["3"] = S.node("%sa3" % p, (0.0, y, zc), part, w=w_ax, groups=[g_ax], kind="axle").name
-    a["4"] = S.node("%sa4" % p, (0.0, y, zc + 0.13 * k), part, w=w_ax, groups=[g_ax], kind="axle").name
-    a["5"] = S.node("%sa5" % p, (0.0, y + tc * 0.2, zc - 0.02), part, w=w_ax, groups=[g_ax], kind="axle").name
+    a["3"] = S.node("%sa3" % p, (x0, y, zc), part, w=w_ax, groups=[g_ax], kind="axle").name
+    a["4"] = S.node("%sa4" % p, (x0, y, zc + 0.13 * k), part, w=w_ax, groups=[g_ax], kind="axle").name
+    a["5"] = S.node("%sa5" % p, (x0, y + tc * 0.2, zc - 0.02), part, w=w_ax, groups=[g_ax], kind="axle").name
     for n in a.values():
         S.nodes[n].coll, S.nodes[n].selfcoll = True, False
     housing = list(a.values())
@@ -658,7 +665,8 @@ def build_solid(S, sh, P, ax, body_names):
         for j in range(i + 1, len(housing)):
             S.beam(housing[i], housing[j], part, "axle")
     ax.unsprung_nodes += housing
-    zt_spring = _clamp_z(sh, y, zc + 0.32 + 0.5 * ax.travel, 0.07)
+    z_want = zc + 0.32 + 0.5 * ax.travel
+    zt_spring = _clamp_z(sh, y, z_want, 0.07) if top is None else min(z_want, top(x0 + xa, y) - 0.07)
     zt_spring = max(zt_spring, zc + 0.28)
     for side, s in SIDES:
         g_hub = P.model_group("hub_" + ax.id + side.upper())
@@ -695,7 +703,8 @@ def build_solid(S, sh, P, ax, body_names):
                 S.beam(sr.name, n, part, "axle")
             S.beam(sr.name, h1.name, part, "axle")
             S.beam(sr.name, h3.name, part, "steer", sec="hydros",
-                   **_steer_opts(S, sr.name, h3.name, h1.name, h2.name, P.steerAngle, s))
+                   **_steer_opts(S, sr.name, h3.name, h1.name, h2.name, getattr(ax, "steer_angle", None) or P.steerAngle,
+                                 s * getattr(ax, "steer_sign", 1)))
         else:
             for n in (h3.name, h5.name):
                 for m in own + [h1.name, h2.name]:

@@ -278,3 +278,36 @@ def six_wheeler():
         _wheel(bp, floor, -1, y0, -1, steer=steer, drive=eng_ctl)
         _wheel(bp, floor, 8, y0, 1, steer=steer, drive=eng_ctl)
     return bp.data()
+
+
+def solid_axles(offset=0):
+    """A truck whose axles are beams sprung from the floor, a wheel on a bearing at each end.
+
+    offset moves the rear axle sideways (an axle off the centre line)."""
+    bp = Blueprint()
+    ch = bp.body()
+    floor = bp.block(ch, METAL, (0, 0, 3), (8, 18, 1), "335577")
+    bp.block(ch, WOOD, (0, 12, 4), (8, 5, 4), "dddddd")
+    seat_ctl = {"id": 1, "joints": []}
+    bp.part(ch, SEAT, (3, 13, 4), controller=seat_ctl)
+    eng_ctl = {"id": 2, "joints": []}
+    bp.part(ch, ENGINE, (2, 6, 4), controller=eng_ctl)
+    for y0, ctl_s, ctl_d, dx in ((13, seat_ctl, None, 0), (1, None, eng_ctl, offset)):
+        yb = y0 + 1
+        ab = bp.body()
+        beam = bp.block(ab, METAL, (-1 + dx, yb, 1), (10, 1, 1), "222222")
+        for x in (1, 6):
+            bp.joint(SUSP_OFFROAD, floor, beam, (x + dx, yb, 2), 2, -3)
+        # bearings on the beam's ends, wheels centred on them (z 1..2 -> wheel z 0..3)
+        for out, x_at in ((-1, -2 + dx), (1, 9 + dx)):
+            wb = bp.body()
+            if out < 0:
+                w = bp.part(wb, SMALL_WHEEL, (x_at, y0, 3), xaxis=2, zaxis=-1, color="222222")
+            else:
+                w = bp.part(wb, SMALL_WHEEL, (x_at + 1, y0, 0), xaxis=2, zaxis=1, color="222222")
+            j = bp.joint(BEARING, beam, w, (x_at, yb, 1), 2, out)
+            if ctl_s is not None:
+                ctl_s["joints"].append({"id": j, "leftAngleLimit": 30, "rightAngleLimit": 30})
+            if ctl_d is not None:
+                ctl_d["joints"].append({"id": j, "reverse": out > 0})
+    return bp.data()

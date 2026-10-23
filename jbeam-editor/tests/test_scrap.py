@@ -273,6 +273,35 @@ class ConvertTests(SMCase):
         self.assertEqual(sc["warnings"], [])
         self.assertAlmostEqual(self.wheel_centres(sc)["FL"][2], 0.75)
 
+    def test_shared_beams_become_solid_axles(self):
+        g = self.convert(F.solid_axles(1), name="solid")
+        sc = self.scene(g)
+        self.assertEqual(sc["warnings"], [])
+        m = g.P.model
+        for ax in ("F", "R"):
+            self.assertIn("Solid Axle", g.parts["%s_suspension_%s" % (m, ax)]["information"]["name"])
+        S = g.structure
+        c = self.wheel_centres(sc)
+        for ax, p in (("F", "f"), ("R", "r")):
+            mid = (c[ax + "L"][0] + c[ax + "R"][0]) / 2
+            self.assertAlmostEqual(S.pos(p + "a3")[0], mid, places=6)       # the housing's middle is between its wheels
+        self.assertNotAlmostEqual(c["RL"][0] + c["RR"][0], 0.0, places=3)    # the rear axle really is off-centre
+        self.assertEqual(chassis.degenerate_nodes(S), [])
+        # the axle beam's blocks ride on the axle
+        flex = [r for r in g.parts[m + "_suspension_R"]["flexbodies"][1:]]
+        self.assertTrue(any("carrier" in r[0] and r[1] == [m + "_axle_R"] for r in flex), flex)
+        # steering on the solid front axle still turns right for positive input
+        for r in g.parts[m + "_suspension_F"]["hydros"][1:]:
+            if not isinstance(r, list):
+                continue
+            a, b, opts = r
+            inner, arm = (a, b) if "h3" in b else (b, a)
+            p_in, p_arm = S.pos(inner), S.pos(arm)
+            grow = chassis.dist(p_in, (p_arm[0] + 0.01, p_arm[1], p_arm[2])) - chassis.dist(p_in, p_arm)
+            self.assertEqual(math.copysign(1, grow), math.copysign(1, opts["factor"]))
+        g = self.convert(F.solid_axles(), {"axles": "independent"}, name="solid_ind")
+        self.assertIn("Double Wishbone", g.parts[g.P.model + "_suspension_F"]["information"]["name"])
+
     def test_spare_wheels_stay_on_the_body(self):
         g = self.convert(F.car(spare=True)[0], name="spare")
         sc = self.scene(g)

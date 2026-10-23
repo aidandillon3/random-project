@@ -441,8 +441,10 @@ function renderSide() {
     ...row('Wheelbase', len(st.wheelbase)),
     ...row('Ground clearance', len(st.clearance)),
     ...row('Turning circle', st.turningCircle ? len(st.turningCircle) : '–'),
+    ...row('Tips over at', `${fmt(st.rollG, 2)} g sideways`),
     ...row('Gears', `${st.gears.length} + final drive ${fmt(st.finalDrive, 2)}`),
     ...row('Structure', `${st.nodes} nodes, ${st.beams} beams (${fmt(st.lattice * 100, 0)} cm grid)`)));
+  if (st.rollRisk) box.append(h('p', { class: 'note warn' }, icon('warning', 13), ` It can roll over in hard corners (it tips at ${fmt(st.rollG, 2)} g, before the tires slide): it is tall for how far apart its wheels are. In Scrap Mechanic, put the wheels further out or build it lower.`));
   for (const n of r.notes || []) box.append(h('p', { class: 'note warn' }, icon('warning', 13), ' ', n));
   const blocked = r.exists?.taken && !r.exists.scrap;
   box.append(h('div', { class: 'btnrow' },

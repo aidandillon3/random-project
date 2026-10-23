@@ -44,6 +44,8 @@ FIELDS = [
        display="percent"),
     _r("swaybar", "Anti-roll bars", "wheels", "", 0.0, 1.0, 0.01, "Less body roll in corners.", "more",
        display="percent"),
+    _c("axles", "Axles", "wheels", [["built", "As built"], ["independent", "All independent"]],
+       "As built: two wheels on one sprung beam become a solid axle, the way they move in Scrap Mechanic.", "more"),
     _c("tireType", "Tires", "wheels", specmod.TIRE_TYPES, "Grip on the road against grip in the dirt."),
     _r("pressure", "Tire pressure", "wheels", "psi", 8, 65, 0.5, "", "more"),
     _c("rimStyle", "Rim style", "wheels", specmod.RIM_STYLES, "", "more"),
@@ -85,7 +87,7 @@ def defaults(an):
         "turn": "0", "scale": 1.0,
         "steer": "built" if any(w.steered for w in an.wheels) else "front", "steerAngle": angle,
         "travel": travel, "springHz": hz, "damping": damp, "swaybar": 0.3,
-        "tireType": "allterrain" if main == "offroad" else "street",
+        "axles": "built", "tireType": "allterrain" if main == "offroad" else "street",
         "pressure": round(clamp(30 - (r - 0.35) * 30, 12, 34) * 2) / 2,
         "rimStyle": "steel", "rimColor": "#b8bcc0",
         "power": round(clamp(hp or 120, 20, 1500) / 5) * 5,
@@ -160,6 +162,8 @@ class SMAxle:
             self.corners.append(c)
             self.centers[c.side] = (abs(w.p[0]), w.p[1], w.p[2])
         self.track = 2 * max(abs(w.p[0]) for w in wheels) if n == 1 else abs(wheels[0].p[0] - wheels[1].p[0])
+        # middle of a pair (a solid axle is built about it)
+        self.x0 = (wheels[0].p[0] + wheels[1].p[0]) / 2 if n == 2 else 0.0
         dia_in = self.r * 2 / specmod.INCH
         self.rim_in = int(clamp(round(dia_in * 0.6), 10, max(10, min(26, math.floor(dia_in - 3)))))
         self.freq = st["springHz"]
@@ -229,7 +233,10 @@ class SMGenerator(vg.Generator):
         for ax in self.axle_list:
             self._wheel_nodes(ax)
         for ax in self.axle_list:
-            chassis.build_wishbone(S, None, P, ax, body, top=lat.nearest_cells_top)
+            if ax.solid:
+                chassis.build_solid(S, None, P, ax, body, top=lat.nearest_cells_top)
+            else:
+                chassis.build_wishbone(S, None, P, ax, body, top=lat.nearest_cells_top)
         self._unsprung()
         self._engine(body)
         self.engine = dict(S.engine)
@@ -388,6 +395,12 @@ class SMGenerator(vg.Generator):
                 ax.driven = ax in first
             else:
                 ax.driven = True
+        # two wheels on one sprung beam: a solid axle
+        for ax in axles:
+            if len(ax.wheels) == 2 and st["axles"] == "built":
+                a, b = ax.wheels
+                if a.suspension is not None and set(a.unsprung) & set(b.unsprung) and abs(a.p[2] - b.p[2]) < 0.05:
+                    ax.solid = True
         driven = [ax for ax in axles if ax.driven]
         self.P.drive = "AWD" if len(driven) == len(axles) and len(axles) > 1 else (
             "FWD" if all(ax in first for ax in driven) and len(axles) > 1 else "RWD")
@@ -650,6 +663,8 @@ class SMGenerator(vg.Generator):
         self.stats = {
             "mass": round(mass), "massTarget": round(P.mass), "frontShare": round(self.front_share, 3),
             "cgHeight": round(self.cg[2], 3),
+            "rollG": vg.rollover(axles, self.cg[2], P.tireType)[0],
+            "rollRisk": vg.rollover(axles, self.cg[2], P.tireType)[1],
             "powerHP": round(P.power), "powerKW": round(P.kw), "torqueNm": round(e["peak_torque"]),
             "torqueRPM": int(round(e["peak_torque_rpm"], -2)), "powerRPM": int(round(e["peak_power_rpm"], -2)),
             "hpPerTon": round(P.power / (mass / 1000.0)),
@@ -750,7 +765,9 @@ class SMGenerator(vg.Generator):
                     M = solid("%s_carrier_%s" % (m, nm), set(c.carrier_bodies))
                     if M.tri_count():
                         meshes[M.name] = M
-                        flex[ax.id].append((M.name, [P.model_group("hub_" + nm)]))
+                        # a solid axle's beam moves with the axle, a lone wheel's carrier with its hub
+                        grp = "axle_" + ax.id if ax.solid else "hub_" + nm
+                        flex[ax.id].append((M.name, [P.model_group(grp)]))
                 for M in (vmesh.rim_mesh("%s_rim_%s_%s" % (m, ax.id, c.side.upper()), self, ax, c.s),
                           vmesh.tire_mesh("%s_tire_%s_%s" % (m, ax.id, c.side.upper()), self, ax, c.s)):
                     meshes[M.name] = M
