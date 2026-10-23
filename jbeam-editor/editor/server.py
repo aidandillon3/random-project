@@ -378,12 +378,21 @@ class App:
             if os.path.exists(dae_path) and not req.get("overwrite"):
                 raise ValueError("a mesh called %s already exists; pick another name" % name)
             mat_path = os.path.join(vdir, "jbeam_editor.materials.json")
-            mat_text = daewrite.add_material(mat_path, material, req.get("color") or [0.6, 0.6, 0.6],
-                                             bool(req.get("paint")))
+            # several colours: [{"color", "paint", "indices"}], each its own material
+            groups = []
+            for k, g in enumerate(req.get("groups") or []):
+                gi = array("I")
+                gi.frombytes(base64.b64decode(g["indices"]))
+                groups.append(("%s_%d" % (material, k + 1), list(gi), g.get("color") or [0.6, 0.6, 0.6], bool(g.get("paint"))))
+            if not groups:
+                groups = [(material, list(idx), req.get("color") or [0.6, 0.6, 0.6], bool(req.get("paint")))]
+            for mname, _, color, paint in groups:
+                mat_text = daewrite.add_material(mat_path, mname, color, paint)
+                with open(mat_path, "w", encoding="utf-8") as f:
+                    f.write(mat_text)
             with open(dae_path, "w", encoding="utf-8") as f:
-                f.write(daewrite.dae_text(name, material, list(pos), list(idx), list(uvs) if uvs else None))
-            with open(mat_path, "w", encoding="utf-8") as f:
-                f.write(mat_text)
+                f.write(daewrite.dae_text(name, material, list(pos), list(idx), list(uvs) if uvs else None,
+                                          groups=[(g[0], g[1]) for g in groups]))
             for r in self.ws.roots:
                 if r is root:
                     r.refresh()
@@ -490,6 +499,48 @@ class App:
             pass
         return {"path": path, "text": text}
 
+    # -- Workshop projects (data/projects/*.json) ---------------------------------------------
+    def _project_path(self, name):
+        safe = re.sub(r"[^A-Za-z0-9 _.\-]", "_", name or "").strip(" .")
+        if not safe:
+            raise ValueError("give the project a name")
+        d = os.path.join(self.data_dir, "projects")
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, safe + ".json"), safe
+
+    def api_projects(self, req):
+        d = os.path.join(self.data_dir, "projects")
+        out = []
+        if os.path.isdir(d):
+            for fn in os.listdir(d):
+                if fn.endswith(".json"):
+                    full = os.path.join(d, fn)
+                    out.append({"name": fn[:-5], "modified": os.path.getmtime(full), "size": os.path.getsize(full)})
+        out.sort(key=lambda x: -x["modified"])
+        return {"projects": out}
+
+    def api_project_save(self, req):
+        path, name = self._project_path(req.get("name"))
+        data = req.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("nothing to save")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+        return {"name": name, "path": path}
+
+    def api_project_load(self, req):
+        path, name = self._project_path(req.get("name"))
+        with open(path, encoding="utf-8") as f:
+            return {"name": name, "data": json.load(f)}
+
+    def api_project_delete(self, req):
+        path, name = self._project_path(req.get("name"))
+        if os.path.exists(path):
+            os.remove(path)
+        return {"name": name}
+
     def api_reveal(self, req):
         path = req.get("path") or ""
         if not os.path.exists(path):
@@ -531,6 +582,8 @@ ROUTES = {
     "/api/import_mesh": "api_import_mesh", "/api/export": "api_export", "/api/unpack": "api_unpack",
     "/api/reveal": "api_reveal", "/api/new_part": "api_new_part", "/api/new_mod": "api_new_mod",
     "/api/garage_save": "api_garage_save",
+    "/api/projects": "api_projects", "/api/project_save": "api_project_save", "/api/project_load": "api_project_load",
+    "/api/project_delete": "api_project_delete",
     "/api/shortcut": "api_shortcut", "/api/install_native": "api_install_native", "/api/log": "api_log",
 }
 

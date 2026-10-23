@@ -56,7 +56,7 @@ function local(e) {
 
 function onDown(e) {
   if (e.button !== 0 || e.altKey || !S.scene) return;
-  if (S.lookMode && S.mode !== 'model') return;   // the look-only modes don't select
+  if (S.lookMode) return;   // the look-only modes don't select nodes (the Workshop picks its own things)
   if (V.gizmo.axis) return;   // the gizmo handles this drag
   const [x, y] = local(e);
   down = { x, y, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, moved: false };

@@ -155,9 +155,10 @@ export function partData({ name, title, slotType, mesh, fit, attach, mass, stiff
 
 // write the mesh and the part, put it on the vehicle; returns a summary
 export async function createPart({ pos, idx, uv = null, name, title, slot, rootId, fit, attach, mass, stiffness, collision,
-  breakable, color = [0.6, 0.6, 0.6], paint = false }) {
+  breakable, color = [0.6, 0.6, 0.6], paint = false, groups = null }) {
   const mr = await api.importMesh({ model: S.model, root: rootId, name, positions: b64(pos), indices: b64(idx),
-    uvs: uv ? b64(uv) : null, color, paint });
+    uvs: uv ? b64(uv) : null, color, paint,
+    groups: groups ? groups.map(g => ({ indices: b64(g.indices), color: g.color, paint: !!g.paint })) : null });
   const slotType = slot.allowTypes?.[0] || slot.id;
   const { data, total, needed } = partData({ name, title, slotType, mesh: mr.mesh, fit, attach, mass, stiffness, collision, breakable });
   const r = await api.newPart({ model: S.model, root: rootId, name, mode: 'data', data, title: data.information.name, slotType });
@@ -171,7 +172,7 @@ export async function createPart({ pos, idx, uv = null, name, title, slot, rootI
 }
 
 // put the mesh on an existing part instead (it bends with that part's nodes)
-export async function meshOnPart({ pos, idx, uv = null, name, part, color, paint }) {
+export async function meshOnPart({ pos, idx, uv = null, name, part, color, paint, groups: colourGroups = null }) {
   const sc = S.scene;
   const groups = {};
   for (const n of sc.nodes) if (!n.del && n.part === part) for (const g of n.grp) groups[g] = (groups[g] || 0) + 1;
@@ -179,7 +180,8 @@ export async function meshOnPart({ pos, idx, uv = null, name, part, color, paint
   if (!grp) throw new Error('The nodes of that part have no group, so a mesh can\'t follow them. Select its nodes and set a Group first.');
   const proot = sc.files[sc.parts[part].f];
   const rootId = S.summary.editableRoots.find(r => r.label === proot.root)?.id;
-  const mr = await api.importMesh({ model: S.model, root: rootId, name, positions: b64(pos), indices: b64(idx), uvs: uv ? b64(uv) : null, color, paint });
+  const mr = await api.importMesh({ model: S.model, root: rootId, name, positions: b64(pos), indices: b64(idx), uvs: uv ? b64(uv) : null, color, paint,
+    groups: colourGroups ? colourGroups.map(g => ({ indices: b64(g.indices), color: g.color, paint: !!g.paint })) : null });
   const ok = await A.saveOps([{ op: 'row.add', f: partFileKey(part), part, sec: 'flexbodies', row: [mr.mesh, [grp], []] }], 'Add mesh ' + mr.mesh);
   if (ok !== true) throw new Error(ok || 'could not add the mesh');
   return grp;

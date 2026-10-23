@@ -229,9 +229,10 @@ function setMode(mode, { quiet = false } = {}) {
 // what the 3D view shows: solid model in the "look" modes, the skeleton in Structure
 const DISPLAY_DEFAULTS = {
   look: { mesh: true, nodes: false, beams: false, tris: false, wheels: false, opacity: 1, ground: true },
+  model: { mesh: true, nodes: false, beams: false, tris: false, wheels: false, opacity: 0.4, ground: true },
   structure: { mesh: true, nodes: true, beams: true, tris: true, wheels: true, opacity: 0.35, ground: true },
 };
-function displayKey() { return S.mode === 'structure' ? 'structure' : 'look'; }
+function displayKey() { return S.mode === 'structure' ? 'structure' : S.mode === 'model' ? 'model' : 'look'; }
 function displayPrefs() {
   const k = displayKey();
   let saved = null;

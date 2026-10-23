@@ -139,6 +139,31 @@ scenario('import-model', async (page, ctx) => {
   if (n < 8) throw new Error('only ' + n + ' nodes; ' + stats);
 });
 
+scenario('workshop', async page => {
+  await page.click('#modeTabs [data-mode=model]');
+  await page.waitForSelector('#modelPane .toolgrid button');
+  await page.click('#modelPane .toolgrid button:first-child');          // a box
+  await page.evaluate(() => {
+    const { W, setMode, OPS } = window.jbeWorkshop;
+    setMode('face');
+    const o = W.objects[0];
+    const top = o.mesh.f.findIndex(f => f.every(i => o.mesh.v[i][2] > o.shape.center[2] + 0.01));
+    W.sel = new Set([top]);
+    OPS.extrude();
+  });
+  const faces = await page.evaluate(() => window.jbeWorkshop.W.objects[0].mesh.f.length);
+  if (faces !== 10) throw new Error('faces after extrude: ' + faces);
+  await page.screenshot({ path: path.join(OUT, 'workshop-edit.png') });
+  await page.evaluate(() => { window.jbeWorkshop.setMode('object'); window.jbeWorkshop.W.selObjs.clear(); });
+  await page.click('#modelPane button.primary');
+  await page.waitForSelector('#modelPane .seg');
+  await page.waitForFunction(() => window.jbe.V.groups.preview.children.length > 0, null, { timeout: 10000 });
+  await page.screenshot({ path: path.join(OUT, 'workshop-make.png') });
+  await page.fill('#modelPane input[type=text]', 'test_box_part');
+  await page.click('#modelPane .btnrow button.primary');
+  await page.waitForFunction(() => window.jbe.S.scene.parts.test_box_part, null, { timeout: 20000 });
+});
+
 // --------------------------------------------------------------------------------------------
 (async () => {
   const install = fs.mkdtempSync(path.join(os.tmpdir(), 'jbe-ui-install-'));
@@ -148,7 +173,11 @@ scenario('import-model', async (page, ctx) => {
   const browser = await chromium.launch({ executablePath: fs.existsSync('/opt/pw-browsers/chromium') ? undefined : undefined });
   const page = await browser.newPage({ viewport: { width: 1500, height: 900 } });
   const errors = [];
-  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('console', m => {
+    if (m.type() === 'error') errors.push(m.text());
+    if (process.env.UI_DEBUG && m.type() !== 'warning') console.log('   [' + m.type() + '] ' + m.text());
+    if (m.type() === 'warning' && /not loaded/.test(m.text())) errors.push(m.text());
+  });
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
   await page.goto(srv.url);
   let failed = false;

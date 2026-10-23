@@ -12,7 +12,7 @@ import { $, h, fmt, toast, debounce, setLoading } from './util.js';
 const DETAILS = [['coarse', 'Coarse'], ['medium', 'Medium'], ['fine', 'Fine']];
 
 // container: element to fill. getMesh() -> { pos, idx, uv } in vehicle coordinates (or null)
-export function partForm({ container, baseName, title, getMesh, onDone, onCancel, mass = 25, kind = 'smart' }) {
+export function partForm({ container, baseName, title, getMesh, onDone, onCancel, mass = 25, kind = 'smart', colours = true }) {
   const st = {
     kind, detail: 'medium', stiffness: 'panel', mass, collision: true, breakable: true,
     attach: S.sel.nodes.size ? 'sel' : 'near', fit: null, at: null,
@@ -22,6 +22,12 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
   const titleIn = h('input', { type: 'text', value: title });
   for (const i of [nameIn, titleIn]) i.addEventListener('keydown', e => e.stopPropagation());
   const slotSel = slotSelect(null, { preferEmpty: true });
+  const slotWarn = h('div', { class: 'note warn' });
+  const checkSlot = () => {
+    const sl = slotSel.getSlot();
+    slotWarn.textContent = sl?.chosen ? `This slot has ${S.scene.partTitles[sl.chosen] || sl.chosen} in it now: your part takes its place. Pick an empty slot to add it instead.` : '';
+  };
+  slotSel.addEventListener('change', checkSlot);
   const root = rootPicker();
   const colour = h('input', { type: 'color', value: '#9aa0a8' });
   const paint = h('input', { type: 'checkbox' });
@@ -64,7 +70,7 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
       h('span', { class: 'k' }, 'Collision'), h('label', { class: 'chk' }, collision, 'Other things bump into it'),
       h('span', { class: 'k' }, 'Mounted'), attachSel,
       h('span', { class: 'k' }, ''), h('label', { class: 'chk' }, breakable, 'Can break off in a crash'),
-      h('span', { class: 'k' }, 'Slot'), slotSel,
+      h('span', { class: 'k' }, 'Slot'), h('span', {}, slotSel, slotWarn),
       h('span', { class: 'k' }, 'Name in parts menu'), titleIn,
       h('span', { class: 'k' }, 'Save into mod'), root),
     stats);
@@ -116,7 +122,7 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
       await A.save({ quiet: true });
       if (st.kind === 'mesh') {
         if (!activeOk) throw new Error('Pick a part you can edit first (Structure > Part you\'re editing).');
-        const grp = await meshOnPart({ pos: m.pos, idx: m.idx, uv: m.uv, name, part: S.activePart, color: rgb, paint: paint.checked });
+        const grp = await meshOnPart({ pos: m.pos, idx: m.idx, uv: m.uv, name, part: S.activePart, color: rgb, paint: paint.checked, groups: m.groups });
         showStructure(null);
         onDone?.();
         toast(`Added the mesh to ${S.activePart}. It bends with the "${grp}" nodes.`, 'ok', 7000);
@@ -128,7 +134,7 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
       const rootId = await root.getRoot();
       const r = await createPart({ pos: m.pos, idx: m.idx, uv: m.uv, name, title: titleIn.value.trim() || name, slot, rootId,
         fit: st.fit, attach: st.at.beams, mass: st.mass, stiffness: st.stiffness, collision: st.collision, breakable: st.breakable,
-        color: rgb, paint: paint.checked });
+        color: rgb, paint: paint.checked, groups: m.groups });
       showStructure(null);
       onDone?.();
       toast(`Made part ${name}: ${r.nodes} nodes, ${r.beams} beams, ${r.tris} triangles, ${fmt(r.mass, 1)} kg.` +
@@ -142,14 +148,15 @@ export function partForm({ container, baseName, title, getMesh, onDone, onCancel
     h('h3', { class: 'sect' }, 'Make it a part'),
     h('div', { class: 'form', style: { gridTemplateColumns: '120px 1fr' } },
       h('span', { class: 'k' }, 'Part id'), nameIn,
-      h('span', { class: 'k' }, 'Colour'), h('span', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, colour,
-        h('label', { class: 'chk' }, paint, 'Vehicle paint'))),
+      colours ? h('span', { class: 'k' }, 'Colour') : null, colours ? h('span', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, colour,
+        h('label', { class: 'chk' }, paint, 'Vehicle paint')) : null),
     h('p', { class: 'note' }, 'Structure: the nodes and beams the game simulates. Fitted to the shape follows the model, so it collides and crumples where it really is.'),
     kindSeg, structBox, meshBox, err,
     h('div', { class: 'btnrow' },
       onCancel ? h('button', { onclick: () => { showStructure(null); onCancel(); } }, 'Cancel') : null,
       h('button', { class: 'primary', onclick: go }, icon('check', 15), 'Make part')));
   showFor();
+  checkSlot();
   compute();
   return { update, refresh: compute, clear: () => showStructure(null) };
 }

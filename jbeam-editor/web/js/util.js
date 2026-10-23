@@ -135,3 +135,22 @@ export function shortPath(p) {
   const i = parts.lastIndexOf('mods');
   return (i >= 0 ? parts.slice(i) : parts.slice(-3)).join('\\');
 }
+
+// ask for a line of text in a small dialog; resolves to the text or null
+export function askText(title, label, value = '', okLabel = 'OK') {
+  return new Promise(resolve => {
+    let done = false;
+    const input = h('input', { type: 'text', value, style: { width: '100%' } });
+    const finish = v => { if (!done) { done = true; resolve(v); closeModal(); } };
+    input.addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'Enter') finish(input.value.trim() || null);
+      if (e.key === 'Escape') finish(null);
+    });
+    openModal(title, h('div', {}, h('p', { class: 'note' }, label), input,
+      h('div', { class: 'actions' }, h('button', { onclick: () => finish(null) }, 'Cancel'),
+        h('button', { class: 'primary', onclick: () => finish(input.value.trim() || null) }, okLabel))),
+    { onClose: () => { if (!done) { done = true; resolve(null); } } });
+    setTimeout(() => { input.focus(); input.select(); }, 30);
+  });
+}
