@@ -77,6 +77,14 @@ class GeneratorTests(unittest.TestCase):
                 bad = chassis.stability_report(g.structure, g.structure and _wheels(g))
                 self.assertEqual(bad, [])
 
+    def test_no_node_free_to_swing(self):
+        for spec in [{"style": s} for s in STYLES] + [
+                {"style": "pickup", "wheelbase": 3.8, "tireDiaF": 35, "tireDiaR": 35},
+                {"style": "roadster", "suspF": "solid", "suspR": "solid"}]:
+            with self.subTest(spec=spec):
+                g = vehiclegen.generate(spec)
+                self.assertEqual(chassis.degenerate_nodes(g.structure), [])
+
     def test_random_designs(self):
         rnd = random.Random(7)
         for i in range(40):
@@ -95,6 +103,7 @@ class GeneratorTests(unittest.TestCase):
                 self.assertEqual(sc["warnings"], [])
                 self.assertEqual(len(sc["wheels"]), 4)
                 self.assertEqual(chassis.stability_report(g.structure, _wheels(g)), [])
+                self.assertEqual(chassis.degenerate_nodes(g.structure), [])
 
     def test_wheel_axle_nodes_follow_the_game(self):
         # node1 is the outer axle node ("rr"/"ll"); wheelDir 1 on the right, -1 on the left

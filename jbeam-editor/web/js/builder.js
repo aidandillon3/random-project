@@ -8,6 +8,7 @@ import { V, buildMeshes, frame, rebuild, setMeshes, setPalette } from './view3d.
 import { reindex } from './scene.js';
 import { hideHome } from './home.js';
 import { curveChart, section, slider } from './widgets.js';
+import { closePanel as closeDropTest, runDropTest } from './droptest.js';
 import { $, h, fmt, toast, debounce, openModal, closeModal, setLoading, shortPath, confirmBox } from './util.js';
 
 const B = {
@@ -144,6 +145,7 @@ function b64(s, Type) {
 }
 
 function apply(r) {
+  closeDropTest();
   setPalette(r.materials);
   const meshes = {};
   for (const [k, m] of Object.entries(r.meshes)) meshes[k] = { pos: b64(m.pos, Float32Array), idx: b64(m.idx, Uint32Array), groups: m.groups };
@@ -162,6 +164,7 @@ function apply(r) {
   B.result = r;
   B.spec = { ...B.spec, model: r.model };
   const st = r.stats;
+  A.updateStatus();   // the problems chip
   $('#statusLeft').textContent = `Vehicle Builder · ${r.spec.name} · ${st.nodes} nodes · ${st.beams} beams · ${st.triangles} triangles · ${fmt(st.mass, 0)} kg`;
   $('#statusRight').textContent = B.source ? `Editing ${B.source}` : 'Not created yet';
   renderSide();
@@ -360,6 +363,7 @@ function renderSide() {
   box.append(h('div', { class: 'btnrow' },
     h('button', { class: 'primary big', disabled: !r || blocked, onclick: createDialog }, icon('build', 16),
       r?.exists?.builder ? 'Update vehicle…' : 'Create vehicle…'),
+    h('button', { disabled: !r, onclick: () => runDropTest(), title: 'Drop it onto the ground in a quick physics test' }, icon('physics', 15), 'Drop test'),
     h('button', { onclick: startOver, title: 'Go back to this body style\'s starting point' }, 'Start over')),
   h('p', { class: 'note' }, 'Creating writes a mod into your BeamNG mods folder. Spawn it from the game\'s vehicle selector like any car; it also opens here for the Garage, parts, tuning and 3D tools.'));
 }

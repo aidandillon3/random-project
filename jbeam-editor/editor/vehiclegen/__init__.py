@@ -81,6 +81,9 @@ class Generator:
         chassis.build_engine(S, sh, P, self.axles, low_body)
         self.engine = dict(S.engine)
         self._exhaust(low_body)
+        # nothing may be left free to swing out of a plane
+        rest = [n for n in S.order if S.nodes[n].part != "body"]
+        chassis.brace_degenerate(S, rest, low_body, kind="mount")
         self._mass()
         self._springs()
         self._brakes()

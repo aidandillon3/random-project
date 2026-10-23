@@ -148,6 +148,85 @@ class Structure:
         return chosen
 
 
+def _neighbours(S):
+    nbr = {}
+    for b in S.beams:
+        if b.sec not in ("beams", "hydros") or b.kind.startswith("calc_") or b.kind == "anti_inv":
+            continue
+        nbr.setdefault(b.a, set()).add(b.b)
+        nbr.setdefault(b.b, set()).add(b.a)
+    return nbr
+
+
+def degenerate_nodes(S, names=None, limit=0.06):
+    """Nodes whose beams all lie in (nearly) one plane or line: they can swing freely out of it."""
+    nbr = _neighbours(S)
+    out = []
+    for nm in (names if names is not None else S.order):
+        if S.nodes[nm].part.startswith("wheel_"):
+            continue   # the game's wheel hub holds these
+        pts = [S.nodes[x].p for x in nbr.get(nm, ()) if x in S.nodes]
+        if len(pts) < 3 or _spread(S.nodes[nm].p, pts) < limit:
+            out.append(nm)
+    return out
+
+
+def brace_degenerate(S, names, candidates, part_of=None, kind="b_cross", limit=0.08):
+    """Tie each node that is held flat to nodes in the direction it can move freely."""
+    nbr = _neighbours(S)
+    for nm in degenerate_nodes(S, names, limit):
+        p = S.nodes[nm].p
+        part = part_of(nm) if part_of else S.nodes[nm].part
+        for _ in range(3):
+            pts = [S.nodes[x].p for x in nbr.get(nm, ()) if x in S.nodes]
+            if len(pts) >= 3 and _spread(p, pts) >= limit:
+                break
+            weak = _weak_dir(p, pts)
+            best = None
+            for x in candidates:
+                if x == nm or x in nbr.get(nm, ()):
+                    continue
+                d = v_sub(S.nodes[x].p, p)
+                ln = v_len(d)
+                if ln < 0.08 or ln > 1.6:
+                    continue
+                score = abs(v_dot(d, weak)) / ln - 0.15 * ln
+                if best is None or score > best[0]:
+                    best = (score, x)
+            if best is None:
+                break
+            S.beam(nm, best[1], part, kind)
+            nbr.setdefault(nm, set()).add(best[1])
+            nbr.setdefault(best[1], set()).add(nm)
+
+
+def _weak_dir(p, pts):
+    """The direction a node held by beams to pts resists least (unit vector)."""
+    m = [[0.0] * 3 for _ in range(3)]
+    for q in pts:
+        d = v_norm(v_sub(q, p))
+        for i in range(3):
+            for j in range(3):
+                m[i][j] += d[i] * d[j]
+    lam = _min_eig(m)
+    a = [[m[i][j] - (lam if i == j else 0.0) for j in range(3)] for i in range(3)]
+    best = (0.0, (0.0, 0.0, 1.0))
+    for i in range(3):
+        for j in range(i + 1, 3):
+            c = v_cross(tuple(a[i]), tuple(a[j]))
+            ln = v_len(c)
+            if ln > best[0]:
+                best = (ln, c)
+    if best[0] < 1e-9:
+        # one direction only (a line): anything across it is weak; pick the most vertical one
+        line = v_norm(v_sub(pts[0], p)) if pts else (1.0, 0.0, 0.0)
+        c = v_cross(line, (1.0, 0.0, 0.0))
+        if v_len(c) < 1e-6:
+            c = v_cross(line, (0.0, 1.0, 0.0))
+        return v_norm(c)
+    return v_norm(best[1])
+
+
 def _spread(p, pts):
     """Smallest eigenvalue of sum(d d^T) of unit directions: > 0 when they span 3D."""
     m = [[0.0] * 3 for _ in range(3)]
@@ -374,6 +453,9 @@ def build_body(S, sh, P, part="body"):
                 S.tri(a, c, b, part, "body")
             if k + 1 < len(order) - 1:
                 S.beam(order[0], order[k + 1], part, "b_cross")
+    # a node held only in its own ring's plane (an end ring next to an open bed) gets braced lengthwise
+    body = [n for n in S.order if S.nodes[n].part == part]
+    brace_degenerate(S, body, body)
     S.body_rings = rings
     return rings
 

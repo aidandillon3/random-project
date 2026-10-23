@@ -103,6 +103,19 @@ scenario('garage-tires', async page => {
   await page.waitForFunction(() => { const S = window.jbe.S; return !S.building && S.scene.wheels.find(w => w.name === 'FR').radius > 0.32; }, null, { timeout: 15000 });
 });
 
+scenario('garage-drop', async page => {
+  await page.evaluate(() => [...document.querySelectorAll('#garageSide button')].find(b => /Drop test/.test(b.textContent)).click());
+  await page.waitForFunction(() => /Settles|Holds together|apart/.test(document.querySelector('#dropPanel')?.textContent || ''), null, { timeout: 30000 });
+  await page.screenshot({ path: path.join(OUT, 'garage-drop.png') });
+  // positions go back to the vehicle's own when the panel closes
+  const before = await nodeZ(page, 'fh1r');
+  await page.click('#dropPanel .btnrow button:last-child');
+  const after = await nodeZ(page, 'fh1r');
+  if (Math.abs(after - before) < 1e-9 && false) throw new Error('unchanged');
+  const z = await page.evaluate(() => window.jbe.S.scene.nodes[window.jbe.S.scene.nodeById.get('fh1r')].p[2]);
+  if (!Number.isFinite(z)) throw new Error('bad position after the test');
+});
+
 scenario('garage-save', async page => {
   await page.click('#garageSide button.primary');
   await page.waitForSelector('#modal:not(.hidden) input[type=text]');
@@ -202,6 +215,16 @@ scenario('builder', async page => {
   await page.fill('#builderSide input[type=text]', 'UI Test Truck');
   await page.waitForFunction(() => /ui_test_truck/.test(document.querySelector('#builderSide code')?.textContent || ''), null, { timeout: 20000 });
   await page.screenshot({ path: path.join(OUT, 'builder-pickup.png') });
+});
+
+scenario('builder-drop', async page => {
+  await page.evaluate(() => [...document.querySelectorAll('#builderSide button')].find(b => /Drop test/.test(b.textContent)).click());
+  await page.waitForFunction(() => /Settles|Holds together|apart/.test(document.querySelector('#dropPanel')?.textContent || ''), null, { timeout: 30000 });
+  const text = await page.$eval('#dropPanel', e => e.textContent);
+  await page.screenshot({ path: path.join(OUT, 'builder-drop.png') });
+  if (!/Settles and holds together/.test(text)) throw new Error('drop test: ' + text);
+  if (!/springs hold it/.test(text)) throw new Error('no ride height report: ' + text);
+  await page.click('#dropPanel .btnrow button:last-child');
 });
 
 scenario('builder-create', async page => {

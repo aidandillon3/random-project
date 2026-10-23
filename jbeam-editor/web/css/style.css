@@ -370,3 +370,19 @@ body.importing .not-importing { display: none !important; }
 .seg.wrap { flex-wrap: wrap; }
 #builderSide h4 { margin: 14px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 #builderSide .stat .d { font-size: 11.5px; }
+
+/* ---- drop test ---- */
+.floatcard { position: absolute; right: 64px; bottom: 14px; width: min(380px, calc(100% - 90px)); background: #11151ccc;
+  backdrop-filter: blur(8px); border: 1px solid var(--line2); border-radius: 12px; padding: 10px 12px; z-index: 5;
+  box-shadow: 0 10px 30px #0008; font-size: 12.5px; }
+.floatcard.hidden { display: none; }
+.floatcard .head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.floatcard .head b { flex: 1; }
+.floatcard p { margin: 6px 0; }
+.floatcard .good { color: #6fd39a; display: flex; gap: 6px; align-items: center; font-weight: 600; }
+.floatcard .warn { color: #f0c35a; }
+.floatcard p.warn { display: flex; gap: 6px; align-items: center; font-weight: 600; }
+.floatcard .bad { color: #ef6b6b; display: flex; gap: 6px; align-items: center; font-weight: 600; }
+.floatcard .row { display: grid; grid-template-columns: 48px 1fr; gap: 6px; margin: 4px 0; }
+.progress { height: 6px; background: #0f1217; border-radius: 4px; overflow: hidden; margin: 8px 0 4px; }
+.progress .bar { height: 100%; width: 0; background: var(--accent); transition: width .1s; }

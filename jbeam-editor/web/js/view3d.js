@@ -239,7 +239,7 @@ function buildTris() {
   V.triMesh = front;
 }
 
-function buildWheels() {
+export function buildWheels() {
   clearGroup(V.groups.wheels);
   const sc = S.scene;
   const mat = new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.9, transparent: true, opacity: 0.55, depthWrite: false });
@@ -387,6 +387,7 @@ export function buildMeshes() {
     mesh.userData.sharedGeometry = true;
     mesh.userData.sharedMaterial = true;
     mesh.userData.part = fb.part;
+    mesh.userData.fb = fb;
     const inner = new THREE.Matrix4();
     const pos = fb.pos ? new THREE.Vector3(...fb.pos) : new THREE.Vector3();
     const rot = fb.rot ? new THREE.Quaternion(...quatFromEuler(-fb.rot[0] * Math.PI / 180, -fb.rot[1] * Math.PI / 180, -fb.rot[2] * Math.PI / 180)) : new THREE.Quaternion();

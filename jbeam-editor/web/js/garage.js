@@ -8,6 +8,7 @@ import { vehicleDims, statTile } from './panels.js';
 import { rootPicker } from './dialogs.js';
 import { $, h, fmt, toast, debounce, openModal, closeModal, setLoading, num, shortPath } from './util.js';
 import { curveChart, section, slider } from './widgets.js';
+import { runDropTest } from './droptest.js';
 
 const G = {
   spec: {},          // what the person changed (sent with every build)
@@ -475,7 +476,8 @@ export function renderSide() {
     ...G.notes.map(n => h('p', { class: 'note warn' }, icon('warning', 13), ' ', n)),
     h('div', { class: 'btnrow' },
       h('button', { class: 'primary big', disabled: !S.garageDirty && !G.changes.length && !G.spec.paints, onclick: saveDialog }, icon('save', 16), 'Save my version…'),
-      h('button', { disabled: !S.garageDirty, onclick: resetAll, title: 'Undo all Garage changes since the last save' }, 'Reset')),
+      h('button', { disabled: !S.garageDirty, onclick: resetAll, title: 'Undo all Garage changes since the last save' }, 'Reset'),
+      h('button', { onclick: () => runDropTest(), title: 'Drop it onto the ground in a quick physics test: does it sit right?' }, icon('physics', 15), 'Drop test')),
     h('p', { class: 'note' }, 'Saving makes a new config of this vehicle in a mod of yours. In the game, pick it in the vehicle selector or press Ctrl+R if it is already spawned.'));
 }
 

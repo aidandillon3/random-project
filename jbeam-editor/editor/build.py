@@ -898,6 +898,7 @@ class Builder:
                     "width": _num(row.get("tireWidth"), None) or _num(row.get("hubWidth"), None),
                     "hubWidth": _num(row.get("hubWidth"), None), "pressurePSI": _num(row.get("pressurePSI"), None),
                     "numRays": _num(row.get("numRays"), None),
+                    "mass": _wheel_mass(row),
                     "part": pname, "f": f, "row": ri,
                     "o": oset(_opts(row)),
                 })
@@ -961,6 +962,17 @@ class Builder:
             "warnings": self.warnings,
             "sections": sorted(tables.keys()),
         }
+
+
+def _wheel_mass(row):
+    """Mass of the nodes the game makes for a pressure wheel (hub rings and tire rings)."""
+    rays = _num(row.get("numRays"), None)
+    if not rays:
+        return None
+    hub = _num(row.get("hubNodeWeight"), 0.0) or 0.0
+    tire = _num(row.get("nodeWeight"), 0.0) or 0.0
+    has_tire = row.get("hasTire") is not False
+    return round(2 * rays * (hub + (tire if has_tire else 0.0)), 3)
 
 
 def _table_pairs(t):

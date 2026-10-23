@@ -13,6 +13,7 @@ import { checkDialog, exportDialog, helpDialog, saveConfigDialog, settingsDialog
 import { clearImport, importActive, initImporter, showImportPrompt, startImport } from './importer.js';
 import { hideHome, homeOpen, initHome, remember, renderGallery, showHome } from './home.js';
 import { hydrateIcons, icon } from './icons.js';
+import { closePanel as closeDropTest, runDropTest } from './droptest.js';
 import { $, $$, closeModal, h, modalOpen, openModal, popupMenu, setLoading, toast, fmt, debounce } from './util.js';
 
 const store = {
@@ -116,6 +117,7 @@ async function buildScene({ configName, fresh = false, quiet = false } = {}) {
 }
 
 function setScene(sc, { fresh = false } = {}) {
+  closeDropTest();
   const old = S.scene;
   const keep = old && !fresh ? [...S.sel.nodes].map(i => old.nodes[i]?.id).filter(Boolean) : [];
   S.scene = sc;
@@ -465,6 +467,7 @@ function moreMenu(anchor) {
     ['Save as a config…', () => S.scene && saveConfigDialog()],
     ['Import a 3D model…', () => S.scene && startImport()],
     null,
+    ['Drop test (does it sit right?)', () => S.scene && runDropTest()],
     ['Check my mod for mistakes', () => S.model && checkDialog()],
     ['Export my mod as a zip…', () => S.model && exportDialog()],
     null,
