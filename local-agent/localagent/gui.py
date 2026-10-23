@@ -63,13 +63,13 @@ QMainWindow, QWidget#page {{ background: {BG}; color: {TEXT}; }}
 QLabel, QCheckBox, QRadioButton {{ color: {TEXT}; }}
 QLabel[muted="true"] {{ color: {MUTED}; }}
 QLabel#h1 {{ font-size: 16pt; font-weight: 600; }}
-QLabel#greeting {{ font-family: {SERIF}; font-size: 24pt; color: {TEXT}; }}
+QLabel#greeting {{ font-family: {SANS}; font-size: 24pt; color: {TEXT}; }}
 QLabel#chatTitle {{ color: {TEXT}; font-size: 10.5pt; }}
 QListWidget {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 8px; color: {TEXT}; }}
 QListWidget::item {{ padding: 5px 6px; }}
 QListWidget::item:selected {{ background: {RAISED}; color: white; }}
 QFrame#sidebar {{ background: {SIDEBAR}; border-right: 1px solid #2b2a28; }}
-QLabel#brand {{ font-family: {SERIF}; font-size: 14pt; color: {TEXT}; }}
+QLabel#brand {{ font-family: {SANS}; font-size: 14pt; color: {TEXT}; }}
 QLabel#section {{ color: {FAINT}; font-size: 9pt; padding: 8px 10px 2px 10px; }}
 QListWidget#nav, QListWidget#chats {{ background: transparent; border: none; color: {TEXT}; outline: none; }}
 QListWidget#nav::item, QListWidget#chats::item {{ padding: 6px 10px; border-radius: 8px; margin: 1px 6px; }}
@@ -82,7 +82,7 @@ QLineEdit#search {{ background: transparent; border: 1px solid #34332f; border-r
     margin: 0 6px; }}
 QFrame#user {{ background: {USER_BG}; border-radius: 14px; }}
 QFrame#assistant {{ background: transparent; }}
-QLabel#answer {{ font-family: {SERIF}; }}
+QLabel#answer {{ font-family: {SANS}; }}
 QFrame#tool {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 10px; }}
 QFrame#side {{ background: {SIDEBAR}; border-left: 1px solid #2b2a28; }}
 QFrame#composer {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 18px; }}
@@ -2447,8 +2447,8 @@ class SettingsPage(QWidget):
                                 "or Ctrl + mouse wheel")
         f.addRow("Chat text size:", self.text_pt)
         self.answer_font = QComboBox()
-        self.answer_font.addItem("Serif, as in the Claude app", "serif")
-        self.answer_font.addItem("Sans serif", "sans")
+        self.answer_font.addItem("Sans serif (Segoe UI)", "sans")
+        self.answer_font.addItem("Serif (Georgia)", "serif")
         self.answer_font.setCurrentIndex(max(0, self.answer_font.findData(s.answer_font)))
         f.addRow("Answers in:", self.answer_font)
         self.text_pt.valueChanged.connect(self._look_changed)

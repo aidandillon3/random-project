@@ -81,7 +81,7 @@ class Settings:
     # the window
     chat_text_pt: int = 11             # size of the chat's text (Ctrl + / Ctrl - / Ctrl 0 in the chat)
     sidebar_open: bool = True          # the chat list on the left (Ctrl+B)
-    answer_font: str = "serif"         # serif (as in the Claude app) | sans
+    answer_font: str = "sans"          # sans | serif
 
     # model server launcher
     engine: str = "auto"               # auto (the mode's recommended one) | llama.cpp | strata (catalog.py)
@@ -101,7 +101,7 @@ class Settings:
     use_vision: bool = True
 
     extra: dict = field(default_factory=dict)
-    settings_version: int = 3          # bumped when an old saved default needs moving on load
+    settings_version: int = 4          # bumped when an old saved default needs moving on load
 
     # ---------------------------------------------------------------
     def workspace_path(self) -> Path:
@@ -129,6 +129,9 @@ class Settings:
             s.max_tokens = 32768      # the old default cut long thinking short
         if version < 3 and raw.get("keep_images") == 3:
             s.keep_images = 2         # the old default; fewer images, cleared less often, is faster
+        if version < 4 and raw.get("answer_font") == "serif":
+            s.answer_font = "sans"    # the old default; serif looked odd on Windows
+        s.settings_version = cls.settings_version   # saved as moved on, so a choice made later sticks
         return s
 
     def save(self, path: Path | None = None) -> None:
