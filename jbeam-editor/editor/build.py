@@ -933,7 +933,7 @@ class Builder:
         parts = {}
         for path, p in self.active:
             parts[p.name] = {"title": p.title, "f": fidx(p.file.key), "slotType": p.slot_type, "path": path,
-                             "common": p.in_common}
+                             "common": p.in_common, "virtual": bool(getattr(p, "virtual", False))}
 
         variables = []
         for name, v in all_vars.items():
@@ -953,6 +953,7 @@ class Builder:
         return {
             "model": m.name,
             "mainPart": main_name,
+            "engine": _engine_summary(vehicle),
             "files": files,
             "nodes": nodes, "beams": beams, "tris": tris, "wheels": wheels, "flexbodies": flex,
             "xforms": xforms, "refNodes": ref, "optsets": optsets,
@@ -960,6 +961,35 @@ class Builder:
             "warnings": self.warnings,
             "sections": sorted(tables.keys()),
         }
+
+
+def _table_pairs(t):
+    """[[x, y], ...] of a two-column table like [["rpm", "torque"], [0, 0], ...]."""
+    out = []
+    if isinstance(t, list):
+        for r in t[1:]:
+            if isinstance(r, list) and len(r) >= 2:
+                x, y = _num(r[0]), _num(r[1])
+                if x is not None and y is not None:
+                    out.append([x, y])
+    return out
+
+
+def _engine_summary(vehicle):
+    """The main engine's torque curve and limits, after all parts were merged."""
+    e = vehicle.get("mainEngine")
+    if not isinstance(e, dict):
+        return None
+    out = {"torque": _table_pairs(e.get("torque"))}
+    for k in ("torqueModMult", "torqueModIntake", "torqueModExhaust"):
+        if isinstance(e.get(k), list):
+            out[k] = _table_pairs(e.get(k))
+    for k in ("idleRPM", "maxRPM", "revLimiterRPM", "inertia"):
+        v = _num(e.get(k))
+        if v is not None:
+            out[k] = v
+    out["hasRevLimiter"] = e.get("hasRevLimiter")
+    return _jsonable(out)
 
 
 def _opts(row, node=False):

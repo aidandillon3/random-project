@@ -384,6 +384,13 @@ export function updateMeshVisibility() {
   V.dirty = true;
 }
 
+// lift the drawn vehicle (not the ground) by z, so it can stand on the grid
+export function setVehicleOffset(z) {
+  V.offsetZ = z;
+  for (const k of ['mesh', 'wheels', 'tris', 'beams', 'nodes', 'overlay', 'imports']) if (V.groups[k]) V.groups[k].position.z = z;
+  V.dirty = true;
+}
+
 export function setGround(on) {
   if (V.ground) V.ground.visible = on;
   V.dirty = true;

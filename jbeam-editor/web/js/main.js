@@ -4,7 +4,7 @@ import { S, A, on, emit, clearSelection } from './state.js';
 import { api } from './api.js';
 import { partEditable, reindex, totalMass } from './scene.js';
 import { V, buildMeshes, frame, initView, rebuild, redraw, refreshColors, setGround, setMeshOpacity, setMeshes,
-  setNodeSize, setVisible, updateGizmo, updateMeshVisibility, viewPreset } from './view3d.js';
+  setNodeSize, setVehicleOffset, setVisible, updateGizmo, updateMeshVisibility, viewPreset } from './view3d.js';
 import { connectSelected, deleteSelection, escape, flipSelectedTris, frameSelection, initTools, makeTriangle, setTool,
   updateHint } from './tools.js';
 import { compactOps, redo, undo } from './edit.js';
@@ -51,7 +51,9 @@ async function openVehicle(model, { intent = null, mode = null, configName } = {
   if (S.model && S.pending.length && !(await save({ quiet: true }))) return;
   MODES.builder?.leave?.();
   clearImport();
-  Object.assign(S, { model, scene: null, undo: [], redo: [], pending: [], activePart: null, pinActive: false, mode: null });
+  Object.assign(S, { model, scene: null, undo: [], redo: [], pending: [], activePart: null, pinActive: false, mode: null,
+    garageSpec: null });
+  emit('vehicleChanged', model);
   S.hiddenParts.clear();
   clearSelection();
   $('#optPin').checked = false;
@@ -94,14 +96,23 @@ function fillConfigs() {
   sel.value = S.configName || '';
 }
 
-async function buildScene({ configName, fresh = false } = {}) {
-  setLoading(true, 'Building the vehicle…');
+let buildToken = 0;
+async function buildScene({ configName, fresh = false, quiet = false } = {}) {
+  const token = ++buildToken;
+  if (!quiet) setLoading(true, 'Building the vehicle…');
+  S.building = true;
+  emit('building', true);
   try {
-    const sc = configName !== undefined ? await api.build(S.model, null, configName) : await api.build(S.model, S.config);
+    const garage = S.garageSpec || undefined;
+    const sc = configName !== undefined ? await api.build(S.model, null, configName, garage) : await api.build(S.model, S.config, undefined, garage);
+    if (token !== buildToken) return;   // a newer build is on its way
     setScene(sc, { fresh });
   } catch (e) {
     toast(e.message, 'err', 9000);
-  } finally { setLoading(false); }
+  } finally {
+    if (token === buildToken) { S.building = false; emit('building', false); }
+    if (!quiet) setLoading(false);
+  }
 }
 
 function setScene(sc, { fresh = false } = {}) {
@@ -115,11 +126,13 @@ function setScene(sc, { fresh = false } = {}) {
   if (!S.activePart || !sc.parts[S.activePart] || !partEditable(S.activePart)) S.activePart = pickActive();
   fillActivePart();
   rebuild();
+  updateGroundOffset();
   if (fresh) frame(sc.nodes.filter(n => !n.del).map(n => n.p), false);
   renderAll();
   updateDirty();
   updateHint();
   loadMeshes();
+  updateBanner();
   emit('scene');
 }
 
@@ -175,6 +188,21 @@ function renderAll() {
   updateStatus();
 }
 
+// in the look modes the vehicle stands on the ground grid (the lowest tire touches it)
+function updateGroundOffset() {
+  const sc = S.scene;
+  let z = 0;
+  if (sc && S.mode !== 'structure' && S.mode !== 'model' && sc.wheels.length) {
+    let low = Infinity;
+    for (const w of sc.wheels) {
+      const a = sc.nodes[w.n1].p, b = sc.nodes[w.n2].p;
+      low = Math.min(low, (a[2] + b[2]) / 2 - (w.radius || 0.3));
+    }
+    if (isFinite(low)) z = -low;
+  }
+  setVehicleOffset(z);
+}
+
 // ---- modes ------------------------------------------------------------------------------------
 function setMode(mode, { quiet = false } = {}) {
   const prev = S.mode;
@@ -189,6 +217,7 @@ function setMode(mode, { quiet = false } = {}) {
     if (mode !== 'model' && mode !== 'builder') { clearSelection(); emit('selection'); }
   }
   S.lookMode = look;
+  updateGroundOffset();
   applyDisplay();
   updateHint();
   updateGizmo();
@@ -319,6 +348,8 @@ async function refreshVehicles() {
 
 async function switchConfig(name) {
   if (!(await save({ quiet: true }))) return;
+  if (S.garageSpec) S.garageSpec = {};
+  emit('configChanged', name);
   S.configName = name;
   store.set('config.' + S.model, name);
   fillConfigs();
@@ -486,7 +517,9 @@ function wireUI() {
   });
 
   window.addEventListener('keydown', onKey);
-  window.addEventListener('beforeunload', e => { if (S.pending.length) { e.preventDefault(); e.returnValue = ''; } });
+  window.addEventListener('beforeunload', e => {
+    if (S.pending.length || S.garageDirty) { e.preventDefault(); e.returnValue = ''; }
+  });
 }
 
 function frameAll() {

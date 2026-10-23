@@ -15,7 +15,7 @@ from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import appwindow, build, daewrite, jbeam_check, jbeamfile, meshes, model, patch, sources
+from . import appwindow, build, daewrite, garage, jbeam_check, jbeamfile, meshes, model, patch, sources
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(HERE, "web")
@@ -123,9 +123,73 @@ class App:
         with self.lock:
             m = self.ws.model(req["model"])
             cfg = self._config_from(m, req)
+            spec = req.get("garage")
+            if spec is not None:
+                scene, info, plan, base, final_cfg = garage.preview(m, cfg, spec)
+                scene["config"] = _config_out(cfg, base)
+                scene["garage"] = {"info": info.to_json(), "changes": plan.changes, "notes": plan.notes,
+                                   "finalConfig": _config_out(final_cfg, scene)}
+                return scene
             scene = build.build(m, cfg)
             scene["config"] = _config_out(cfg, scene)
             return scene
+
+    def _mod_root(self, req, model_name):
+        """An editable mod folder from req["root"] (an id) or req["newMod"] (a name to create)."""
+        root = self.ws.root_by_id(req.get("root") or "")
+        if root is not None:
+            if not root.editable:
+                raise ValueError("that folder can't be written to")
+            return root
+        user = self.cfg.get("user_folder")
+        if not user or not os.path.isdir(user):
+            raise ValueError("set your BeamNG user folder in Settings first")
+        name = re.sub(r"[^A-Za-z0-9_\-]", "_", req.get("newMod") or "").strip("_") or "my_%s_versions" % model_name
+        dest = os.path.join(user, "mods", "unpacked", name)
+        os.makedirs(os.path.join(dest, "vehicles", model_name), exist_ok=True)
+        self.ws.refresh()
+        self.meshes.forget()
+        for r in self.ws.roots:
+            if r.kind == "folder" and os.path.normcase(r.path) == os.path.normcase(dest):
+                return r
+        raise ValueError("could not make the mod folder %s" % dest)
+
+    def api_garage_save(self, req):
+        """Write the Garage's parts and a config (with its info file and picture) into a mod."""
+        with self.lock:
+            model_name = req["model"]
+            root = self._mod_root(req, model_name)
+            m = self.ws.model(model_name, reload=True)
+            res = garage.write(m, root, req.get("configName"), req.get("garage") or {}, req.get("config") or {},
+                               backup_dir=os.path.join(self.data_dir, "backups"))
+            m = self.ws.model(model_name, reload=True)
+            scene = build.build(m, res["finalConfig"])
+            cfg = _config_out(res["finalConfig"], scene)
+            paints = (req.get("garage") or {}).get("paints")
+            if isinstance(paints, list) and paints:
+                cfg["paints"] = paints
+            vdir = os.path.join(root.path, "vehicles", model_name)
+            pc = os.path.join(vdir, res["config"] + ".pc")
+            if os.path.exists(pc):
+                bdir = os.path.join(self.data_dir, "backups", root.label)
+                os.makedirs(bdir, exist_ok=True)
+                with open(pc, "rb") as f, open(os.path.join(bdir, res["config"] + ".pc.bak"), "wb") as g:
+                    g.write(f.read())
+            with open(pc, "w", encoding="utf-8") as f:
+                f.write(jbeamfile.dumps_json(cfg))
+            title = (req.get("title") or res["config"]).strip()
+            info = {"Configuration": title, "Config Type": "Custom", "Source": "Custom",
+                    "Description": "Made in the JBeam Editor Garage. " + "; ".join(res["changes"])}
+            with open(os.path.join(vdir, "info_%s.json" % res["config"]), "w", encoding="utf-8") as f:
+                f.write(jbeamfile.dumps_json(info))
+            pic = req.get("picture") or ""
+            if pic.startswith("data:image/jpeg;base64,"):
+                with open(os.path.join(vdir, res["config"] + ".jpg"), "wb") as f:
+                    f.write(base64.b64decode(pic.split(",", 1)[1]))
+            root.refresh()
+            m = self.ws.model(model_name, reload=True)
+            return {"pc": pc, "jbeam": res["jbeam"], "configName": res["config"], "changes": res["changes"],
+                    "notes": res["notes"], "summary": m.summary(), "root": root.id, "folder": root.path}
 
     def api_save(self, req):
         with self.lock:
@@ -466,6 +530,7 @@ ROUTES = {
     "/api/pc_save": "api_pc_save", "/api/check": "api_check", "/api/meshes": "api_meshes",
     "/api/import_mesh": "api_import_mesh", "/api/export": "api_export", "/api/unpack": "api_unpack",
     "/api/reveal": "api_reveal", "/api/new_part": "api_new_part", "/api/new_mod": "api_new_mod",
+    "/api/garage_save": "api_garage_save",
     "/api/shortcut": "api_shortcut", "/api/install_native": "api_install_native", "/api/log": "api_log",
 }
 

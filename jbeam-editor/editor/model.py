@@ -5,6 +5,7 @@ parsed files. Model gathers what the game would load for one vehicle: every
 .jbeam under vehicles/<model>/ and vehicles/common/, the .pc configs and
 info.json, and indexes the parts by name and slot type.
 """
+import copy
 import hashlib
 import json
 import os
@@ -30,9 +31,10 @@ class FileRef:
 
 
 class Part:
-    __slots__ = ("name", "file", "data", "slot_type", "title", "in_common")
+    __slots__ = ("name", "file", "data", "slot_type", "title", "in_common", "virtual")
 
-    def __init__(self, name, file, data, in_common):
+    def __init__(self, name, file, data, in_common, virtual=False):
+        self.virtual = virtual
         self.name = name
         self.file = file
         self.data = data
@@ -48,6 +50,26 @@ class Part:
         if isinstance(st, list):
             return [s for s in st if isinstance(s, str)]
         return [st] if isinstance(st, str) else []
+
+
+class VirtualRoot:
+    """Where preview-only parts (not yet written anywhere) live."""
+    kind = "virtual"
+    origin = "preview"
+    editable = False
+    inactive = False
+    off_in_game = False
+    path = ""
+
+    def __init__(self, label):
+        self.label = label
+        self.id = "virtual:" + label
+
+    def full_path(self, rel):
+        return rel
+
+    def read(self, rel):
+        raise OSError("preview parts are not in a file yet")
 
 
 class Workspace:
@@ -290,6 +312,21 @@ class Model:
             if r.editable and not r.inactive and r.files_under("vehicles/%s" % self.name):
                 out.append(r)
         return out
+
+    def overlay(self, extra, label="preview"):
+        """A copy of this model with extra parts {name: data} added (for previews; nothing is written)."""
+        m = copy.copy(self)
+        m.parts = dict(self.parts)
+        m.by_slot = {k: list(v) for k, v in self.by_slot.items()}
+        m.files = dict(self.files)
+        fr = FileRef(VirtualRoot(label), "vehicles/%s/(%s).jbeam" % (self.name, label))
+        m.files[fr.key] = fr
+        for name, data in extra.items():
+            p = Part(name, fr, data, False, virtual=True)
+            m.parts[name] = p
+            for st in p.slot_types():
+                m.by_slot.setdefault(st, []).append(name)
+        return m
 
     def summary(self):
         return {

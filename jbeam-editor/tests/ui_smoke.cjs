@@ -73,6 +73,49 @@ for (const mode of ['garage', 'parts', 'tuning', 'structure']) {
   });
 }
 
+async function setRange(page, label, value) {
+  await page.evaluate(({ label, value }) => {
+    const box = [...document.querySelectorAll('#garagePane .slider')].find(b => b.querySelector('.name').textContent.trim() === label);
+    if (!box) throw new Error('no slider ' + label);
+    const r = box.querySelector('input[type=range]');
+    r.value = value;
+    r.dispatchEvent(new Event('input', { bubbles: true }));
+    r.dispatchEvent(new Event('change', { bubbles: true }));
+  }, { label, value });
+}
+const nodeZ = (page, id) => page.evaluate(id => { const S = window.jbe.S; return S.scene.nodes[S.scene.nodeById.get(id)].p[2]; }, id);
+
+scenario('garage-lift', async page => {
+  await page.click('#modeTabs [data-mode=garage]');
+  await page.waitForSelector('#garagePane .slider', { timeout: 15000 });
+  const z0 = await nodeZ(page, 'fh1r');
+  await setRange(page, 'Lift', 4);
+  await page.waitForFunction(z0 => { const S = window.jbe.S; const n = S.scene.nodes[S.scene.nodeById.get('fh1r')]; return Math.abs(n.p[2] - (z0 - 0.1016)) < 1e-4 && !S.building; }, z0, { timeout: 15000 });
+  const changes = await page.$$eval('#garageSide .changes li', l => l.map(x => x.textContent));
+  if (!changes.some(c => /lifted by 4 in/.test(c))) throw new Error('changes list: ' + changes.join(' | '));
+});
+
+scenario('garage-tires', async page => {
+  await page.click('#garageCats .cat:nth-child(2)');
+  await page.waitForSelector('#garageBody .optrow');
+  const rows = await page.$$('#garageBody .gsec:first-child .optrow');
+  await rows[1].click();
+  await page.waitForFunction(() => { const S = window.jbe.S; return !S.building && S.scene.wheels.find(w => w.name === 'FR').radius > 0.32; }, null, { timeout: 15000 });
+});
+
+scenario('garage-save', async page => {
+  await page.click('#garageSide button.primary');
+  await page.waitForSelector('#modal:not(.hidden) input[type=text]');
+  await page.fill('#modal input[type=text]', 'Trail Rig');
+  await page.click('#modal .actions button.primary');
+  await page.waitForFunction(() => window.jbe.S.configName === 'Trail Rig' && !window.jbe.S.building, null, { timeout: 20000 });
+  const opts = await page.$$eval('#configSelect option', l => l.map(o => o.value));
+  if (!opts.includes('Trail Rig')) throw new Error('config list: ' + opts.join(', '));
+  // the saved version is lifted on its own (no garage changes pending)
+  const pending = await page.evaluate(() => !!window.jbe.S.garageDirty);
+  if (pending) throw new Error('still dirty after saving');
+});
+
 // --------------------------------------------------------------------------------------------
 (async () => {
   const install = fs.mkdtempSync(path.join(os.tmpdir(), 'jbe-ui-install-'));
