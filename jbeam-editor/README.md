@@ -48,15 +48,21 @@ The easy way to change a vehicle. Everything shows in 3D at once and **Save my
 version** writes it as your own config of the car in a mod folder; the original
 is never changed.
 
+- **Quick builds**: one click sets up an off-road, monster truck, lowered street,
+  rally or drag version (lift, tire sizes, stance, power and brakes, sized from
+  the vehicle's own wheels); everything stays adjustable.
 - **Lift & suspension**: a lift kit moves the suspension down on longer brackets,
   the way a real one does, so springs, shocks and steering keep working. Front and
   rear can differ. Body lifts too.
 - **Wheels & tires**: tire size and width (also sizes the vehicle has no part
-  for), rims, spacers and track width.
+  for; bigger tires get heavier like real ones), rims, spacers and track width.
 - **Engine**: more or less power and a different rev limit, with the torque curve.
 - **Brakes** and **Paint**, and **Fine tuning** for the vehicle's own sliders.
 - **Drop test**: drops the vehicle onto the ground in a quick physics simulation
   and tells you whether it sits at the right height and holds together.
+
+The Builder and the importer also tell you how hard a vehicle can corner before
+it tips over, and warn when it would roll before its tires slide.
 
 ## Vehicle Builder
 

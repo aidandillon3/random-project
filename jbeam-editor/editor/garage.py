@@ -638,6 +638,10 @@ def _tire(pc, r, w, r0, w0):
         pass   # tires without a width take it from the hub; the mesh is still scaled below
     sr = r / r0 if r0 else 1.0
     sw = w / w0 if w0 else 1.0
+    # a bigger tire has more rubber: its nodes get heavier with its size (which also keeps them stable)
+    f = max(0.5, min(sr * sw, 3.0))
+    if abs(f - 1) > 0.01:
+        pc.map_modifiers("pressureWheels", "nodeWeight", lambda v: scale_value(v, f))
 
     def scaled(row, cur):
         s = cur.get("scale") if isinstance(cur.get("scale"), dict) else {}

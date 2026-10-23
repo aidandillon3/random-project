@@ -77,6 +77,12 @@ class GarageTests(InstallCase):
         self.assertEqual(len(fb), 2)
         self.assertAlmostEqual(fb[0]["scale"][1], 0.36 / 0.29, places=3)
         self.assertAlmostEqual(fb[0]["scale"][0], 0.25 / 0.185, places=3)
+        # the bigger tire is heavier in proportion (16 rays, rim nodes 0.4 kg, tire nodes 0.12 kg in the fixture)
+        stock = self.preview({})
+        rr0 = next(w for w in stock["wheels"] if w["name"] == "RR")
+        tire = lambda w: w["mass"] / 32 - 0.4  # noqa: E731
+        self.assertAlmostEqual(tire(rr0), 0.12, places=4)
+        self.assertAlmostEqual(tire(rr) / tire(rr0), (0.36 / 0.29) * (0.25 / 0.185), delta=0.01)
 
     def test_engine_tune(self):
         sc = self.preview({"engine": {"power": 1.5, "rpm": 500}})
