@@ -151,6 +151,23 @@ class AnalysisTests(SMCase):
         self.assertEqual(len(an.unsprung_bodies), 4)
         self.assertEqual(an.chassis, {0})
 
+    def test_without_the_game(self):
+        # no shapesets: the wheels' own ids still say what they are, and unknown parts on a bearing are wheels too
+        data, _ = F.car()
+        for body in data["bodies"]:
+            for c in body["childs"]:
+                if c["shapeId"] == F.SMALL_WHEEL and c["pos"]["x"] < 0:
+                    c["shapeId"] = "0badc0de-0000-4000-8000-000000000000"
+        game.forget()
+        an = smimport.Importer().analysis(self.save("nogame", data), "")
+        self.assertEqual(len(an.wheels), 4)
+        an.orient()
+        ys = sorted(round(w.p[1], 3) for w in an.wheels)
+        rs = {round(w.r, 3) for w in an.wheels}
+        self.assertEqual(rs, {0.375})
+        self.assertEqual(ys, [-1.25, -1.25, 1.25, 1.25])
+        self.assertTrue(any("not installed" in n for n in an.notes))
+
     def test_problems_are_explained(self):
         data, _ = F.car()
         data["bodies"] = data["bodies"][:1]

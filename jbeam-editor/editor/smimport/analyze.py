@@ -13,7 +13,7 @@ under the lowest tire at z = 0 and y = 0 halfway between the outer axles.
 """
 import math
 
-from .blueprint import cross
+from .blueprint import cross, rot
 from .game import CELL
 
 # hp of a Scrap Mechanic engine by level (gas and electric engines alike)
@@ -258,6 +258,13 @@ class Analysis:
             k = max(range(3), key=lambda i: abs(axis[i]))
             w.width = ext[k]
             w.radius = max(ext[i] for i in range(3) if i != k) / 2.0
+            if info is None:
+                # a part the game files did not describe: take it for the game's small wheel (3 x 3 x 1,
+                # turning about its own z axis)
+                w.radius, w.width = 1.5, 1.0
+                off = rot(s.R, (1.5, 1.5, 0.5))
+                w.center = tuple(s.pos[i] + off[i] for i in range(3))
+                axis = s.own_axis(2)
         w.axis = norm(tuple(float(v) for v in axis))
         if abs(w.axis[2]) > 0.7:
             self.notes.append("A wheel lying flat (turning about the vertical) is not used as a wheel.")
