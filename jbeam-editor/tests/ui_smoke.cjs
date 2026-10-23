@@ -164,6 +164,64 @@ scenario('workshop', async page => {
   await page.waitForFunction(() => window.jbe.S.scene.parts.test_box_part, null, { timeout: 20000 });
 });
 
+async function builderRange(page, label, value) {
+  await page.evaluate(({ label, value }) => {
+    const box = [...document.querySelectorAll('#builderPane .slider')].find(b => b.querySelector('.name').textContent.trim() === label);
+    if (!box) throw new Error('no slider ' + label);
+    const r = box.querySelector('input[type=range]');
+    r.value = value;
+    r.dispatchEvent(new Event('input', { bubbles: true }));
+    r.dispatchEvent(new Event('change', { bubbles: true }));
+  }, { label, value });
+}
+const builderIdle = page => page.waitForFunction(() => window.jbe.S.scene && document.querySelector('#builderBusy')?.classList.contains('hidden'), null, { timeout: 20000 });
+
+scenario('builder', async page => {
+  if (await page.$('#home.hidden')) await page.click('#btnHome');
+  await page.waitForSelector('#home:not(.hidden) #homeActions .action');
+  await page.click('#homeActions .action:nth-child(2)');
+  await page.waitForSelector('#builderPane .style-card');
+  await builderIdle(page);
+  await page.waitForFunction(() => window.jbe.V.groups.mesh.children.length > 20, null, { timeout: 20000 });
+  const wheels = await page.evaluate(() => window.jbe.S.scene.wheels.length);
+  if (wheels !== 4) throw new Error('wheels: ' + wheels);
+  await page.screenshot({ path: path.join(OUT, 'builder-sedan.png') });
+  // a pickup, then a longer wheelbase
+  await page.click('#builderPane .style-card:nth-child(7)');
+  await page.click('#modal .actions button.primary');
+  await builderIdle(page);
+  await page.waitForFunction(() => /pickup/i.test(document.querySelector('#builderPane .style-card.active').textContent));
+  const wb0 = await page.evaluate(() => { const s = window.jbe.S.scene; const w = s.wheels; return Math.abs(s.nodes[w[0].n1].p[1] - s.nodes[w[3].n1].p[1]); });
+  await builderRange(page, 'Wheelbase', 3.8);
+  await page.waitForFunction(wb0 => { const s = window.jbe.S.scene; const w = s.wheels; return Math.abs(Math.abs(s.nodes[w[0].n1].p[1] - s.nodes[w[3].n1].p[1]) - 3.8) < 1e-3; }, wb0, { timeout: 20000 });
+  await page.click('#builderPane .catlist .cat:nth-child(3)');   // wheels and tires
+  await builderRange(page, 'Front tire size', 35);
+  await builderRange(page, 'Rear tire size', 35);
+  await builderIdle(page);
+  await page.waitForFunction(() => window.jbe.S.scene.wheels.every(w => w.radius > 0.44), null, { timeout: 20000 });
+  await page.fill('#builderSide input[type=text]', 'UI Test Truck');
+  await page.waitForFunction(() => /ui_test_truck/.test(document.querySelector('#builderSide code')?.textContent || ''), null, { timeout: 20000 });
+  await page.screenshot({ path: path.join(OUT, 'builder-pickup.png') });
+});
+
+scenario('builder-create', async page => {
+  await page.click('#builderSide button.primary');
+  await page.waitForSelector('#modal:not(.hidden) .actions button.primary');
+  await page.click('#modal .actions button.primary');
+  await page.waitForFunction(() => /created/i.test(document.querySelector('#modalTitle')?.textContent || ''), null, { timeout: 30000 });
+  await page.screenshot({ path: path.join(OUT, 'builder-created.png') });
+  await page.click('#modal .actions button.primary');      // open in the Garage
+  await page.waitForFunction(() => window.jbe.S.model === 'ui_test_truck' && window.jbe.S.scene && !window.jbe.S.building, null, { timeout: 30000 });
+  await waitIdle(page);
+  const w = await page.evaluate(() => window.jbe.S.scene.wheels.length);
+  if (w !== 4) throw new Error('wheels after opening: ' + w);
+  const t0 = Date.now();
+  await page.waitForFunction(() => window.jbe.S.scene.garage && document.querySelector('#garagePane .slider'), null, { timeout: 40000 });
+  const warn = await page.evaluate(() => window.jbe.S.scene.warnings);
+  if (warn.length) throw new Error('warnings: ' + warn.join('; '));
+  console.log('    garage ready after ' + (Date.now() - t0) + ' ms');
+});
+
 // --------------------------------------------------------------------------------------------
 (async () => {
   const install = fs.mkdtempSync(path.join(os.tmpdir(), 'jbe-ui-install-'));

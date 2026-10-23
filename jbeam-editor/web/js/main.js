@@ -364,6 +364,7 @@ function goHome(intent) {
 
 Object.assign(A, { save, saveOps, rebuild: rebuildConfig, reloadModel, check: checkDialog, loadState, openVehicle,
   setMode, setScene, buildScene, refreshVehicles, switchConfig, goHome, showWorkspace, fillConfigs, updateStatus,
+  applyDisplay, updateGroundOffset, renderAll,
   settings: () => settingsDialog(), help: helpDialog,
   openBuilder: () => (MODES.builder ? MODES.builder.open() : toast('The Vehicle Builder is not available.')),
   openScrap: () => (MODES.scrap ? MODES.scrap.open() : toast('The Scrap Mechanic importer is not available.')) });

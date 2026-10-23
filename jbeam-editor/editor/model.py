@@ -173,10 +173,11 @@ class Workspace:
             for m in r.models():
                 # a folder with only saved configs (like the user folder) holds no parts to edit
                 jb = any(f.lower().endswith(".jbeam") for f in r.files_under("vehicles/%s" % m))
-                e = found.setdefault(m, {"model": m, "sources": [], "editable": False, "parts": False})
+                e = found.setdefault(m, {"model": m, "sources": [], "editable": False, "parts": False, "builder": False})
                 e["sources"].append(r.label)
                 e["editable"] = e["editable"] or (r.editable and jb)
                 e["parts"] = e["parts"] or jb
+                e["builder"] = e["builder"] or r.has("vehicles/%s/jbeam_editor_builder.json" % m)
         out = []
         for m, e in found.items():
             if not e.pop("parts"):
@@ -326,6 +327,23 @@ class Model:
             m.parts[name] = p
             for st in p.slot_types():
                 m.by_slot.setdefault(st, []).append(name)
+        return m
+
+    @classmethod
+    def from_parts(cls, ws, name, parts, label="builder"):
+        """A model made only of preview parts {name: data} (a vehicle that is not written anywhere yet)."""
+        m = cls.__new__(cls)
+        m.ws, m.name = ws, name
+        m.files, m.parts, m.by_slot = {}, {}, {}
+        m.duplicates, m.errors, m.configs = [], [], []
+        m.info, m.info_file = {}, None
+        fr = FileRef(VirtualRoot(label), "vehicles/%s/(%s).jbeam" % (name, label))
+        m.files[fr.key] = fr
+        for pname, data in parts.items():
+            p = Part(pname, fr, data, False, virtual=True)
+            m.parts[pname] = p
+            for st in p.slot_types():
+                m.by_slot.setdefault(st, []).append(pname)
         return m
 
     def summary(self):

@@ -9,7 +9,7 @@ import { $ } from './util.js';
 
 export const V = {
   renderer: null, scene: null, camera: null, controls: null, gizmo: null, pivot: null,
-  groups: {}, meshCache: new Map(), meshMaterial: null,
+  groups: {}, meshCache: new Map(), meshMaterial: null, palette: new Map(),
   visible: { nodes: true, beams: true, tris: true, wheels: true, mesh: true, labels: true },
   nodeSize: 7, meshOpacity: 0.35,
   drawNodes: [], drawBeams: [], drawTris: [],
@@ -269,6 +269,7 @@ function buildWheels() {
 // fast path while dragging: only positions change
 export function refreshPositions() {
   const sc = S.scene;
+  if (!sc) return;
   if (V.nodePoints) {
     const a = V.nodePoints.geometry.attributes.position;
     V.drawNodes.forEach((i, k) => a.array.set(sc.nodes[i].p, k * 3));
@@ -292,6 +293,7 @@ export function refreshPositions() {
 
 export function refreshColors() {
   const sc = S.scene;
+  if (!sc) return;   // between vehicles: the old buffers no longer match anything
   if (V.nodePoints) {
     const a = V.nodePoints.geometry.attributes.color;
     V.drawNodes.forEach((i, k) => nodeColor(sc.nodes[i], i).toArray(a.array, k * 3));
@@ -341,9 +343,36 @@ export function setMeshes(meshData) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(m.pos, 3));
     g.setIndex(new THREE.BufferAttribute(m.idx, 1));
+    if (m.groups) {
+      // meshes with their own materials (the Vehicle Builder's): one group per material
+      m.groups.forEach(([start, count], i) => g.addGroup(start, count, i));
+      g.userData.mats = m.groups.map(gr => gr[2]);
+    }
     g.computeVertexNormals();
     V.meshCache.set(name, g);
   }
+}
+
+// colours for meshes that name their materials; updated in place so a new paint shows at once
+export function setPalette(materials) {
+  for (const [name, d] of Object.entries(materials || {})) {
+    let m = V.palette.get(name);
+    if (!m) {
+      m = new THREE.MeshStandardMaterial({ side: THREE.FrontSide });
+      V.palette.set(name, m);
+    }
+    m.color.setRGB(...d.color, THREE.SRGBColorSpace);
+    m.metalness = d.metallic ?? 0;
+    m.roughness = d.roughness ?? 0.5;
+    const op = d.opacity ?? 1;
+    m.transparent = op < 1;
+    m.opacity = op;
+    m.depthWrite = op >= 1;
+    const em = d.glow && d.emissive ? d.emissive.map(c => c * 0.18) : [0, 0, 0];
+    m.emissive.setRGB(...em);
+    m.needsUpdate = true;
+  }
+  V.dirty = true;
 }
 
 export function buildMeshes() {
@@ -353,7 +382,8 @@ export function buildMeshes() {
   for (const fb of sc.flexbodies) {
     const geo = V.meshCache.get(fb.mesh);
     if (!geo) continue;
-    const mesh = new THREE.Mesh(geo, V.meshMaterial);
+    const mat = geo.userData.mats ? geo.userData.mats.map(n => V.palette.get(n) || V.meshMaterial) : V.meshMaterial;
+    const mesh = new THREE.Mesh(geo, mat);
     mesh.userData.sharedGeometry = true;
     mesh.userData.sharedMaterial = true;
     mesh.userData.part = fb.part;

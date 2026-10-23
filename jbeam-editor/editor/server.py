@@ -15,7 +15,8 @@ from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import appwindow, build, daewrite, garage, jbeam_check, jbeamfile, meshes, model, patch, sources
+from . import appwindow, build, daewrite, garage, jbeam_check, jbeamfile, meshes, model, patch, sources, vehiclegen
+from .vehiclegen import files as vgfiles, spec as vgspec
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(HERE, "web")
@@ -190,6 +191,78 @@ class App:
             m = self.ws.model(model_name, reload=True)
             return {"pc": pc, "jbeam": res["jbeam"], "configName": res["config"], "changes": res["changes"],
                     "notes": res["notes"], "summary": m.summary(), "root": root.id, "folder": root.path}
+
+    # -- Vehicle Builder ------------------------------------------------------------
+    def api_builder_schema(self, req):
+        return vgspec.schema()
+
+    def _model_owner(self, model_name):
+        """(root that has vehicles/<model>/, is it a Builder vehicle) for an existing vehicle id."""
+        for r in self.ws.roots:
+            if r.inactive:
+                continue
+            if r.files_under("vehicles/%s" % model_name):
+                return r, vgfiles.read_design(r, model_name) is not None
+        return None, False
+
+    def api_builder_preview(self, req):
+        """Generate the design and build it like any vehicle; meshes the page has already are left out."""
+        g = vehiclegen.generate(req.get("spec") or {}, author=self.cfg.get("author"))
+        with self.lock:
+            m = model.Model.from_parts(self.ws, g.P.model, g.parts)
+            scene = build.build(m, {})
+            owner, is_builder = self._model_owner(g.P.model)
+        keys, mesh_data = vehiclegen.preview_payload(g, req.get("have"))
+        for fb in scene["flexbodies"]:
+            if fb["mesh"] in keys:
+                fb["mesh"] = "%s@%s" % (fb["mesh"], keys[fb["mesh"]])
+        scene["config"] = _config_out({}, scene)
+        return {"scene": scene, "meshes": mesh_data, "materials": g.materials, "stats": g.stats, "notes": g.notes,
+                "spec": g.spec, "model": g.P.model,
+                "exists": {"taken": owner is not None, "builder": is_builder,
+                           "where": owner.label if owner is not None else None}}
+
+    def api_builder_create(self, req):
+        """Write the design as a vehicle mod (or update a vehicle the Builder made before)."""
+        g = vehiclegen.generate(req.get("spec") or {}, author=self.cfg.get("author"))
+        model_name = g.P.model
+        with self.lock:
+            user = self.cfg.get("user_folder")
+            if not user or not os.path.isdir(user):
+                raise ValueError("set your BeamNG user folder in Settings first")
+            owner, is_builder = self._model_owner(model_name)
+            if owner is not None and not (is_builder and owner.editable):
+                raise ValueError('there is already a vehicle called "%s" (in %s); pick another name'
+                                 % (model_name, owner.label))
+            if owner is not None:
+                mod_dir = owner.path
+            else:
+                mod = re.sub(r"[^A-Za-z0-9_\-]", "_", req.get("modName") or model_name).strip("_") or model_name
+                mod_dir = os.path.join(user, "mods", "unpacked", mod)
+            vdir = os.path.join(mod_dir, "vehicles", model_name)
+            pic = req.get("picture") or ""
+            picture = None
+            if pic.startswith("data:image/") and "," in pic:
+                picture = base64.b64decode(pic.split(",", 1)[1])
+            backup = os.path.join(self.data_dir, "backups", "builder", "%s-%s" % (model_name, time.strftime("%Y%m%d-%H%M%S")))
+            written = vgfiles.write(g, vdir, picture=picture, backup_dir=backup if owner is not None else None)
+            self.ws.refresh()
+            self.meshes.forget()
+            return {"model": model_name, "folder": mod_dir, "path": vdir, "written": written,
+                    "updated": owner is not None, "stats": g.stats}
+
+    def api_builder_load(self, req):
+        """The saved design of a vehicle the Builder made."""
+        with self.lock:
+            owner, is_builder = self._model_owner(req["model"])
+            if owner is None or not is_builder:
+                raise ValueError("%s was not made with the Vehicle Builder" % req["model"])
+            spec = vgfiles.read_design(owner, req["model"])
+        out = vgspec.clean(spec)
+        for k in ("name", "brand", "model"):
+            if isinstance(spec.get(k), str):
+                out[k] = spec[k]
+        return {"spec": out, "editable": owner.editable, "where": owner.label}
 
     def api_save(self, req):
         with self.lock:
@@ -582,6 +655,8 @@ ROUTES = {
     "/api/import_mesh": "api_import_mesh", "/api/export": "api_export", "/api/unpack": "api_unpack",
     "/api/reveal": "api_reveal", "/api/new_part": "api_new_part", "/api/new_mod": "api_new_mod",
     "/api/garage_save": "api_garage_save",
+    "/api/builder_schema": "api_builder_schema", "/api/builder_preview": "api_builder_preview",
+    "/api/builder_create": "api_builder_create", "/api/builder_load": "api_builder_load",
     "/api/projects": "api_projects", "/api/project_save": "api_project_save", "/api/project_load": "api_project_load",
     "/api/project_delete": "api_project_delete",
     "/api/shortcut": "api_shortcut", "/api/install_native": "api_install_native", "/api/log": "api_log",
