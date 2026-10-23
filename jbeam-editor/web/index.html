@@ -59,16 +59,17 @@
       <div id="tuning"></div>
     </section>
     <section class="pane" data-pane="structure" id="structurePane">
-      <div class="pane-head"><h2>Structure</h2><p class="note">The physics skeleton: nodes (mass points), beams (springs between them) and collision triangles.</p></div>
-      <div class="card" id="activePartBox" title="New nodes, beams and triangles are written into this part">
+      <div id="importPane"></div>
+      <div class="pane-head not-importing"><h2>Structure</h2><p class="note">The physics skeleton: nodes (mass points), beams (springs between them) and collision triangles.</p></div>
+      <div class="card not-importing" id="activePartBox" title="New nodes, beams and triangles are written into this part">
         <b>Part you're editing</b>
         <p class="note">New nodes, beams and triangles go into this part. Clicking a node switches to its part unless "Stay" is ticked.</p>
         <div style="display:flex;gap:8px;align-items:center"><select id="activePart" style="flex:1;min-width:0"></select>
         <label class="chk" title="Keep adding to this part even when you click nodes of other parts"><input type="checkbox" id="optPin"> Stay</label></div>
       </div>
-      <div id="structureInfo"></div>
-      <h3 class="sect">Problems</h3>
-      <div id="problems"></div>
+      <div id="structureInfo" class="not-importing"></div>
+      <h3 class="sect not-importing">Problems</h3>
+      <div id="problems" class="not-importing"></div>
     </section>
     <section class="pane" data-pane="model" id="modelPane"></section>
     <section class="pane" data-pane="builder" id="builderPane"></section>

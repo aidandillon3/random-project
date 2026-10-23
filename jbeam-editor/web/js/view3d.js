@@ -62,7 +62,7 @@ export function initView() {
   scene.add(ground);
   V.ground = ground;
 
-  for (const g of ['mesh', 'wheels', 'tris', 'beams', 'nodes', 'overlay', 'imports']) {
+  for (const g of ['mesh', 'wheels', 'tris', 'beams', 'nodes', 'overlay', 'imports', 'preview']) {
     V.groups[g] = new THREE.Group();
     scene.add(V.groups[g]);
   }
@@ -387,7 +387,7 @@ export function updateMeshVisibility() {
 // lift the drawn vehicle (not the ground) by z, so it can stand on the grid
 export function setVehicleOffset(z) {
   V.offsetZ = z;
-  for (const k of ['mesh', 'wheels', 'tris', 'beams', 'nodes', 'overlay', 'imports']) if (V.groups[k]) V.groups[k].position.z = z;
+  for (const k of ['mesh', 'wheels', 'tris', 'beams', 'nodes', 'overlay', 'imports', 'preview']) if (V.groups[k]) V.groups[k].position.z = z;
   V.dirty = true;
 }
 
@@ -561,6 +561,49 @@ export function setOverlay(lines, points = []) {
       map: circleTex, alphaTest: 0.5, depthTest: false, transparent: true, opacity: 0.8 }));
     p.renderOrder = 11;
     V.groups.overlay.add(p);
+  }
+  V.dirty = true;
+}
+
+// ---- a structure that is about to be made (import, workshop) --------------------------------------
+// fit: { pos: Map(id -> [x,y,z]), beams: { main: [[a,b]], rigid: [[a,b]] }, tris: [[a,b,c]] }; null clears it
+export function showStructure(fit, { attach = [], tris = true } = {}) {
+  clearGroup(V.groups.preview);
+  if (fit) {
+    const P = id => fit.pos.get(id);
+    const pts = [...fit.pos.values()];
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts.flat()), 3));
+    const nodes = new THREE.Points(g, new THREE.PointsMaterial({ size: V.nodeSize + 1, sizeAttenuation: false, color: 0xffb547,
+      map: circleTex, alphaTest: 0.5, depthTest: false, transparent: true }));
+    nodes.renderOrder = 12;
+    const lines = (list, color, opacity) => {
+      if (!list.length) return null;
+      const arr = new Float32Array(list.length * 6);
+      list.forEach(([a, b], k) => { const A = P(a) || a, B = P(b) || b; arr.set(A, k * 6); arr.set(B, k * 6 + 3); });
+      const lg = new THREE.BufferGeometry();
+      lg.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      const l = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest: false }));
+      l.renderOrder = 11;
+      return l;
+    };
+    const main = lines(fit.beams.main, 0xf29a2e, 0.75);
+    const rig = lines(fit.beams.rigid, 0x4ea1ff, 0.35);
+    const veh = S.scene ? attach.map(([vid, cid]) => {
+      const i = S.scene.nodeById.get(vid);
+      return i === undefined ? null : [S.scene.nodes[i].p, cid];
+    }).filter(Boolean) : [];
+    const at = lines(veh, 0x3fbf7f, 0.9);
+    for (const o of [main, rig, at, nodes]) if (o) V.groups.preview.add(o);
+    if (tris && fit.tris.length) {
+      const arr = new Float32Array(fit.tris.length * 9);
+      fit.tris.forEach((t, k) => t.forEach((id, v) => arr.set(P(id), k * 9 + v * 3)));
+      const tg = new THREE.BufferGeometry();
+      tg.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      const m = new THREE.Mesh(tg, new THREE.MeshBasicMaterial({ color: 0x2fbf9a, transparent: true, opacity: 0.16, side: THREE.FrontSide, depthWrite: false }));
+      m.renderOrder = 10;
+      V.groups.preview.add(m);
+    }
   }
   V.dirty = true;
 }

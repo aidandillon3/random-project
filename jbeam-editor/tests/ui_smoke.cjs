@@ -116,6 +116,29 @@ scenario('garage-save', async page => {
   if (pending) throw new Error('still dirty after saving');
 });
 
+function boxObj(file, sx, sy, sz, cx = 0, cy = 0, cz = 0) {
+  const v = [];
+  for (const z of [-sz / 2, sz / 2]) for (const y of [-sy / 2, sy / 2]) for (const x of [-sx / 2, sx / 2]) v.push(`v ${x + cx} ${y + cy} ${z + cz}`);
+  const f = ['1 3 4 2', '5 6 8 7', '1 2 6 5', '3 7 8 4', '1 5 7 3', '2 4 8 6'].map(q => 'f ' + q);
+  fs.writeFileSync(file, v.join('\n') + '\n' + f.join('\n') + '\n');
+}
+
+scenario('import-model', async (page, ctx) => {
+  await page.click('#modeTabs [data-mode=structure]');
+  const obj = path.join(ctx.install, 'rack.obj');
+  boxObj(obj, 1.2, 1.6, 0.25);   // metres, Y up in the file
+  await page.setInputFiles('#fileInput', obj);
+  await page.waitForSelector('#importPane .seg', { timeout: 15000 });
+  await page.waitForFunction(() => window.jbe.V.groups.preview.children.length > 0, null, { timeout: 10000 });
+  const stats = await page.$eval('#importPane .note:last-of-type', e => e.textContent);
+  await page.screenshot({ path: path.join(OUT, 'import-preview.png') });
+  await page.fill('#importPane input[type=text]', 'test_rack');
+  await page.click('#importPane .btnrow button.primary');
+  await page.waitForFunction(() => window.jbe.S.scene.parts.test_rack && !document.body.classList.contains('importing'), null, { timeout: 20000 });
+  const n = await page.evaluate(() => window.jbe.S.scene.nodes.filter(x => x.part === 'test_rack').length);
+  if (n < 8) throw new Error('only ' + n + ' nodes; ' + stats);
+});
+
 // --------------------------------------------------------------------------------------------
 (async () => {
   const install = fs.mkdtempSync(path.join(os.tmpdir(), 'jbe-ui-install-'));
