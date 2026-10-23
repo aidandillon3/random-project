@@ -28,10 +28,11 @@ the sync. Afterwards, for single player, turn BeamNG.Earth back on in BeamNG's M
 The mod also asks for the next ground block earlier above 179 mph.
 
 Helper downloads: https://github.com/aidandillon3/random-project/releases/tag/beamng-earth
-  BeamNG.Earth-1.5.4-beta-fast.exe  sharper ground ahead at high speed (only changes your own game)
-  BeamNG.Earth-1.5.4-beta.exe       the unchanged original
-Either one works with the server, but it must be 1.5.4: the server runs BeamNG.Earth 1.5.4 since
-2026-10-21 (it fixes buildings from somewhere else showing up on the road at high speed). Close the old
-BeamNG.Earth window and run the new exe once; it updates your own copy too.
-Backups: E:\BeamNG Earth server backups\2026-10-21 before 1.5.4 (the 1.5.3 zip) and
+  BeamNG.Earth-1.5.5-beta-fast.exe  sharper ground ahead at high speed (only changes your own game)
+  BeamNG.Earth-1.5.5-beta.exe       the unchanged original
+Either one works with the server, but everyone must be on 1.5.5: the server runs BeamNG.Earth 1.5.5 (smoother
+loading, retaining walls along roads cut into hills, more detailed ground). With different helper versions the
+ground can differ between players, so cars can float or sink. Close the old BeamNG.Earth window and run the new
+exe once; it updates your own copy too.
+Backups: E:\BeamNG Earth server backups\1.5.4 ready (the 1.5.4 zip), 2026-10-21 before 1.5.4 (the 1.5.3 zip) and
 E:\BeamNG Earth server backups\2026-10-21 before high-speed patch (the first one).

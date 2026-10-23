@@ -173,13 +173,18 @@ function M.formatHardware(hw)
   if num(mods.zip) or num(mods.unpacked) then
     add('Other mods', string.format('%d zipped, %d unpacked', num(mods.zip) or 0, num(mods.unpacked) or 0))
   end
-  add('BeamNG.Earth mod', str(hw.modVersion))
+  -- (the release, from the server's VERSION; the mod's own MOD_VERSION never followed the releases: "0.4.0" in a 1.5.4 report)
+  local app = (hw.server or {}).appVersion
+  if app and app ~= '' then add('BeamNG.Earth', tostring(app))
+  elseif hw.modVersion then add('BeamNG.Earth', 'mod ' .. tostring(hw.modVersion)) end
   local srv = hw.server or {}
   if next(srv) then
     local sp = {}
     local keys = {}
     for k in pairs(srv) do
-      if k ~= 'type' and k ~= 'attribution' and k ~= 'serverVersion' and k ~= 'sessionId' then keys[#keys + 1] = k end
+      if k ~= 'type' and k ~= 'attribution' and k ~= 'serverVersion' and k ~= 'sessionId' and k ~= 'appVersion' then
+        keys[#keys + 1] = k
+      end
     end
     table.sort(keys)
     for _, k in ipairs(keys) do
