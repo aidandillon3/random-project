@@ -21,9 +21,18 @@ export function h(tag, attrs = {}, ...children) {
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+// a short message at the top of the 3D view: at most three at a time, the same one is not repeated,
+// and a click puts it away
 export function toast(msg, kind = '', ms = 4500) {
-  const t = h('div', { class: 'toast ' + kind }, msg);
-  $('#toasts').append(t);
+  const box = $('#toasts');
+  const text = typeof msg === 'string' ? msg : null;
+  const same = text && [...box.children].find(x => x.dataset.text === text);
+  if (same) same.remove();
+  const t = h('div', { class: 'toast ' + kind, title: 'Click to close' }, msg);
+  if (text) t.dataset.text = text;
+  t.addEventListener('click', () => t.remove());
+  box.append(t);
+  while (box.children.length > 3) box.firstElementChild.remove();
   setTimeout(() => t.remove(), ms);
   return t;
 }
