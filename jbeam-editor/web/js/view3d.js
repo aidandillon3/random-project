@@ -9,7 +9,7 @@ import { $ } from './util.js';
 
 export const V = {
   renderer: null, scene: null, camera: null, controls: null, gizmo: null, pivot: null,
-  groups: {}, meshCache: new Map(), meshMaterial: null,
+  groups: {}, meshCache: new Map(), meshMaterial: null, palette: new Map(),
   visible: { nodes: true, beams: true, tris: true, wheels: true, mesh: true, labels: true },
   nodeSize: 7, meshOpacity: 0.35,
   drawNodes: [], drawBeams: [], drawTris: [],
@@ -25,9 +25,11 @@ const COL_HOVER = new THREE.Color(0xffffff);
 
 export function initView() {
   const el = $('#viewport');
-  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setClearColor(0x15171c);
+  renderer.setClearColor(0x000000, 0);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
   el.append(renderer.domElement);
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(45, 1, 0.02, 2000);
@@ -39,24 +41,34 @@ export function initView() {
   controls.zoomToCursor = true;
   controls.addEventListener('change', () => { V.dirty = true; });
 
-  scene.add(new THREE.HemisphereLight(0xdde6ff, 0x30302a, 1.6));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+  scene.add(new THREE.HemisphereLight(0xdde6ff, 0x2c2a26, 1.5));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.6);
   sun.position.set(4, -6, 10);
   scene.add(sun);
+  const rim = new THREE.DirectionalLight(0x9ec4ff, 0.6);
+  rim.position.set(-6, 8, 4);
+  scene.add(rim);
 
-  const grid = new THREE.GridHelper(40, 40, 0x3a4150, 0x262b35);
+  const ground = new THREE.Group();
+  const grid = new THREE.GridHelper(40, 40, 0x3a4150, 0x232831);
   grid.rotation.x = Math.PI / 2;
-  scene.add(grid);
+  ground.add(grid);
+  const fine = new THREE.GridHelper(8, 80, 0x2a303a, 0x1d2129);
+  fine.rotation.x = Math.PI / 2;
+  fine.position.z = -0.001;
+  ground.add(fine);
   const axes = new THREE.AxesHelper(0.6);
-  scene.add(axes);
+  ground.add(axes);
+  scene.add(ground);
+  V.ground = ground;
 
-  for (const g of ['mesh', 'wheels', 'tris', 'beams', 'nodes', 'overlay', 'imports']) {
+  for (const g of ['mesh', 'wheels', 'tris', 'beams', 'nodes', 'overlay', 'imports', 'preview']) {
     V.groups[g] = new THREE.Group();
     scene.add(V.groups[g]);
   }
 
   V.meshMaterial = new THREE.MeshStandardMaterial({
-    color: 0x9aa4b5, roughness: 0.75, metalness: 0.05, transparent: true, opacity: V.meshOpacity,
+    color: 0xaab3c2, roughness: 0.55, metalness: 0.1, transparent: true, opacity: V.meshOpacity,
     depthWrite: false, side: THREE.DoubleSide,
   });
 
@@ -101,6 +113,12 @@ function clearGroup(g) {
       if (Array.isArray(c.material)) c.material.forEach(m => m.dispose()); else c.material.dispose();
     }
   }
+}
+
+// nothing drawn: for a page that has no vehicle to show yet
+export function clearView() {
+  for (const k of ['nodes', 'beams', 'tris', 'wheels', 'mesh', 'overlay', 'preview']) if (V.groups[k]) clearGroup(V.groups[k]);
+  V.dirty = true;
 }
 
 // ---- building the drawable geometry from the scene --------------------------
@@ -227,7 +245,7 @@ function buildTris() {
   V.triMesh = front;
 }
 
-function buildWheels() {
+export function buildWheels() {
   clearGroup(V.groups.wheels);
   const sc = S.scene;
   const mat = new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.9, transparent: true, opacity: 0.55, depthWrite: false });
@@ -257,6 +275,7 @@ function buildWheels() {
 // fast path while dragging: only positions change
 export function refreshPositions() {
   const sc = S.scene;
+  if (!sc) return;
   if (V.nodePoints) {
     const a = V.nodePoints.geometry.attributes.position;
     V.drawNodes.forEach((i, k) => a.array.set(sc.nodes[i].p, k * 3));
@@ -280,6 +299,7 @@ export function refreshPositions() {
 
 export function refreshColors() {
   const sc = S.scene;
+  if (!sc) return;   // between vehicles: the old buffers no longer match anything
   if (V.nodePoints) {
     const a = V.nodePoints.geometry.attributes.color;
     V.drawNodes.forEach((i, k) => nodeColor(sc.nodes[i], i).toArray(a.array, k * 3));
@@ -329,9 +349,46 @@ export function setMeshes(meshData) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(m.pos, 3));
     g.setIndex(new THREE.BufferAttribute(m.idx, 1));
+    if (m.groups) {
+      // meshes with their own materials (the Vehicle Builder's): one group per material
+      m.groups.forEach(([start, count], i) => g.addGroup(start, count, i));
+      g.userData.mats = m.groups.map(gr => gr[2]);
+    }
     g.computeVertexNormals();
     V.meshCache.set(name, g);
   }
+}
+
+// colours for meshes that name their materials; updated in place so a new paint shows at once
+// materials by name for meshes with material groups: the Builder's and importer's own, or a vehicle's
+// (read from its materials files; doubleSide for meshes made elsewhere, whose faces may point either way)
+export function setPalette(materials, { doubleSide = false } = {}) {
+  for (const [name, d] of Object.entries(materials || {})) {
+    let m = V.palette.get(name);
+    if (!m) {
+      m = new THREE.MeshStandardMaterial({ side: doubleSide ? THREE.DoubleSide : THREE.FrontSide });
+      V.palette.set(name, m);
+    }
+    m.side = doubleSide ? THREE.DoubleSide : THREE.FrontSide;
+    m.userData.color = d.color;
+    m.userData.paint = !!d.paint;
+    m.color.setRGB(...(d.paint && V.paint ? V.paint : d.color), THREE.SRGBColorSpace);
+    m.metalness = d.metallic ?? 0;
+    m.roughness = d.roughness ?? 0.5;
+    m.userData.opacity = d.opacity ?? 1;
+    const em = d.glow && d.emissive ? d.emissive.map(c => c * 0.18) : [0, 0, 0];
+    m.emissive.setRGB(...em);
+    applyOpacity(m);
+  }
+  V.dirty = true;
+}
+
+function applyOpacity(m) {
+  const op = (m.userData.opacity ?? 1) * (V.meshOpacity ?? 1);
+  m.transparent = op < 0.999;
+  m.opacity = op;
+  m.depthWrite = op > 0.95;
+  m.needsUpdate = true;
 }
 
 export function buildMeshes() {
@@ -341,10 +398,12 @@ export function buildMeshes() {
   for (const fb of sc.flexbodies) {
     const geo = V.meshCache.get(fb.mesh);
     if (!geo) continue;
-    const mesh = new THREE.Mesh(geo, V.meshMaterial);
+    const mat = geo.userData.mats ? geo.userData.mats.map(n => V.palette.get(n) || V.meshMaterial) : V.meshMaterial;
+    const mesh = new THREE.Mesh(geo, mat);
     mesh.userData.sharedGeometry = true;
     mesh.userData.sharedMaterial = true;
     mesh.userData.part = fb.part;
+    mesh.userData.fb = fb;
     const inner = new THREE.Matrix4();
     const pos = fb.pos ? new THREE.Vector3(...fb.pos) : new THREE.Vector3();
     const rot = fb.rot ? new THREE.Quaternion(...quatFromEuler(-fb.rot[0] * Math.PI / 180, -fb.rot[1] * Math.PI / 180, -fb.rot[2] * Math.PI / 180)) : new THREE.Quaternion();
@@ -372,12 +431,36 @@ export function updateMeshVisibility() {
   V.dirty = true;
 }
 
+// lift the drawn vehicle (not the ground) by z, so it can stand on the grid
+export function setVehicleOffset(z) {
+  V.offsetZ = z;
+  for (const k of ['mesh', 'wheels', 'tris', 'beams', 'nodes', 'overlay', 'imports', 'preview']) if (V.groups[k]) V.groups[k].position.z = z;
+  V.dirty = true;
+}
+
+export function setGround(on) {
+  if (V.ground) V.ground.visible = on;
+  V.dirty = true;
+}
+
+// paint colour on the model (Garage paint preview); null goes back to the vehicle's own. Materials that take
+// the paint get it; a vehicle without any (or without readable materials) shows it on the whole model
+export function setMeshColor(rgb) {
+  V.paint = rgb || null;
+  for (const m of V.palette.values()) {
+    if (m.userData.paint) m.color.setRGB(...(rgb || m.userData.color), THREE.SRGBColorSpace);
+  }
+  V.meshMaterial.color.setRGB(...(rgb && !V.vehiclePaint ? rgb : [0.667, 0.702, 0.761]), THREE.SRGBColorSpace);
+  V.dirty = true;
+}
+
 export function setMeshOpacity(v) {
   V.meshOpacity = v;
   V.meshMaterial.opacity = v;
   V.meshMaterial.depthWrite = v > 0.95;
   V.meshMaterial.transparent = v <= 0.95;
   V.meshMaterial.needsUpdate = true;
+  for (const m of V.palette.values()) applyOpacity(m);
   V.dirty = true;
 }
 
@@ -531,6 +614,49 @@ export function setOverlay(lines, points = []) {
       map: circleTex, alphaTest: 0.5, depthTest: false, transparent: true, opacity: 0.8 }));
     p.renderOrder = 11;
     V.groups.overlay.add(p);
+  }
+  V.dirty = true;
+}
+
+// ---- a structure that is about to be made (import, workshop) --------------------------------------
+// fit: { pos: Map(id -> [x,y,z]), beams: { main: [[a,b]], rigid: [[a,b]] }, tris: [[a,b,c]] }; null clears it
+export function showStructure(fit, { attach = [], tris = true } = {}) {
+  clearGroup(V.groups.preview);
+  if (fit) {
+    const P = id => fit.pos.get(id);
+    const pts = [...fit.pos.values()];
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts.flat()), 3));
+    const nodes = new THREE.Points(g, new THREE.PointsMaterial({ size: V.nodeSize + 1, sizeAttenuation: false, color: 0xffb547,
+      map: circleTex, alphaTest: 0.5, depthTest: false, transparent: true }));
+    nodes.renderOrder = 12;
+    const lines = (list, color, opacity) => {
+      if (!list.length) return null;
+      const arr = new Float32Array(list.length * 6);
+      list.forEach(([a, b], k) => { const A = P(a) || a, B = P(b) || b; arr.set(A, k * 6); arr.set(B, k * 6 + 3); });
+      const lg = new THREE.BufferGeometry();
+      lg.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      const l = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest: false }));
+      l.renderOrder = 11;
+      return l;
+    };
+    const main = lines(fit.beams.main, 0xf29a2e, 0.75);
+    const rig = lines(fit.beams.rigid, 0x4ea1ff, 0.35);
+    const veh = S.scene ? attach.map(([vid, cid]) => {
+      const i = S.scene.nodeById.get(vid);
+      return i === undefined ? null : [S.scene.nodes[i].p, cid];
+    }).filter(Boolean) : [];
+    const at = lines(veh, 0x3fbf7f, 0.9);
+    for (const o of [main, rig, at, nodes]) if (o) V.groups.preview.add(o);
+    if (tris && fit.tris.length) {
+      const arr = new Float32Array(fit.tris.length * 9);
+      fit.tris.forEach((t, k) => t.forEach((id, v) => arr.set(P(id), k * 9 + v * 3)));
+      const tg = new THREE.BufferGeometry();
+      tg.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      const m = new THREE.Mesh(tg, new THREE.MeshBasicMaterial({ color: 0x2fbf9a, transparent: true, opacity: 0.16, side: THREE.FrontSide, depthWrite: false }));
+      m.renderOrder = 10;
+      V.groups.preview.add(m);
+    }
   }
   V.dirty = true;
 }

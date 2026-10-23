@@ -4,6 +4,10 @@ The first time a vehicle is opened every .dae under vehicles/<model>/ and
 vehicles/common/ is scanned for object names (common.zip alone has ~700 MB of
 .dae, so the result is cached on disk). Meshes are pulled out of a .dae only
 when the preview asks for them, and also cached on disk.
+
+Each mesh comes with the materials its triangles use; the colours of those
+that have one (plain coloured materials, paint, glass) are read from the
+vehicle's *.materials.json files. Textures are not used.
 """
 import hashlib
 import json
@@ -14,7 +18,9 @@ import threading
 from array import array
 from collections import OrderedDict
 
-from . import dae, sources
+from . import dae, jbeamfile, sources
+
+CACHE_VERSION = 2       # bump when the extracted mesh format changes
 
 
 class MeshLibrary:
@@ -28,6 +34,8 @@ class MeshLibrary:
         self._extracted = OrderedDict()
         self._scanning = {}
         self._names_disk = self._load_json("names.json")
+        self._mat_index = {}      # model -> {material name: definition}
+        self._mat_files = {}      # file key -> {material name: definition}
 
     def _load_json(self, fn):
         try:
@@ -97,8 +105,10 @@ class MeshLibrary:
         with self.lock:
             if model is None:
                 self._index.clear()
+                self._mat_index.clear()
             else:
                 self._index.pop(model, None)
+                self._mat_index.pop(model, None)
 
     def _extract(self, root, rel):
         key = self._file_key(root, rel)
@@ -106,7 +116,8 @@ class MeshLibrary:
             if key in self._extracted:
                 self._extracted.move_to_end(key)
                 return self._extracted[key]
-        path = os.path.join(self.dir, hashlib.sha1(key.encode("utf-8")).hexdigest()[:20] + ".pickle")
+        path = os.path.join(self.dir, hashlib.sha1(("%s|v%d" % (key, CACHE_VERSION)).encode("utf-8")).hexdigest()[:20]
+                            + ".pickle")
         data = None
         try:
             with open(path, "rb") as f:
@@ -119,7 +130,7 @@ class MeshLibrary:
             except Exception as e:  # a broken .dae shouldn't stop the editor
                 raw = {}
                 print("can't read mesh file %s: %s" % (rel, e))
-            data = {n: (p.tobytes(), i.tobytes()) for n, (p, i) in raw.items()}
+            data = {n: (p.tobytes(), i.tobytes(), [list(x) for x in g]) for n, (p, i, g) in raw.items()}
             try:
                 with open(path + ".tmp", "wb") as f:
                     pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -144,6 +155,7 @@ class MeshLibrary:
             else:
                 by_file.setdefault((loc[0].id, loc[1]), (loc, []))[1].append(n)
         chunks, table, off = [], {}, 0
+        used = set()
         for (_, _), ((root, rel), ns) in by_file.items():
             data = self._extract(root, rel)
             for n in ns:
@@ -151,12 +163,14 @@ class MeshLibrary:
                 if got is None:
                     missing.append(n)
                     continue
-                pos, ind = got
-                table[n] = [off, len(pos) // 4, off + len(pos), len(ind) // 4, rel]
+                pos, ind, groups = got[0], got[1], (got[2] if len(got) > 2 else [])
+                table[n] = [off, len(pos) // 4, off + len(pos), len(ind) // 4, rel, groups]
+                used.update(g[2] for g in groups)
                 chunks.append(pos)
                 chunks.append(ind)
                 off += len(pos) + len(ind)
-        head = json.dumps({"meshes": table, "missing": missing}).encode("utf-8")
+        mats = self.material_info(model, used) if used else {}
+        head = json.dumps({"meshes": table, "missing": missing, "materials": mats}).encode("utf-8")
         head += b" " * ((4 - len(head) % 4) % 4)
         return struct.pack("<I", len(head)) + head + b"".join(chunks)
 
@@ -171,3 +185,96 @@ class MeshLibrary:
         p.frombytes(got[0])
         i.frombytes(got[1])
         return p, i
+
+    # -- materials ---------------------------------------------------------------
+    def _material_files(self, model):
+        seen = {}
+        for prefix in ("vehicles/%s" % model, "vehicles/common"):
+            for r in self.ws.roots:
+                if r.inactive:
+                    continue
+                for rel in r.files_under(prefix):
+                    low = sources.norm(rel)
+                    if low.endswith("materials.json") and low not in seen:
+                        seen[low] = (r, rel)
+        return list(seen.values())
+
+    def material_index(self, model):
+        """{material name (and mapTo): definition} from the vehicle's and the common materials files."""
+        with self.lock:
+            idx = self._mat_index.get(model)
+            if idx is not None:
+                return idx
+        idx = {}
+        for root, rel in self._material_files(model):
+            key = self._file_key(root, rel)
+            with self.lock:
+                defs = self._mat_files.get(key)
+            if defs is None:
+                defs = {}
+                try:
+                    data = jbeamfile.loads(jbeamfile.decode(root.read(rel)))
+                except Exception:
+                    data = None
+                if isinstance(data, dict):
+                    for k, d in data.items():
+                        if isinstance(d, dict) and d.get("class", "Material") == "Material":
+                            for nm in (d.get("mapTo"), d.get("name"), k):
+                                if isinstance(nm, str) and nm:
+                                    defs.setdefault(nm, d)
+                with self.lock:
+                    self._mat_files[key] = defs
+            for nm, d in defs.items():
+                idx.setdefault(nm, d)
+        with self.lock:
+            self._mat_index[model] = idx
+        return idx
+
+    def material_info(self, model, names):
+        """{name: {color, metallic, roughness, opacity, paint, glass}} for the materials that have a colour to show."""
+        idx = self.material_index(model)
+        out = {}
+        for n in names:
+            d = idx.get(n)
+            info = describe_material(d) if d is not None else None
+            if info:
+                out[n] = info
+        return out
+
+
+def _rgb(v):
+    if isinstance(v, str):
+        try:
+            v = [float(x) for x in v.split()]
+        except ValueError:
+            return None
+    if isinstance(v, (list, tuple)) and len(v) >= 3 and all(isinstance(x, (int, float)) for x in v[:3]):
+        return [max(0.0, min(1.0, float(x))) for x in v[:3]]
+    return None
+
+
+def describe_material(d):
+    """How a material looks in the preview, or None when it has nothing but textures to show."""
+    stages = d.get("Stages") or d.get("stages") or []
+    st = stages[0] if stages and isinstance(stages[0], dict) else {}
+    paint = any(isinstance(x, dict) and x.get("instanceDiffuse") for x in stages)
+    glass = bool(d.get("translucent")) and not d.get("alphaTest")
+    col = _rgb(st.get("baseColorFactor")) or _rgb(st.get("diffuseColor"))
+    textured = any(st.get(k) for k in ("baseColorMap", "colorMap", "diffuseMap"))
+    out = {}
+    if col is not None and not (textured and min(col) > 0.95):
+        out["color"] = col
+    if paint:
+        out["paint"] = True
+    if glass:
+        out["glass"] = True
+        out["opacity"] = 0.35
+        out.setdefault("color", [0.55, 0.62, 0.68])
+    if not out:
+        return None
+    out.setdefault("color", [0.667, 0.702, 0.761])
+    for key, name in (("metallicFactor", "metallic"), ("roughnessFactor", "roughness")):
+        v = st.get(key)
+        if isinstance(v, (int, float)):
+            out[name] = max(0.0, min(1.0, float(v)))
+    return out

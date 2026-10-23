@@ -898,6 +898,7 @@ class Builder:
                     "width": _num(row.get("tireWidth"), None) or _num(row.get("hubWidth"), None),
                     "hubWidth": _num(row.get("hubWidth"), None), "pressurePSI": _num(row.get("pressurePSI"), None),
                     "numRays": _num(row.get("numRays"), None),
+                    "mass": _wheel_mass(row),
                     "part": pname, "f": f, "row": ri,
                     "o": oset(_opts(row)),
                 })
@@ -933,7 +934,7 @@ class Builder:
         parts = {}
         for path, p in self.active:
             parts[p.name] = {"title": p.title, "f": fidx(p.file.key), "slotType": p.slot_type, "path": path,
-                             "common": p.in_common}
+                             "common": p.in_common, "virtual": bool(getattr(p, "virtual", False))}
 
         variables = []
         for name, v in all_vars.items():
@@ -953,6 +954,7 @@ class Builder:
         return {
             "model": m.name,
             "mainPart": main_name,
+            "engine": _engine_summary(vehicle),
             "files": files,
             "nodes": nodes, "beams": beams, "tris": tris, "wheels": wheels, "flexbodies": flex,
             "xforms": xforms, "refNodes": ref, "optsets": optsets,
@@ -960,6 +962,63 @@ class Builder:
             "warnings": self.warnings,
             "sections": sorted(tables.keys()),
         }
+
+
+def _wheel_mass(row):
+    """Mass of the nodes the game makes for a pressure wheel (hub rings and tire rings)."""
+    rays = _num(row.get("numRays"), None)
+    if not rays:
+        return None
+    hub = _num(row.get("hubNodeWeight"), 0.0) or 0.0
+    tire = _num(row.get("nodeWeight"), 0.0) or 0.0
+    has_tire = row.get("hasTire") is not False
+    return round(2 * rays * (hub + (tire if has_tire else 0.0)), 3)
+
+
+def _table_pairs(t):
+    """[[x, y], ...] of a two-column table like [["rpm", "torque"], [0, 0], ...]."""
+    out = []
+    if isinstance(t, list):
+        for r in t[1:]:
+            if isinstance(r, list) and len(r) >= 2:
+                x, y = _num(r[0]), _num(r[1])
+                if x is not None and y is not None:
+                    out.append([x, y])
+    return out
+
+
+def engine_device(vehicle):
+    """(name, electric) of the powertrain device that drives the vehicle: its first combustion engine, else its
+    first electric motor."""
+    found = {}
+    rows = vehicle.get("powertrain")
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, list) and len(r) >= 2 and r[0] in ("combustionEngine", "electricMotor") \
+                and isinstance(r[1], str):
+            found.setdefault(r[0], r[1])
+    if "combustionEngine" in found:
+        return found["combustionEngine"], False
+    if "electricMotor" in found:
+        return found["electricMotor"], True
+    return "mainEngine", False
+
+
+def _engine_summary(vehicle):
+    """The main engine's (or electric motor's) torque curve and limits, after all parts were merged."""
+    name, electric = engine_device(vehicle)
+    e = vehicle.get(name)
+    if not isinstance(e, dict):
+        return None
+    out = {"torque": _table_pairs(e.get("torque")), "device": name, "electric": electric}
+    for k in ("torqueModMult", "torqueModIntake", "torqueModExhaust"):
+        if isinstance(e.get(k), list):
+            out[k] = _table_pairs(e.get(k))
+    for k in ("idleRPM", "maxRPM", "revLimiterRPM", "inertia"):
+        v = _num(e.get(k))
+        if v is not None:
+            out[k] = v
+    out["hasRevLimiter"] = e.get("hasRevLimiter")
+    return _jsonable(out)
 
 
 def _opts(row, node=False):

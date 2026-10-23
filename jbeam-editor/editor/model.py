@@ -5,6 +5,7 @@ parsed files. Model gathers what the game would load for one vehicle: every
 .jbeam under vehicles/<model>/ and vehicles/common/, the .pc configs and
 info.json, and indexes the parts by name and slot type.
 """
+import copy
 import hashlib
 import json
 import os
@@ -30,9 +31,10 @@ class FileRef:
 
 
 class Part:
-    __slots__ = ("name", "file", "data", "slot_type", "title", "in_common")
+    __slots__ = ("name", "file", "data", "slot_type", "title", "in_common", "virtual")
 
-    def __init__(self, name, file, data, in_common):
+    def __init__(self, name, file, data, in_common, virtual=False):
+        self.virtual = virtual
         self.name = name
         self.file = file
         self.data = data
@@ -48,6 +50,26 @@ class Part:
         if isinstance(st, list):
             return [s for s in st if isinstance(s, str)]
         return [st] if isinstance(st, str) else []
+
+
+class VirtualRoot:
+    """Where preview-only parts (not yet written anywhere) live."""
+    kind = "virtual"
+    origin = "preview"
+    editable = False
+    inactive = False
+    off_in_game = False
+    path = ""
+
+    def __init__(self, label):
+        self.label = label
+        self.id = "virtual:" + label
+
+    def full_path(self, rel):
+        return rel
+
+    def read(self, rel):
+        raise OSError("preview parts are not in a file yet")
 
 
 class Workspace:
@@ -151,10 +173,13 @@ class Workspace:
             for m in r.models():
                 # a folder with only saved configs (like the user folder) holds no parts to edit
                 jb = any(f.lower().endswith(".jbeam") for f in r.files_under("vehicles/%s" % m))
-                e = found.setdefault(m, {"model": m, "sources": [], "editable": False, "parts": False})
+                e = found.setdefault(m, {"model": m, "sources": [], "editable": False, "parts": False, "builder": False,
+                                         "scrap": False})
                 e["sources"].append(r.label)
                 e["editable"] = e["editable"] or (r.editable and jb)
                 e["parts"] = e["parts"] or jb
+                e["builder"] = e["builder"] or r.has("vehicles/%s/jbeam_editor_builder.json" % m)
+                e["scrap"] = e["scrap"] or r.has("vehicles/%s/jbeam_editor_scrap.json" % m)
         out = []
         for m, e in found.items():
             if not e.pop("parts"):
@@ -291,6 +316,38 @@ class Model:
                 out.append(r)
         return out
 
+    def overlay(self, extra, label="preview"):
+        """A copy of this model with extra parts {name: data} added (for previews; nothing is written)."""
+        m = copy.copy(self)
+        m.parts = dict(self.parts)
+        m.by_slot = {k: list(v) for k, v in self.by_slot.items()}
+        m.files = dict(self.files)
+        fr = FileRef(VirtualRoot(label), "vehicles/%s/(%s).jbeam" % (self.name, label))
+        m.files[fr.key] = fr
+        for name, data in extra.items():
+            p = Part(name, fr, data, False, virtual=True)
+            m.parts[name] = p
+            for st in p.slot_types():
+                m.by_slot.setdefault(st, []).append(name)
+        return m
+
+    @classmethod
+    def from_parts(cls, ws, name, parts, label="builder"):
+        """A model made only of preview parts {name: data} (a vehicle that is not written anywhere yet)."""
+        m = cls.__new__(cls)
+        m.ws, m.name = ws, name
+        m.files, m.parts, m.by_slot = {}, {}, {}
+        m.duplicates, m.errors, m.configs = [], [], []
+        m.info, m.info_file = {}, None
+        fr = FileRef(VirtualRoot(label), "vehicles/%s/(%s).jbeam" % (name, label))
+        m.files[fr.key] = fr
+        for pname, data in parts.items():
+            p = Part(pname, fr, data, False, virtual=True)
+            m.parts[pname] = p
+            for st in p.slot_types():
+                m.by_slot.setdefault(st, []).append(pname)
+        return m
+
     def summary(self):
         return {
             "model": self.name,
@@ -309,7 +366,27 @@ class Model:
             "duplicates": [{"part": p, "kept": self.files[a].rel, "ignored": self.files[b].rel}
                            for p, a, b in self.duplicates],
             "partCount": len(self.parts),
+            "defaultPaint": self.default_paint(),
         }
+
+    def default_paint(self):
+        """The vehicle's own main paint colour [r, g, b] from its info.json, or None."""
+        info = self.info if isinstance(self.info, dict) else {}
+        paints = info.get("paints")
+        name = info.get("defaultPaintName1")
+        if isinstance(paints, dict) and isinstance(paints.get(name), dict):
+            c = paints[name].get("baseColor")
+            if isinstance(c, list) and len(c) >= 3 and all(isinstance(x, (int, float)) for x in c[:3]):
+                return [max(0.0, min(1.0, float(x))) for x in c[:3]]
+        colors, dc = info.get("colors"), info.get("default_color")
+        if isinstance(colors, dict) and isinstance(colors.get(dc), str):
+            try:
+                c = [float(x) for x in colors[dc].split()]
+            except ValueError:
+                return None
+            if len(c) >= 3:
+                return [max(0.0, min(1.0, x)) for x in c[:3]]
+        return None
 
 
 def _label(v):

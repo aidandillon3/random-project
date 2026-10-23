@@ -21,9 +21,18 @@ export function h(tag, attrs = {}, ...children) {
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+// a short message at the top of the 3D view: at most three at a time, the same one is not repeated,
+// and a click puts it away
 export function toast(msg, kind = '', ms = 4500) {
-  const t = h('div', { class: 'toast ' + kind }, msg);
-  $('#toasts').append(t);
+  const box = $('#toasts');
+  const text = typeof msg === 'string' ? msg : null;
+  const same = text && [...box.children].find(x => x.dataset.text === text);
+  if (same) same.remove();
+  const t = h('div', { class: 'toast ' + kind, title: 'Click to close' }, msg);
+  if (text) t.dataset.text = text;
+  t.addEventListener('click', () => t.remove());
+  box.append(t);
+  while (box.children.length > 3) box.firstElementChild.remove();
   setTimeout(() => t.remove(), ms);
   return t;
 }
@@ -134,4 +143,23 @@ export function shortPath(p) {
   const parts = String(p).split(/[\\/]/);
   const i = parts.lastIndexOf('mods');
   return (i >= 0 ? parts.slice(i) : parts.slice(-3)).join('\\');
+}
+
+// ask for a line of text in a small dialog; resolves to the text or null
+export function askText(title, label, value = '', okLabel = 'OK') {
+  return new Promise(resolve => {
+    let done = false;
+    const input = h('input', { type: 'text', value, style: { width: '100%' } });
+    const finish = v => { if (!done) { done = true; resolve(v); closeModal(); } };
+    input.addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'Enter') finish(input.value.trim() || null);
+      if (e.key === 'Escape') finish(null);
+    });
+    openModal(title, h('div', {}, h('p', { class: 'note' }, label), input,
+      h('div', { class: 'actions' }, h('button', { onclick: () => finish(null) }, 'Cancel'),
+        h('button', { class: 'primary', onclick: () => finish(input.value.trim() || null) }, okLabel))),
+    { onClose: () => { if (!done) { done = true; resolve(null); } } });
+    setTimeout(() => { input.focus(); input.select(); }, 30);
+  });
 }

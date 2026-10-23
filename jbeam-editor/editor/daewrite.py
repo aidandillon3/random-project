@@ -32,37 +32,28 @@ def _f(v):
     return "0" if s in ("-0", "") else s
 
 
-def dae_text(mesh_name, material, pos, idx, uvs=None):
-    """A Z-up, metre-unit .dae with one object named mesh_name."""
+def dae_text(mesh_name, material, pos, idx, uvs=None, groups=None):
+    """A Z-up, metre-unit .dae with one object named mesh_name.
+
+    groups: optional [(material, indices)] to give parts of the mesh different
+    materials; without it the whole mesh (idx) uses `material`."""
+    return dae_multi([(mesh_name, pos, groups or [(material, idx)], uvs)])
+
+
+def _geometry(mesh_name, pos, groups, uvs):
+    all_idx = [i for _, g in groups for i in g]
     nverts = len(pos) // 3
-    ntris = len(idx) // 3
-    nrm = _normals(pos, idx)
+    nrm = _normals(pos, all_idx)
     if not uvs or len(uvs) != nverts * 2:
         uvs = [0.0] * (nverts * 2)
     gid = escape(mesh_name) + "-mesh"
-    mat = escape(material)
-    name = escape(mesh_name)
-    p = " ".join(_f(v) for v in pos)
-    n = " ".join(_f(v) for v in nrm)
-    uv = " ".join(_f(v) for v in uvs)
-    tri = " ".join("%d" % i for i in idx)
-    return """<?xml version="1.0" encoding="utf-8"?>
-<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
-  <asset>
-    <contributor><authoring_tool>JBeam Editor</authoring_tool></contributor>
-    <unit name="meter" meter="1"/>
-    <up_axis>Z_UP</up_axis>
-  </asset>
-  <library_effects>
-    <effect id="{mat}-effect"><profile_COMMON><technique sid="common"><lambert>
-      <diffuse><color sid="diffuse">0.8 0.8 0.8 1</color></diffuse>
-    </lambert></technique></profile_COMMON></effect>
-  </library_effects>
-  <library_materials>
-    <material id="{mat}-material" name="{mat}"><instance_effect url="#{mat}-effect"/></material>
-  </library_materials>
-  <library_geometries>
-    <geometry id="{gid}" name="{name}">
+    tris = "\n".join(
+        '        <triangles material="{m}" count="{nt}">\n'
+        '          <input semantic="VERTEX" source="#{gid}-vertices" offset="0"/>\n'
+        '          <p>{tri}</p>\n'
+        '        </triangles>'.format(m=escape(m), nt=len(g) // 3, gid=gid, tri=" ".join("%d" % i for i in g))
+        for m, g in groups if len(g) >= 3)
+    return """    <geometry id="{gid}" name="{name}">
       <mesh>
         <source id="{gid}-positions">
           <float_array id="{gid}-positions-array" count="{np}">{p}</float_array>
@@ -87,29 +78,63 @@ def dae_text(mesh_name, material, pos, idx, uvs=None):
           <input semantic="NORMAL" source="#{gid}-normals"/>
           <input semantic="TEXCOORD" source="#{gid}-map-0"/>
         </vertices>
-        <triangles material="{mat}" count="{nt}">
-          <input semantic="VERTEX" source="#{gid}-vertices" offset="0"/>
-          <p>{tri}</p>
-        </triangles>
+{tris}
       </mesh>
-    </geometry>
-  </library_geometries>
-  <library_visual_scenes>
-    <visual_scene id="Scene" name="Scene">
-      <node id="{name}" name="{name}" type="NODE">
+    </geometry>""".format(gid=gid, name=escape(mesh_name), np=len(pos), nv=nverts, nuv=len(uvs),
+                          p=" ".join(_f(v) for v in pos), n=" ".join(_f(v) for v in nrm),
+                          uv=" ".join(_f(v) for v in uvs), tris=tris)
+
+
+def dae_multi(objects):
+    """A Z-up, metre-unit .dae holding several objects: [(name, pos, [(material, indices)], uvs or None)]."""
+    mats = []
+    for _, _, groups, _ in objects:
+        for m, g in groups:
+            if m not in mats and len(g) >= 3:
+                mats.append(m)
+    effects = "\n".join(
+        '    <effect id="{m}-effect"><profile_COMMON><technique sid="common"><lambert>\n'
+        '      <diffuse><color sid="diffuse">0.8 0.8 0.8 1</color></diffuse>\n'
+        '    </lambert></technique></profile_COMMON></effect>'.format(m=escape(m)) for m in mats)
+    materials = "\n".join('    <material id="{m}-material" name="{m}"><instance_effect url="#{m}-effect"/></material>'
+                           .format(m=escape(m)) for m in mats)
+    geoms = "\n".join(_geometry(name, pos, groups, uvs) for name, pos, groups, uvs in objects)
+    nodes = []
+    for name, _, groups, _ in objects:
+        binds = "\n".join('            <instance_material symbol="{m}" target="#{m}-material"/>'.format(m=escape(m))
+                          for m in dict.fromkeys(m for m, g in groups if len(g) >= 3))
+        nodes.append("""      <node id="{name}" name="{name}" type="NODE">
         <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
         <instance_geometry url="#{gid}" name="{name}">
           <bind_material><technique_common>
-            <instance_material symbol="{mat}" target="#{mat}-material"/>
+{binds}
           </technique_common></bind_material>
         </instance_geometry>
-      </node>
+      </node>""".format(name=escape(name), gid=escape(name) + "-mesh", binds=binds))
+    return """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <contributor><authoring_tool>JBeam Editor</authoring_tool></contributor>
+    <unit name="meter" meter="1"/>
+    <up_axis>Z_UP</up_axis>
+  </asset>
+  <library_effects>
+{effects}
+  </library_effects>
+  <library_materials>
+{materials}
+  </library_materials>
+  <library_geometries>
+{geoms}
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="Scene" name="Scene">
+{nodes}
     </visual_scene>
   </library_visual_scenes>
   <scene><instance_visual_scene url="#Scene"/></scene>
 </COLLADA>
-""".format(mat=mat, gid=gid, name=name, p=p, n=n, uv=uv, tri=tri, np=len(pos), nv=nverts,
-           nuv=len(uvs), nt=ntris)
+""".format(effects=effects, materials=materials, geoms=geoms, nodes="\n".join(nodes))
 
 
 def add_material(path, material, color, paint=False):

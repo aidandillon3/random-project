@@ -1,7 +1,7 @@
 // Talking to the local Python server.
 
 async function post(path, body) {
-  const r = await fetch(path, {
+  const r = await fetch(path.replace(/^\//, ''), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
@@ -20,7 +20,21 @@ export const api = {
   state: () => post('/api/state'),
   config: cfg => post('/api/config', cfg),
   open: (model, reload = false) => post('/api/open', { model, reload }),
-  build: (model, config, configName) => post('/api/build', { model, config, configName }),
+  build: (model, config, configName, garage) => post('/api/build', { model, config, configName, garage }),
+  garageSave: body => post('/api/garage_save', body),
+  builderSchema: () => post('/api/builder_schema'),
+  builderPreview: (spec, have) => post('/api/builder_preview', { spec, have }),
+  builderCreate: body => post('/api/builder_create', body),
+  builderLoad: model => post('/api/builder_load', { model }),
+  scrapList: (refresh = false) => post('/api/scrap_list', { refresh }),
+  scrapEntry: body => post('/api/scrap_entry', body),
+  scrapPreview: body => post('/api/scrap_preview', body),
+  scrapCreate: body => post('/api/scrap_create', body),
+  scrapLoad: model => post('/api/scrap_load', { model }),
+  projects: () => post('/api/projects'),
+  projectSave: (name, data) => post('/api/project_save', { name, data }),
+  projectLoad: name => post('/api/project_load', { name }),
+  projectDelete: name => post('/api/project_delete', { name }),
   save: (model, ops, config) => post('/api/save', { model, ops, config }),
   partText: (model, part) => post('/api/part_text', { model, part }),
   pcSave: (model, root, name, config) => post('/api/pc_save', { model, root, name, config }),
@@ -31,6 +45,9 @@ export const api = {
   reveal: path => post('/api/reveal', { path }),
   newPart: body => post('/api/new_part', body),
   newMod: (model, name) => post('/api/new_mod', { model, name }),
+  shortcut: () => post('/api/shortcut'),
+  installNative: start => post('/api/install_native', { start }),
+  log: () => post('/api/log'),
   async meshes(model, names) {
     const buf = await post('/api/meshes', { model, names });
     const dv = new DataView(buf);
@@ -38,13 +55,14 @@ export const api = {
     const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, n)));
     const base = 4 + n;
     const out = {};
-    for (const [name, [po, pc, io, ic, file]] of Object.entries(head.meshes)) {
+    for (const [name, [po, pc, io, ic, file, groups]] of Object.entries(head.meshes)) {
       out[name] = {
         pos: new Float32Array(buf, base + po, pc),
         idx: new Uint32Array(buf, base + io, ic),
         file,
+        groups: groups && groups.length ? groups : null,
       };
     }
-    return { meshes: out, missing: head.missing };
+    return { meshes: out, missing: head.missing, materials: head.materials || {} };
   },
 };
