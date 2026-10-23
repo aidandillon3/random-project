@@ -115,13 +115,14 @@ class Generator:
         axle_w = clamp(4.5 + 6.0 * (hub_node_w * 2 * rays) / 25.0, 4.5, 12.0)
         ax.wheel_nodes = {}
         loads = {}
-        for side, s in SIDES:
+        for c in ax.corners:
+            side, s = c.side, c.s
             nm = ax.id + side.upper()
             inner = "%sw1%s" % (p, side)
             outer = "%sw1%s%s" % (p, side, side)
-            x = ax.track / 2
+            x, y, z = ax.centers[side]
             for name, dx in ((inner, -0.1), (outer, 0.1)):
-                n = S.node(name, (s * (x + dx), ax.y, ax.zc), "wheel_" + ax.id, w=axle_w, groups=["wheelhub_" + nm],
+                n = S.node(name, (s * (x + dx), y, z), "wheel_" + ax.id, w=axle_w, groups=["wheelhub_" + nm],
                            kind="wheel", fric=0.5)
                 n.coll, n.selfcoll = True, False
                 n.extra = {"staticCollision": False}
@@ -133,7 +134,7 @@ class Generator:
             "hub_k": int(round(900000 * clamp(rim_r / 0.216, 0.8, 1.6), -3)) + 1000, "hub_side_k": hub_side_k,
             "hub_node_w": hub_node_w, "tire_node_w": tire_node_w, "tire_scale": tire_scale,
             "hub_deform": int(round(15000 * tire_scale, -3)), "hub_strength": int(round(66000 * tire_scale, -3)),
-            "generated_mass": generated * 2, "axle_load": loads, "style_title": style,
+            "generated_mass": generated * len(ax.corners), "axle_load": loads, "style_title": style,
             "size_text": specmod.tire_size_text(tw * 1000, ax.r * 2 / specmod.INCH, rim_in),
         }
 
@@ -178,19 +179,20 @@ class Generator:
             my += gm * ax.y
             mz += gm * ax.zc
         self.cg = (mx / total, my / total, mz / total)
-        aF, aR = self.axles["F"], self.axles["R"]
-        wb = aR.y - aF.y
-        front_share = (aR.y - self.cg[1]) / wb
-        self.front_share = clamp(front_share, 0.05, 0.95)
+        shares = axle_shares([ax.y for ax in self.axle_list], self.cg[1])
+        for ax, sh_ in zip(self.axle_list, shares):
+            ax.share = sh_
+        self.front_share = clamp(self.axles["F"].share, 0.05, 0.95)
         for ax in self.axle_list:
             unsprung = sum(S.nodes[n].w for n in set(ax.unsprung_nodes))
-            unsprung += sum(S.nodes[n].w for side, _ in SIDES for n in ax.wheel_nodes[side])
+            unsprung += sum(S.nodes[n].w for c in ax.corners for n in ax.wheel_nodes[c.side])
             unsprung += self.wheels[ax.id]["generated_mass"]
-            share = self.front_share if ax.front else 1 - self.front_share
+            share = ax.share
             # a solid axle housing's weight is part of it
             ax.unsprung = unsprung
-            ax.corner_sprung = max(total * share - unsprung, total * share * 0.35) / 2
-            ax.corner_load = total * share / 2
+            n = len(ax.corners)
+            ax.corner_sprung = max(total * share - unsprung, total * share * 0.35) / n
+            ax.corner_load = total * share / n
 
     def _springs(self):
         P, S = self.P, self.S
@@ -207,7 +209,7 @@ class Generator:
             c_crit = 2 * math.sqrt(k_wheel * m)
             bump = zeta * c_crit * 0.75 / (mr * mr)
             rebound = zeta * c_crit * 1.45 / (mr * mr)
-            lo, hi = ax.spring_ends["l"]
+            lo, hi = ax.spring_ends[ax.corners[0].side]
             length = dist(S.pos(lo), S.pos(hi))
             bump_range = max(ax.bump * mr, 0.02)
             droop_range = max(ax.droop * mr, 0.02)
@@ -223,8 +225,8 @@ class Generator:
             sp = self.springs[ax.id]
             # the coilover's beams (written by parts.py) as one stand-in for the stability check
             S.kind("calc_coil_" + ax.id, beamSpring=k_spring + sp["stop_rate"] * 5, beamDamp=rebound + sp["stop_damp"])
-            for side, _ in SIDES:
-                lo, hi = ax.spring_ends[side]
+            for c in ax.corners:
+                lo, hi = ax.spring_ends[c.side]
                 S.beam(lo, hi, "calc_coil_" + ax.id, "calc_coil_" + ax.id)
         # the coilover beams were not known when the masses were set: check stability again
         chassis.stabilize(S, self.wheels)
@@ -390,6 +392,22 @@ class Generator:
                 t100 = round(t + 0.35, 1)
             top = max(top, v)
         return t100, round(top * 3.6)
+
+
+def axle_shares(ys, y_cg):
+    """Share of the weight each axle carries (lever rule; spread evenly over the middle axles of 3+)."""
+    n = len(ys)
+    if n == 1:
+        return [1.0]
+    if n == 2:
+        a, b = ys
+        f = clamp((b - y_cg) / (b - a) if b != a else 0.5, 0.05, 0.95)
+        return [f, 1 - f]
+    mean = sum(ys) / n
+    var = sum((y - mean) ** 2 for y in ys) or 1.0
+    out = [max(1.0 / n + (y - mean) * (y_cg - mean) / var, 0.04) for y in ys]
+    t = sum(out)
+    return [v / t for v in out]
 
 
 def generate(spec, author=""):

@@ -508,6 +508,8 @@ class Axle:
         self.toward_center = 1 if self.front else -1
         self.driven = (P.drive == "AWD") or (P.drive == "RWD" and not self.front) or (P.drive == "FWD" and self.front)
         self.corners = [Corner(self, s) for _, s in SIDES]
+        # wheel centre of each corner: (distance from the centre line, y, z)
+        self.centers = {side: (self.track / 2, self.y, self.zc) for side, _ in SIDES}
         # filled in by the builders
         self.spring_ends = {}     # side -> (lower node, upper node)
         self.hub = {}             # side -> {"h1":..}
@@ -525,19 +527,18 @@ def _clamp_z(sh, y, z, margin=0.06):
 def build_wishbone(S, sh, P, ax, body_names):
     part = "susp_" + ax.id
     k = ax.k
-    T2 = ax.track / 2
     p = ax.p
-    zc, y = ax.zc, ax.y
-    L_lo = clamp(0.5 * T2, 0.26, 0.55)
-    L_up = 0.72 * L_lo
-    x_lo = T2 - 0.075 - L_lo
-    x_up = T2 - 0.125 - L_up
     caster = -0.015 if ax.front else 0.0
     hub_w = clamp(3.4 * (P.mass / 1500.0) ** 0.4, 2.4, 8.0)
     piv_w = clamp(3.0 * (P.mass / 1500.0) ** 0.4, 2.0, 7.0)
-    zt_spring = _clamp_z(sh, y, zc + 0.165 * k + 0.26 + 0.35 * ax.travel, 0.07)
-    zt_spring = max(zt_spring, zc - 0.115 * k + 0.32)
-    for side, s in SIDES:
+    for c in ax.corners:
+        side, s = c.side, c.s
+        T2, y, zc = ax.centers[side]
+        x_lo = max(T2 - 0.075 - clamp(0.5 * T2, 0.26, 0.55), 0.06)
+        L_lo = T2 - 0.075 - x_lo
+        x_up = max(T2 - 0.125 - 0.72 * L_lo, 0.05)
+        zt_spring = _clamp_z(sh, y, zc + 0.165 * k + 0.26 + 0.35 * ax.travel, 0.07)
+        zt_spring = max(zt_spring, zc - 0.115 * k + 0.32)
         g_hub = P.model_group("hub_" + ax.id + side.upper())
         h1 = S.node("%sh1%s" % (p, side), mirror((T2 - 0.075, y, zc - 0.115 * k), s), part, w=hub_w,
                     groups=[g_hub, P.model_group("larm_" + ax.id + side.upper()),
@@ -604,16 +605,17 @@ def build_wishbone(S, sh, P, ax, body_names):
         S.beam(h1.name, ur.name, part, "anti_inv", beamPrecompression=0.55)
         S.beam(h2.name, lf.name, part, "anti_inv", beamPrecompression=0.55)
         S.beam(h2.name, lr.name, part, "anti_inv", beamPrecompression=0.55)
-    # cross-car ties between the two halves of the subframe
-    for a, b in (("l1", "l1"), ("l2", "l2"), ("u1", "u1"), ("s1", "s1")):
-        S.beam("%s%sl" % (p, a), "%s%sr" % (p, b), part, "sub")
-    S.beam("%sl1l" % p, "%sl2r" % p, part, "sub")
-    S.beam("%sl2l" % p, "%sl1r" % p, part, "sub")
-    # anti-roll bar: twist about the line through the lower front pivots
-    ax.arb = ["%sh1l" % p, "%sl1l" % p, "%sl1r" % p, "%sh1r" % p]
-    ax.arb_lever = _lever(S, "%sh1l" % p, "%sl1l" % p, "%sl1r" % p)
+    if len(ax.corners) == 2:
+        # cross-car ties between the two halves of the subframe
+        for a, b in (("l1", "l1"), ("l2", "l2"), ("u1", "u1"), ("s1", "s1")):
+            S.beam("%s%sl" % (p, a), "%s%sr" % (p, b), part, "sub")
+        S.beam("%sl1l" % p, "%sl2r" % p, part, "sub")
+        S.beam("%sl2l" % p, "%sl1r" % p, part, "sub")
+        # anti-roll bar: twist about the line through the lower front pivots
+        ax.arb = ["%sh1l" % p, "%sl1l" % p, "%sl1r" % p, "%sh1r" % p]
+        ax.arb_lever = _lever(S, "%sh1l" % p, "%sl1l" % p, "%sl1r" % p)
     _wheel_attach(S, ax, part)
-    lo, hi = ax.spring_ends["l"]
+    lo, hi = ax.spring_ends[ax.corners[0].side]
     ax.mr = abs(v_norm(v_sub(S.pos(hi), S.pos(lo)))[2])
 
 
@@ -728,7 +730,8 @@ def build_solid(S, sh, P, ax, body_names):
 
 def _wheel_attach(S, ax, part):
     """Beams from the knuckle to the wheel's axle nodes (defined by the wheel part)."""
-    for side, s in SIDES:
+    for c in ax.corners:
+        side = c.side
         inner, outer = ax.wheel_nodes[side]
         hub = ax.hub[side]
         wname = ax.id + side.upper()

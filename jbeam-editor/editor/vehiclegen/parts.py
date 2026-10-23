@@ -8,7 +8,7 @@ menus and the editor's Garage work on it like on any other car:
     ├ <m>_suspension_F/R     arms, hubs, steering, anti-roll bar
     │ ├ <m>_coilover_F/R     springs, dampers, bump stops (ride height)
     │ ├ <m>_brake_F/R
-    │ ├ <m>_wheel_F/R        rims (axle nodes placed by the slot's nodeOffset)
+    │ ├ <m>_wheel_F/R        rims and the wheels' axle nodes
     │ │ └ <m>_tire_F/R
     │ └ <m>_wheeldata_F/R    the wheels themselves
     ├ <m>_engine
@@ -18,7 +18,7 @@ menus and the editor's Garage work on it like on any other car:
 """
 import math
 
-from .chassis import FLT_MAX, G, SIDES, clamp, dist
+from .chassis import FLT_MAX, G, clamp, dist
 from .shape import lerp
 
 PW_HEAD = ["name", "hubGroup", "group", "node1:", "node2:", "nodeS", "nodeArm:", "wheelDir"]
@@ -261,26 +261,26 @@ class PartsBuilder:
         P, S = self.P, self.S
         part = "susp_" + ax.id
         nodes, beams, hydros, _ = self.by_part(part)
-        side_word = "Front" if ax.front else "Rear"
-        x0 = ax.track / 2 - 0.2
+        side_word = axle_word(ax)
         slots = [["type", "default", "description"],
                  [self.name("coilover_" + ax.id), self.name("coilover_" + ax.id), side_word + " Springs"],
                  [self.name("brake_" + ax.id), self.name("brake_" + ax.id), side_word + " Brakes"],
                  [self.name("wheel_" + ax.id), self.name("wheel_" + ax.id), side_word + " Wheels",
-                  {"nodeOffset": {"x": "$=$trackoffset_%s+%s" % (ax.id, _fmt(x0)), "y": _r(ax.y), "z": _r(ax.zc)}}],
+                  {"nodeOffset": {"x": "$trackoffset_" + ax.id, "y": 0, "z": 0}}],
                  [self.name("wheeldata_" + ax.id), self.name("wheeldata_" + ax.id), side_word + " Spindles",
                   {"coreSlot": True}]]
         k_arb = self.g.springs[ax.id]["arb_rate"]
-        lever = ax.arb_lever
         variables = [VAR_HEAD,
                      _var("$camber_" + ax.id, "°", "Wheel Alignment", P.camberF if ax.front else P.camberR, -5, 3,
                           "Camber", "Tilt of the wheels; negative leans their tops inward",
                           stepDis=0.1, subCategory=side_word),
                      _var("$trackoffset_" + ax.id, "+m", "Wheels", 0, -0.02, 0.08, "Wheel Offset",
                           "Spacing of the wheels from the hubs", stepDis=0.001, subCategory=side_word),
-                     _var("$arb_" + ax.id, "N/m", "Suspension", round(k_arb), 0, round(max(k_arb * 3, 60000)),
-                          "Anti-Roll Bar", "Stiffness of the anti-roll bar at the wheels", stepDis=500,
-                          subCategory=side_word)]
+                     ]
+        if ax.arb:
+            variables.append(_var("$arb_" + ax.id, "N/m", "Suspension", round(k_arb), 0, round(max(k_arb * 3, 60000)),
+                                  "Anti-Roll Bar", "Stiffness of the anti-roll bar at the wheels", stepDis=500,
+                                  subCategory=side_word))
         d = {
             "information": _info("%s %s Suspension" % (side_word, "Solid Axle" if ax.solid else "Double Wishbone"),
                                  900, P),
@@ -290,11 +290,12 @@ class PartsBuilder:
             "flexbodies": _flex([_place(mesh, groups) for mesh, groups in self.g.susp_flex[ax.id]]),
             "nodes": node_table(S, nodes),
             "beams": beam_table(S, beams, {"deformLimitExpansion": 1.2}),
-            "torsionbars": [["id1:", "id2:", "id3:", "id4:"],
-                            {"spring": "$=$arb_%s*%s/2" % (ax.id, _fmt(lever * lever)), "damp": 10, "deform": 50000,
-                             "strength": 9999999},
-                            ax.arb],
         }
+        if ax.arb:
+            d["torsionbars"] = [["id1:", "id2:", "id3:", "id4:"],
+                                {"spring": "$=$arb_%s*%s/2" % (ax.id, _fmt(ax.arb_lever ** 2)), "damp": 10,
+                                 "deform": 50000, "strength": 9999999},
+                                ax.arb]
         if hydros:
             t = Table(["id1:", "id2:"])
             for b in hydros:
@@ -309,27 +310,27 @@ class PartsBuilder:
     def coilover(self, ax):
         P, S = self.P, self.S
         sp = self.g.springs[ax.id]
-        side_word = "Front" if ax.front else "Rear"
+        side_word = axle_word(ax)
         a = ax.id
         t = Table(["id1:", "id2:"])
         t.set(beamPrecompression=1, beamType="|NORMAL", beamLongBound=1, beamShortBound=1)
         t.set(beamSpring="$spring_" + a, beamDamp=0, beamDeform=round(max(30000, sp["static"] * 6)),
               beamStrength=FLT_MAX)
-        for side, _ in SIDES:
-            lo, hi = ax.spring_ends[side]
+        for c in ax.corners:
+            lo, hi = ax.spring_ends[c.side]
             t.add(lo, hi, precompressionRange="$=$springheight_%s+%s" % (a, _fmt(sp["preload"])))
         t.set(beamType="|BOUNDED", beamLongBound=1.0, beamShortBound=1.0)
         t.set(beamLimitSpring=0, beamLimitDamp=0)
         t.set(beamSpring=250, beamDamp="$damp_bump_" + a)
-        for side, _ in SIDES:
-            lo, hi = ax.spring_ends[side]
+        for c in ax.corners:
+            lo, hi = ax.spring_ends[c.side]
             t.add(lo, hi, beamDampRebound="$damp_rebound_" + a, beamDampVelocitySplit=0.25,
                   beamDampFast="$=$damp_bump_%s/3" % a, beamDampReboundFast="$=$damp_rebound_%s/3" % a,
                   dampCutoffHz=500)
         # bump stop and droop limiter
         t.set(beamSpring=0, beamDamp=0, beamLimitSpring=round(sp["stop_rate"]), beamLimitDamp=round(sp["stop_damp"]))
-        for side, _ in SIDES:
-            lo, hi = ax.spring_ends[side]
+        for c in ax.corners:
+            lo, hi = ax.spring_ends[c.side]
             t.add(lo, hi, shortBoundRange=_r(sp["bump_range"]), longBoundRange=_r(sp["droop_range"]), boundZone=0.03,
                   beamLimitDampRebound=0, dampCutoffHz=500)
         t.set(beamLimitSpring=0, beamLimitDamp=0)
@@ -337,8 +338,8 @@ class PartsBuilder:
         t.set(beamType="|SUPPORT", beamLongBound=2.0, beamPrecompression=_r(sp["hard_stop"]),
               beamSpring=round(sp["stop_rate"] * 4), beamDamp=500, beamDeform=round(max(60000, sp["static"] * 12)),
               beamStrength=FLT_MAX)
-        for side, _ in SIDES:
-            lo, hi = ax.spring_ends[side]
+        for c in ax.corners:
+            lo, hi = ax.spring_ends[c.side]
             t.add(lo, hi)
         t.set(beamPrecompression=1, beamType="|NORMAL", beamLongBound=1, beamShortBound=1)
         k = sp["spring"]
@@ -364,7 +365,7 @@ class PartsBuilder:
     def brake(self, ax):
         P = self.P
         b = self.g.brakes[ax.id]
-        side_word = "Front" if ax.front else "Rear"
+        side_word = axle_word(ax)
         rows = [PW_HEAD]
         if ax.front:
             rows.append({"brakeTorque": "$=$brakestrength*%d*$brakebias" % round(b["coef"])})
@@ -388,14 +389,9 @@ class PartsBuilder:
     def wheel(self, ax):
         P, S = self.P, self.S
         w = self.g.wheels[ax.id]
-        side_word = "Front" if ax.front else "Rear"
+        side_word = axle_word(ax)
         part = "wheel_" + ax.id
         nodes, beams, _, _ = self.by_part(part)
-        local = {}
-        for side, s in SIDES:
-            inner, outer = ax.wheel_nodes[side]
-            local[inner] = (0.1 * s, 0.0, 0.0)
-            local[outer] = (0.3 * s, 0.0, 0.0)
         rows = [PW_HEAD,
                 {"disableMeshBreaking": False, "disableHubMeshBreaking": False, "enableHubcaps": False,
                  "hasTire": False},
@@ -407,20 +403,21 @@ class PartsBuilder:
                 {"hubNodeWeight": _r(w["hub_node_w"], 3)}, {"hubNodeMaterial": "|NM_METAL"}, {"hubFrictionCoef": 0.5},
                 {"hubBeamDeform": w["hub_deform"], "hubBeamStrength": w["hub_strength"]}]
         flex = []
-        for side, s in SIDES:
-            nm = ax.id + side.upper()
-            flex.append(_place(self.name("rim_%s_%s" % (ax.id, side.upper())), ["wheel_" + nm, "wheelhub_" + nm],
-                               (0.2 * s, 0, 0)))
+        for c in ax.corners:
+            nm = ax.id + c.side.upper()
+            x, y, z = ax.centers[c.side]
+            flex.append(_place(self.name("rim_%s_%s" % (ax.id, c.side.upper())), ["wheel_" + nm, "wheelhub_" + nm],
+                               (x * c.s, y, z)))
         self.parts[self.name("wheel_" + ax.id)] = {
             "information": _info('%s %d" %s Wheels' % (side_word, round(w["rim_in"]), w["style_title"]), 500, P),
             "slotType": self.name("wheel_" + ax.id),
             "slots": [["type", "default", "description"],
                       [self.name("tire_" + ax.id), self.name("tire_" + ax.id), side_word + " Tires"]],
             "flexbodies": _flex(flex),
-            "nodes": node_table(S, nodes, local),
+            "nodes": node_table(S, nodes),
             "beams": [["id1:", "id2:"], {"beamType": "|NORMAL", "beamLongBound": 1.0, "beamShortBound": 1.0},
                       {"beamDeform": FLT_MAX, "beamStrength": FLT_MAX}, {"beamSpring": 1501000, "beamDamp": 25}] +
-                     [list(ax.wheel_nodes[side]) for side, _ in SIDES] +
+                     [list(ax.wheel_nodes[c.side]) for c in ax.corners] +
                      [{"beamPrecompression": 1, "beamType": "|NORMAL", "beamLongBound": 1.0, "beamShortBound": 1.0}],
             "pressureWheels": rows,
         }
@@ -429,7 +426,7 @@ class PartsBuilder:
         P = self.P
         w = self.g.wheels[ax.id]
         a = ax.id
-        side_word = "Front" if ax.front else "Rear"
+        side_word = axle_word(ax)
         fr, sl, tread, nl, fl, slope, soft = TIRES[P.tireType]
         ts = w["tire_scale"]
         k = lambda v: int(round(v * ts, -3)) + 1000  # noqa: E731
@@ -460,10 +457,11 @@ class PartsBuilder:
                 {"wheelTreadBeamDeform": k(10000), "wheelTreadBeamStrength": k(13000)},
                 {"wheelPeripheryBeamDeform": k(40000), "wheelPeripheryBeamStrength": k(40000)}]
         flex = []
-        for side, s in SIDES:
-            nm = a + side.upper()
-            flex.append(_place(self.name("tire_%s_%s" % (a, side.upper())), ["wheel_" + nm, "tire_" + nm],
-                               (0.2 * s, 0, 0)))
+        for c in ax.corners:
+            nm = a + c.side.upper()
+            x, y, z = ax.centers[c.side]
+            flex.append(_place(self.name("tire_%s_%s" % (a, c.side.upper())), ["wheel_" + nm, "tire_" + nm],
+                               (x * c.s, y, z)))
         psi = P.pressureF if ax.front else P.pressureR
         self.parts[self.name("tire_" + a)] = {
             "information": _info("%s %s %s Tires" % (side_word, w["size_text"], dict(
@@ -479,9 +477,10 @@ class PartsBuilder:
     def wheeldata(self, ax):
         P = self.P
         a = ax.id
-        side_word = "Front" if ax.front else "Rear"
+        side_word = axle_word(ax)
         rows = [PW_HEAD, {"selfCollision": False}, {"collision": True}]
-        for side, s in (("r", -1), ("l", 1)):
+        for c in sorted(ax.corners, key=lambda c: c.s):
+            side, s = c.side, c.s
             nm = a + side.upper()
             inner, outer = ax.wheel_nodes[side]
             hub = ax.hub[side]
@@ -609,7 +608,7 @@ class PartsBuilder:
     def differential(self, ax):
         P, g = self.P, self.g
         a = ax.id
-        side_word = "Front" if ax.front else "Rear"
+        side_word = axle_word(ax)
         fd = g.gearing["final"]
         variables = [VAR_HEAD, _var("$finaldrive_" + a, ":1", "Differentials", fd, 1.5, 8, "Final Drive Gear Ratio",
                                     "Torque multiplication ratio", stepDis=0.01, subCategory=side_word)]
@@ -631,7 +630,7 @@ class PartsBuilder:
             opts["diffType"] = "open"
         pt = [["type", "name", "inputName", "inputIndex"],
               ["differential", "differential_" + a, "driveshaft_" + a, 1, opts]]
-        for side, idx in (("L", 1), ("R", 2)):
+        for side, idx in [(c.side.upper(), 1 if c.s > 0 else 2) for c in sorted(ax.corners, key=lambda c: -c.s)]:
             nm = a + side
             pt.append(["shaft", "wheelaxle" + nm, "differential_" + a, idx,
                        {"connectedWheel": nm, "breakTriggerBeam": "axle_" + nm,
@@ -655,6 +654,11 @@ class PartsBuilder:
             "energyStorage": [["type", "name"], ["fuelTank", "mainTank"]],
             "mainTank": {"energyType": "gasoline", "fuelCapacity": cap, "startingFuelCapacity": "$fuel"},
         }
+
+
+def axle_word(ax):
+    """ "Front", "Rear", or "Middle" (vehicles with more than two axles)."""
+    return getattr(ax, "word", None) or ("Front" if ax.front else "Rear")
 
 
 def _ordinal(i):
