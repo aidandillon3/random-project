@@ -9,6 +9,8 @@ export const S = {
   configName: null,
   sel: { nodes: new Set(), beams: new Set(), tris: new Set() },
   tool: 'select',
+  gizmoMode: 'translate', // what the handles on selected nodes do: translate, scale or rotate
+  nodePick: false,      // picking vehicle nodes for something else (what a new part bolts to)
   mirror: false,
   snap: 0,
   activePart: null,     // part name new rows go into
@@ -30,6 +32,7 @@ export const A = {};
 
 const listeners = {};
 export function on(ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); }
+export function off(ev, fn) { listeners[ev] = (listeners[ev] || []).filter(f => f !== fn); }
 export function emit(ev, ...args) { for (const fn of listeners[ev] || []) fn(...args); }
 
 export function clearSelection() {

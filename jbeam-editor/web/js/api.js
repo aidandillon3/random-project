@@ -35,7 +35,7 @@ export const api = {
   projectSave: (name, data) => post('/api/project_save', { name, data }),
   projectLoad: name => post('/api/project_load', { name }),
   projectDelete: name => post('/api/project_delete', { name }),
-  save: (model, ops, config) => post('/api/save', { model, ops, config }),
+  save: (model, ops, config, meshes = []) => post('/api/save', { model, ops, config, meshes }),
   partText: (model, part) => post('/api/part_text', { model, part }),
   pcSave: (model, root, name, config) => post('/api/pc_save', { model, root, name, config }),
   check: (model, root) => post('/api/check', { model, root }),

@@ -14,6 +14,8 @@ import { clearImport, importActive, initImporter, showImportPrompt, startImport 
 import { hideHome, homeOpen, initHome, remember, renderGallery, showHome } from './home.js';
 import { hydrateIcons, icon } from './icons.js';
 import { closePanel as closeDropTest, runDropTest } from './droptest.js';
+import { followOn, markRest, reshapedMeshes, setFollow, updateDeform } from './deform.js';
+import { b64 } from './partmaker.js';
 import { $, $$, closeModal, h, modalOpen, openModal, popupMenu, setLoading, toast, fmt, debounce } from './util.js';
 
 const store = {
@@ -125,6 +127,7 @@ function setScene(sc, { fresh = false } = {}) {
   const keep = old && !fresh ? [...S.sel.nodes].map(i => old.nodes[i]?.id).filter(Boolean) : [];
   S.scene = sc;
   S.config = sc.config;
+  markRest(sc);
   reindex();
   clearSelection();
   for (const id of keep) { const i = sc.nodeById.get(id); if (i !== undefined) S.sel.nodes.add(i); }
@@ -225,6 +228,7 @@ function setMode(mode, { quiet = false } = {}) {
     if (mode !== 'model' && !MAKER_MODES.has(mode)) { clearSelection(); emit('selection'); }
   }
   S.lookMode = look;
+  if (prev !== mode) S.nodePick = false;
   updateGroundOffset();
   applyDisplay();
   updateHint();
@@ -257,7 +261,7 @@ function applyDisplay() {
   // no meshes loaded (e.g. compiled .cdae files): show the wheels so there is something to see
   const noMesh = S.scene && S.scene.flexbodies.length && !V.groups.mesh.children.length;
   setVisible('mesh', d.mesh);
-  setVisible('nodes', d.nodes);
+  setVisible('nodes', d.nodes || S.nodePick);
   setVisible('beams', d.beams || (noMesh && S.mode !== 'structure'));
   setVisible('tris', d.tris);
   setVisible('wheels', d.wheels || (S.mode !== 'structure' && (noMesh || !wheelMeshes())));
@@ -285,12 +289,15 @@ async function save({ quiet = false } = {}) {
   saving = (async () => {
     setLoading(true, 'Saving…');
     try {
-      const r = await api.save(S.model, ops, S.config);
+      const meshes = reshapedMeshes().map(m => ({ ...m, pos: b64(m.pos) }));
+      const r = await api.save(S.model, ops, S.config, meshes);
       if (!r.ok) { saveError(r.error); return false; }
       S.pending.splice(0, n);
       S.summary = r.summary;
+      for (const name of r.reshaped || []) V.meshCache.delete(name);
       setScene(r.scene);
       toast(`Saved ${ops.length} change(s) to ${r.written.map(p => p.split(/[\\/]/).pop()).join(', ')}`, 'ok');
+      for (const note of r.notes || []) toast(note, note.startsWith('Couldn') ? 'err' : 'ok', 9000);
       return true;
     } catch (e) {
       saveError(e.message);
@@ -443,6 +450,7 @@ function updateBanner() {
 // ---- events from the other modules -----------------------------------------------------------
 on('edited', () => {
   rebuild();
+  updateDeform();
   renderProps();
   renderWeights();
   renderProblems();
@@ -465,6 +473,7 @@ on('activePart', () => {
   updateHint();
 });
 on('visibility', () => { rebuild(); updateMeshVisibility(); });
+on('dragging', () => updateDeform());
 on('configs', () => fillConfigs());
 
 // ---- toolbar, menus, keyboard ------------------------------------------------------------------
@@ -501,6 +510,9 @@ function wireUI() {
 
   for (const b of $$('#tools button')) b.addEventListener('click', () => setTool(b.dataset.tool));
   $('#optMirror').addEventListener('change', e => { S.mirror = e.target.checked; renderProps(); });
+  for (const b of $$('#gizmoModes button')) b.addEventListener('click', () => setGizmoMode(b.dataset.gizmo));
+  $('#optFollow').checked = followOn();
+  $('#optFollow').addEventListener('change', e => setFollow(e.target.checked));
   $('#optSnap').addEventListener('change', e => { S.snap = +e.target.value; updateGizmo(); });
   $('#activePart').addEventListener('change', e => { S.activePart = e.target.value || null; emit('activePart'); });
   $('#optPin').addEventListener('change', e => { S.pinActive = e.target.checked; });
@@ -538,6 +550,13 @@ function frameAll() {
   if (S.scene) frame(S.scene.nodes.filter(n => !n.del).map(n => n.p));
 }
 
+function setGizmoMode(mode) {
+  S.gizmoMode = mode;
+  for (const b of $$('#gizmoModes button')) b.classList.toggle('active', b.dataset.gizmo === mode);
+  if (mode !== 'translate' && S.sel.nodes.size === 1) toast('Select two or more nodes to stretch or turn them.');
+  updateGizmo();
+}
+
 function onKey(e) {
   if (modalOpen()) { if (e.key === 'Escape') closeModal(); return; }
   if (homeOpen()) return;
@@ -561,7 +580,10 @@ function onKey(e) {
   if (k === '1' || k === '3' || k === '7') { viewPreset({ 1: 'front', 3: 'side', 7: 'top' }[k]); e.preventDefault(); return; }
   if (!S.scene || S.mode !== 'structure') return;
   switch (k) {
-    case 'q': case 'w': setTool('select'); break;
+    case 'q': setTool('select'); break;
+    case 'w': setTool('select'); setGizmoMode('translate'); break;
+    case 'e': setTool('select'); setGizmoMode('rotate'); break;
+    case 'r': setTool('select'); setGizmoMode('scale'); break;
     case 'n': setTool('node'); break;
     case 'b':
       if (e.shiftKey) { if (!connectSelected(true)) toast('Select 2 or more nodes to brace them together.'); }

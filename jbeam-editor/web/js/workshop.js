@@ -793,7 +793,7 @@ function renderSide() {
   if (!box) return;
   box.innerHTML = '';
   if (W.making) {
-    box.append(h('h3', {}, 'Making a part'), h('p', { class: 'note' }, 'Orange: the nodes and beams the game will simulate. Green: the beams that bolt it to the vehicle. Select vehicle nodes in Structure mode first to choose where it is bolted on.'));
+    box.append(h('h3', {}, 'Making a part'), h('p', { class: 'note' }, 'Orange: the nodes and beams the game will simulate. Green: the beams that bolt it to the vehicle. To choose where it is bolted on, pick "To the nodes I selected" under Mounted and click the nodes on the vehicle.'));
     return;
   }
   const o = active();

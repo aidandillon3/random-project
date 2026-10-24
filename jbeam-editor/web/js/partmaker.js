@@ -4,7 +4,7 @@
 // beams that bolt it to the vehicle. Used by the importer and the 3D Workshop.
 import { S, A } from './state.js';
 import { api } from './api.js';
-import { partFileKey } from './scene.js';
+import { DT, STIFF_TARGET, partFileKey } from './scene.js';
 import { smartFit, assignWeights, STIFFNESS, spacingFor } from './smartfit.js';
 import { freePrefix, info } from './dialogs.js';
 
@@ -91,8 +91,43 @@ export function makeStructure(pos, idx, { kind = 'smart', detail = 'medium', spa
   return smartFit(pos, idx, { spacing: s, prefix, inside });
 }
 
+// How firmly a new part is fixed to the vehicle: the springs, when its mounting beams start to
+// bend and when they break (as a share of the part's own stiffness), and how many of them there are.
+export const MOUNT = {
+  light: { label: 'Light: breaks off easily', k: 1, deform: 1, strength: 2.5, perAnchor: 3, near: [12, 2] },
+  normal: { label: 'Normal: stays on in bumps', k: 2, deform: 4, strength: 10, perAnchor: 4, near: [16, 3] },
+  strong: { label: 'Strong: bolted on, survives crashes', k: 4, deform: 15, strength: 40, perAnchor: 5, near: [24, 3] },
+  welded: { label: 'Welded: never comes off', k: 6, deform: null, strength: null, perAnchor: 6, near: [32, 3] },
+};
+
+// the mounting beam settings for a stiffness and a mount level ('FLT_MAX' = never)
+export function mountSettings(stiffness, level, breakable = true) {
+  const st = STIFFNESS[stiffness] || STIFFNESS.panel, m = MOUNT[level] || MOUNT.light;
+  return {
+    spring: Math.round(st.spring * m.k), damp: Math.round(st.damp * Math.sqrt(m.k)),
+    deform: m.deform ? Math.round(st.deform * m.deform) : 'FLT_MAX',
+    strength: m.strength && breakable ? Math.round(st.deform * m.strength) : 'FLT_MAX',
+  };
+}
+
+// the stiffest mounting spring the vehicle's nodes take and stay stable (null: no limit needed)
+export function mountSpringLimit(beams) {
+  const sc = S.scene;
+  const count = new Map();
+  for (const [vid] of beams) count.set(vid, (count.get(vid) || 0) + 1);
+  let lim = Infinity;
+  for (const [vid, c] of count) {
+    const n = sc.nodes[sc.nodeById.get(vid)];
+    if (!n) continue;
+    const room = Math.max(0, n.w * (STIFF_TARGET / DT) ** 2 - (n.K || 0));
+    lim = Math.min(lim, room / c);
+  }
+  return isFinite(lim) ? Math.max(100000, Math.floor(lim / 1000) * 1000) : null;
+}
+
 // beams from the structure to the vehicle: to picked nodes, or to the nearest ones
-export function attachBeams(fit, mode, anchors) {
+export function attachBeams(fit, mode, anchors, level = 'light') {
+  const m = MOUNT[level] || MOUNT.light;
   const sc = S.scene;
   const d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
   const out = [], seen = new Set();
@@ -101,26 +136,32 @@ export function attachBeams(fit, mode, anchors) {
   if (mode === 'sel') {
     for (const i of anchors) {
       const p = sc.nodes[i].p;
-      ids.slice().sort((a, b) => d2(fit.pos.get(a), p) - d2(fit.pos.get(b), p)).slice(0, 3).forEach(c => add(sc.nodes[i].id, c));
+      ids.slice().sort((a, b) => d2(fit.pos.get(a), p) - d2(fit.pos.get(b), p)).slice(0, m.perAnchor).forEach(c => add(sc.nodes[i].id, c));
     }
   } else if (mode === 'near') {
     const veh = sc.nodes.filter(n => !n.del);
     const nearest = ids.map(c => {
       const p = fit.pos.get(c);
-      const list = veh.map(n => [d2(n.p, p), n.id]).sort((a, b) => a[0] - b[0]).slice(0, 2);
+      const list = veh.map(n => [d2(n.p, p), n.id]).sort((a, b) => a[0] - b[0]).slice(0, m.near[1]);
       return { c, list, d: Math.sqrt(list[0]?.[0] ?? Infinity) };
     }).sort((a, b) => a.d - b.d);
     if (!nearest.length || nearest[0].d > 1.0) return { beams: [], warn: 'Nothing on the vehicle is within 1 m of the model, so it was not attached.' };
     const lim = nearest[0].d + 0.12;
-    for (const x of nearest.filter(x => x.d <= lim).slice(0, 12)) for (const [dd, id] of x.list) if (Math.sqrt(dd) <= lim + 0.2) add(id, x.c);
+    for (const x of nearest.filter(x => x.d <= lim).slice(0, m.near[0])) for (const [dd, id] of x.list) if (Math.sqrt(dd) <= lim + 0.2) add(id, x.c);
   }
-  return { beams: out };
+  const veh = new Set(out.map(b => b[0]));
+  const warn = out.length && veh.size < 3
+    ? `It is held by only ${veh.size} vehicle node${veh.size === 1 ? '' : 's'}, so it can swing around ${veh.size === 1 ? 'it' : 'them'}. Pick at least 3 that aren't in a line.`
+    : null;
+  return { beams: out, warn };
 }
 
 // the JBeam data of the part
-export function partData({ name, title, slotType, mesh, fit, attach, mass, stiffness = 'panel', collision = true, breakable = true }) {
+export function partData({ name, title, slotType, mesh, fit, attach, mass, stiffness = 'panel', collision = true, breakable = true,
+  mount = null }) {
   const st = STIFFNESS[stiffness] || STIFFNESS.panel;
-  const { weights, total, needed } = assignWeights(fit, mass, { spring: st.spring, damp: st.damp, attach });
+  const mt = mount || mountSettings(stiffness, 'light', breakable);
+  const { weights, total, needed } = assignWeights(fit, mass, { spring: st.spring, damp: st.damp, attach, attachSpring: mt.spring });
   const rig = new Set(fit.rigidifiers);
   const nodeRows = [];
   let lastW = null;
@@ -144,9 +185,11 @@ export function partData({ name, title, slotType, mesh, fit, attach, mass, stiff
       { beamSpring: st.spring, beamDamp: st.damp }, { beamDeform: deform, beamStrength: 'FLT_MAX' },
       ...fit.beams.main,
       ...(fit.beams.rigid.length ? [{ beamSpring: Math.round(st.spring * 0.5), beamDamp: Math.round(st.damp * 0.5) }, { beamDeform: Math.round(deform * 0.4) }, ...fit.beams.rigid] : []),
-      ...(attach.length ? [{ beamSpring: st.spring, beamDamp: st.damp },
-        { beamDeform: deform, beamStrength: breakable ? Math.round(deform * 2.5) : 'FLT_MAX' },
-        ...(breakable ? [{ breakGroup: name + '_mount' }] : []), ...attach, ...(breakable ? [{ breakGroup: '' }] : [])] : []),
+      ...(attach.length ? [{ beamSpring: mt.spring, beamDamp: mt.damp },
+        { beamDeform: mt.deform, beamStrength: mt.strength },
+        ...(mt.strength !== 'FLT_MAX' ? [{ breakGroup: name + '_mount' }] : []), ...attach,
+        ...(mt.strength !== 'FLT_MAX' ? [{ breakGroup: '' }] : [])] : []),
+      { beamDeform: deform },
       { beamStrength: 'FLT_MAX' }],
   };
   if (collision && fit.tris.length) data.triangles = [['id1:', 'id2:', 'id3:'], { groundModel: 'metal' }, { dragCoef: 5 }, ...fit.tris];
@@ -155,12 +198,12 @@ export function partData({ name, title, slotType, mesh, fit, attach, mass, stiff
 
 // write the mesh and the part, put it on the vehicle; returns a summary
 export async function createPart({ pos, idx, uv = null, name, title, slot, rootId, fit, attach, mass, stiffness, collision,
-  breakable, color = [0.6, 0.6, 0.6], paint = false, groups = null }) {
+  breakable, mount = null, color = [0.6, 0.6, 0.6], paint = false, groups = null }) {
   const mr = await api.importMesh({ model: S.model, root: rootId, name, positions: b64(pos), indices: b64(idx),
     uvs: uv ? b64(uv) : null, color, paint,
     groups: groups ? groups.map(g => ({ indices: b64(g.indices), color: g.color, paint: !!g.paint })) : null });
   const slotType = slot.allowTypes?.[0] || slot.id;
-  const { data, total, needed } = partData({ name, title, slotType, mesh: mr.mesh, fit, attach, mass, stiffness, collision, breakable });
+  const { data, total, needed } = partData({ name, title, slotType, mesh: mr.mesh, fit, attach, mass, stiffness, collision, breakable, mount });
   const r = await api.newPart({ model: S.model, root: rootId, name, mode: 'data', data, title: data.information.name, slotType });
   S.summary = r.summary;
   S.config.parts[slot.id] = name;

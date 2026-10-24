@@ -1,4 +1,5 @@
 // Mouse and keyboard tools in the 3D view: select, move, add node, connect, triangle.
+import * as THREE from 'three';
 import { S, emit, clearSelection } from './state.js';
 import { V, frame, nodesInRect, pickBeam, pickNode, pickTri, pointOnViewPlane, refreshColors, refreshPositions,
   setOverlay, updateGizmo } from './view3d.js';
@@ -7,7 +8,7 @@ import { commit, opBeamAdd, opBeamDel, opNodeAdd, opNodeDel, opNodeMove, opTriAd
 import { $, toast } from './util.js';
 
 const HINTS = {
-  select: 'Click a node, beam or triangle to select it. Shift+click adds, Ctrl+click toggles, drag on empty space for a box. Drag the arrows to move. Right-drag orbits, middle-drag pans, wheel zooms.',
+  select: 'Click a node, beam or triangle to select it. Shift+click adds, Ctrl+click toggles, drag on empty space for a box. Drag the handles to move (W), stretch (R) or turn (E). Right-drag orbits, middle-drag pans, wheel zooms.',
   node: 'Click to place a node. It is joined to the nodes you had selected, then becomes selected, so you can click a chain. Click an existing node to start from it.',
   beam: 'Click a node, then another: a beam joins them. Keep clicking to chain. Esc or a click on empty space starts over.',
   tri: 'Click three nodes to make a collision triangle. The green side is the outside; red means it faces inward (press I to flip).',
@@ -56,7 +57,7 @@ function local(e) {
 
 function onDown(e) {
   if (e.button !== 0 || e.altKey || !S.scene) return;
-  if (S.lookMode) return;   // the look-only modes don't select nodes (the Workshop picks its own things)
+  if (S.lookMode && !S.nodePick) return;   // the look-only modes don't select nodes (the Workshop picks its own things)
   if (V.gizmo.axis) return;   // the gizmo handles this drag
   const [x, y] = local(e);
   down = { x, y, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, moved: false };
@@ -66,7 +67,7 @@ let hoverT = 0;
 function onMove(e) {
   if (!S.scene) return;
   const [x, y] = local(e);
-  if (down && S.tool === 'select') {
+  if (down && (S.tool === 'select' || S.nodePick)) {
     if (Math.hypot(x - down.x, y - down.y) > 5) down.moved = true;
     if (down.moved) {
       const b = $('#boxsel');
@@ -84,7 +85,7 @@ function onMove(e) {
   let h = null;
   const n = pickNode(x, y);
   if (n >= 0) h = { kind: 'node', i: n };
-  else if (S.tool === 'select') {
+  else if (S.tool === 'select' && !S.nodePick) {
     const b = pickBeam(x, y);
     if (b >= 0) h = { kind: 'beam', i: b };
   }
@@ -104,7 +105,7 @@ function onUp(e) {
   const d = down;
   down = null;
   $('#boxsel').classList.add('hidden');
-  if (S.tool === 'select') {
+  if (S.tool === 'select' || S.nodePick) {
     if (d.moved) return boxSelect(d, x, y);
     return clickSelect(x, y, d);
   }
@@ -126,7 +127,7 @@ function clickSelect(x, y, d) {
   let hit = null;
   const n = pickNode(x, y);
   if (n >= 0) hit = ['nodes', n];
-  else {
+  else if (!S.nodePick) {
     const b = pickBeam(x, y);
     if (b >= 0) hit = ['beams', b];
     else {
@@ -138,7 +139,7 @@ function clickSelect(x, y, d) {
   if (hit) {
     const set = S.sel[hit[0]];
     if (d.ctrl && set.has(hit[1])) set.delete(hit[1]); else set.add(hit[1]);
-    if (hit[0] === 'nodes') followPart(hit[1]);
+    if (hit[0] === 'nodes') { if (!S.nodePick) followPart(hit[1]); }
     else {
       const el = hit[0] === 'beams' ? sc.beams[hit[1]] : sc.tris[hit[1]];
       if (!S.pinActive && partEditable(el.part) && S.activePart !== el.part) { S.activePart = el.part; emit('activePart'); }
@@ -340,19 +341,40 @@ function gizmoStart() {
   }
   dragStart = {
     pivot: V.pivot.position.clone(),
+    mode: V.gizmo.mode,
     nodes: [...set.entries()].map(([i, sx]) => ({ i, sx, p: sc.nodes[i].p.slice(), raw: sc.nodes[i].raw.slice(),
       center: S.mirror && Math.abs(sc.nodes[i].p[0]) < 0.005 && mirrorName(sc.nodes[i].id) === null })),
   };
 }
 
+// where a node goes for the handles' move, stretch or turn (sx -1: a mirrored node, which
+// takes the mirror image of the change around the mirrored pivot)
+function gizmoTarget(n, c) {
+  const p0 = dragStart.pivot;
+  const pv = [p0.x * n.sx, p0.y, p0.z];
+  const r = [n.p[0] - pv[0], n.p[1] - pv[1], n.p[2] - pv[2]];
+  let q;
+  if (dragStart.mode === 'scale') {
+    const s = V.pivot.scale;
+    q = [pv[0] + r[0] * s.x, pv[1] + r[1] * s.y, pv[2] + r[2] * s.z];
+  } else if (dragStart.mode === 'rotate') {
+    const t = V.pivot.quaternion;
+    const v = new THREE.Vector3(...r).applyQuaternion(n.sx < 0 ? new THREE.Quaternion(t.x, -t.y, -t.z, t.w) : t);
+    q = [pv[0] + v.x, pv[1] + v.y, pv[2] + v.z];
+  } else {
+    const d = V.pivot.position.clone().sub(p0);
+    q = [n.p[0] + d.x * n.sx, n.p[1] + d.y, n.p[2] + d.z];
+  }
+  if (c) q[0] = n.p[0];      // nodes on the centre line stay on it
+  return q;
+}
+
 function gizmoMoved() {
   if (!dragStart) return;
   const sc = S.scene;
-  const d = V.pivot.position.clone().sub(dragStart.pivot);
   for (const n of dragStart.nodes) {
-    const dx = n.center ? 0 : d.x * n.sx;
     const node = sc.nodes[n.i];
-    node.p = [n.p[0] + dx, n.p[1] + d.y, n.p[2] + d.z];
+    node.p = gizmoTarget(n, n.center);
     node.raw = toRaw(node.xf, node.p);
   }
   refreshPositions();
@@ -374,8 +396,10 @@ function gizmoEnd() {
     node.rawCells = newRaw.slice();
     ops.push(o); inv.push(i);
   }
+  const what = { scale: 'Stretch', rotate: 'Turn' }[dragStart.mode] || 'Move';
   dragStart = null;
-  if (ops.length) commit(ops.length === 1 ? 'Move node' : `Move ${ops.length} nodes`, ops, inv, { applied: true });
+  if (ops.length) commit(ops.length === 1 ? `${what} node` : `${what} ${ops.length} nodes`, ops, inv, { applied: true });
+  updateGizmo();
 }
 
 // ---- keyboard actions used by main.js ------------------------------------------------

@@ -6,6 +6,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { S, emit } from './state.js';
 import { BEAM_COLORS, elemVisible, markLinked, nodeVisible, quatFromEuler } from './scene.js';
 import { $ } from './util.js';
+import { forgetBindings, updateDeform } from './deform.js';
 
 export const V = {
   renderer: null, scene: null, camera: null, controls: null, gizmo: null, pivot: null,
@@ -418,6 +419,8 @@ export function buildMeshes() {
     mesh.renderOrder = 0;
     V.groups.mesh.add(mesh);
   }
+  forgetBindings();
+  updateDeform();
   updateMeshVisibility();
   V.dirty = true;
 }
@@ -573,6 +576,7 @@ export function pointOnViewPlane(x, y, through) {
 // ---- gizmo ------------------------------------------------------------------------------
 export function updateGizmo() {
   if (V.importObj) {   // placing an imported model
+    V.gizmo.setMode('translate');
     V.gizmo.attach(V.importObj);
     V.gizmo.setTranslationSnap(S.snap || null);
     V.dirty = true;
@@ -580,15 +584,21 @@ export function updateGizmo() {
   }
   const sc = S.scene;
   const sel = [...S.sel.nodes].filter(i => sc && sc.nodes[i] && !sc.nodes[i].del);
-  const show = sc && sel.length && S.tool === 'select';
+  const show = sc && sel.length && S.tool === 'select' && !S.nodePick && !S.lookMode;
   if (!show) {
     V.gizmo.detach();
     V.dirty = true;
     return;
   }
+  const mode = sel.length > 1 ? S.gizmoMode : 'translate';
+  if (V.gizmo.mode !== mode) V.gizmo.setMode(mode);
   const c = [0, 0, 0];
   for (const i of sel) for (let k = 0; k < 3; k++) c[k] += sc.nodes[i].p[k] / sel.length;
-  if (!V.gizmo.dragging) V.pivot.position.set(...c);
+  if (!V.gizmo.dragging) {
+    V.pivot.position.set(...c);
+    V.pivot.quaternion.identity();
+    V.pivot.scale.set(1, 1, 1);
+  }
   V.gizmo.attach(V.pivot);
   V.gizmo.setTranslationSnap(S.snap || null);
   V.dirty = true;

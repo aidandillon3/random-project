@@ -499,7 +499,9 @@ at the height it was built for and holds together.</li>
 The layers button at the top right picks what is shown (model, nodes, beams…).</p>
 <h3>Structure editing</h3>
 <ul>
-<li><kbd>Q</kbd> Select: click, <kbd>Shift</kbd>+click adds, <kbd>Ctrl</kbd>+click toggles, drag a box. Drag the arrows to move nodes.</li>
+<li><kbd>Q</kbd> Select: click, <kbd>Shift</kbd>+click adds, <kbd>Ctrl</kbd>+click toggles, drag a box. Then drag the handles:
+<kbd>W</kbd> move, <kbd>R</kbd> stretch (wider, longer, taller), <kbd>E</kbd> turn. With <b>Model follows</b> on, the 3D model
+bends and stretches with the nodes and is saved that way. To reshape a whole part, use ⋯ &gt; Select its nodes in Parts first.</li>
 <li><kbd>N</kbd> Node: click to place a node. It is joined to the nodes you had selected, so you can click out a chain.</li>
 <li><kbd>B</kbd> Beam: click two nodes. With 2+ nodes selected, <kbd>B</kbd> joins them in order and <kbd>Shift</kbd>+<kbd>B</kbd> braces them all together.</li>
 <li><kbd>T</kbd> Triangle: click three nodes for a collision triangle (green side faces out; <kbd>I</kbd> flips).</li>
