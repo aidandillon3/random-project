@@ -2237,6 +2237,7 @@ class ServerPage(QWidget):
                     return
                 if strata.needs_setup(p, model, run):
                     say("Running Strata's setup (the first time it downloads its engine and draft layer)...")
+                    strata.mark_downloaded(p, model)
                     code = self.proc.run_step(strata.setup_args(p, model, run), ins.root, cancel=stop)
                     if code is None or stop.is_set():
                         return

@@ -342,6 +342,23 @@ def setup_args(preset, model: Path, settings, root: Path | None = None) -> list[
                      "--port", str(settings.port)]
 
 
+def mark_downloaded(preset, model: Path) -> list[Path]:
+    """A fork's setup (strata["install"]) takes a --gguf-dir file only with its <file>.done finish mark, which its
+    own download writes: without one it calls the app's finished download missing. Mark each model file that is
+    all there. The mark has no SHA-256 in it, so setup still checks the file against the pinned one once (and writes
+    that into the mark). The marks written."""
+    if not preset.strata.get("install"):
+        return []
+    marked = []
+    for name in preset.files:
+        f = model.parent / name
+        m = f.with_name(f.name + ".done")
+        if not m.exists() and f.is_file() and f.stat().st_size == preset.sizes.get(name):
+            m.write_text("downloaded by Local Agent", encoding="utf-8")
+            marked.append(m)
+    return marked
+
+
 def mark_setup_done(preset, model: Path, settings, root: Path | None = None) -> None:
     root = root or install_of(preset).root
     w = wanted(preset, model, settings)

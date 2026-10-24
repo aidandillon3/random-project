@@ -1,3 +1,4 @@
+import dataclasses
 import io
 import json
 import os
@@ -287,6 +288,21 @@ class StrataTest(unittest.TestCase):
         self.assertEqual((val("--family"), val("--model"), val("--vision")), ("qwen36", "UD-Q4_K_XL", "no"))
         self.assertEqual(strata.config_path(q, self.root).name, "strata-qwen36-ud-q4_k_xl.json")
         self.assertEqual(sampling_for("qwen3.6-35b-a3b-ud-q4_k_xl")["temperature"], 0.6)   # ykarout's config too
+
+    def test_qwen36_download_gets_the_forks_finish_mark(self):
+        q = catalog.BY_KEY["qwen36-35b-strata"]
+        folder = self.root / "Qwen3.6-35B-A3B"
+        folder.mkdir(parents=True)
+        model = folder / q.files[0]
+        q = dataclasses.replace(q, sizes={**q.sizes, q.files[0]: 5})
+        model.write_bytes(b"1234")                            # still downloading: no mark
+        self.assertEqual(strata.mark_downloaded(q, model), [])
+        model.write_bytes(b"12345")
+        self.assertEqual(strata.mark_downloaded(q, model), [folder / (q.files[0] + ".done")])
+        # no SHA-256 in it: the fork's setup still checks the file once
+        self.assertNotIn("sha256", (folder / (q.files[0] + ".done")).read_text(encoding="utf-8"))
+        self.assertEqual(strata.mark_downloaded(q, model), [])   # a mark setup wrote is kept
+        self.assertEqual(strata.mark_downloaded(self.flash, self.model), [])   # the main setup needs none
 
     def test_qwen36_config_gets_the_forks_options_only(self):
         q = catalog.BY_KEY["qwen36-35b-strata"]
