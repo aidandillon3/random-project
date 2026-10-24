@@ -136,6 +136,37 @@ class SaveReshapeTests(InstallCase):
         backups = [os.path.join(d, x) for d, _, fs in os.walk(os.path.join(self.data, "backups")) for x in fs]
         self.assertTrue(any(p.endswith("testcar_body_reshaped.dae") for p in backups), backups)
 
+    def test_two_objects_of_one_file_in_one_save(self):
+        # a deck and its pistons live in one .dae: both reshapes must land in it
+        r = self.app.api_new_mod({"model": "testcar", "name": "pair"})
+        root = self.app.ws.root_by_id(r["root"])
+        path = os.path.join(root.path, "vehicles", "testcar", "pair.dae")
+        with open(path, "w") as f:
+            f.write(fixture.multi_dae([("pair_a",) + tuple(fixture.box_mesh(0, 0, 1, 1, 1, 1)),
+                                       ("pair_b",) + tuple(fixture.box_mesh(2, 0, 0, 1, 1, 1))]))
+        cdae = os.path.join(root.path, "vehicles", "testcar", "pair.cdae")
+        with open(cdae, "wb") as f:
+            f.write(b"compiled old shape")
+        self.app.ws.refresh()
+        self.app.meshes.forget()
+        cfg = self.build()["config"]
+        a, _ = self.app.meshes.mesh_arrays("testcar", "pair_a")
+        b, _ = self.app.meshes.mesh_arrays("testcar", "pair_b")
+        wide_a = [v * 1.5 if k % 3 == 0 else v for k, v in enumerate(a)]
+        tall_b = [v + 0.2 if k % 3 == 2 else v for k, v in enumerate(b)]
+        out = self.app.api_save({"model": "testcar", "ops": [], "config": cfg, "meshes": [
+            {"mesh": "pair_a", "pos": b64(wide_a)}, {"mesh": "pair_b", "pos": b64(tall_b)}]})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["reshaped"], ["pair_a", "pair_b"])
+        got_a, _ = self.app.meshes.mesh_arrays("testcar", "pair_a")
+        got_b, _ = self.app.meshes.mesh_arrays("testcar", "pair_b")
+        self.assertLess(max(abs(x - y) for x, y in zip(got_a, wide_a)), 1e-5)
+        self.assertLess(max(abs(x - y) for x, y in zip(got_b, tall_b)), 1e-5)
+        # its stale compiled copy is gone (backed up), so the game builds it again from the new shape
+        self.assertFalse(os.path.exists(cdae))
+        self.assertEqual(len(out["notes"]), 1, out["notes"])
+        backups = [x for d, _, fs in os.walk(os.path.join(self.data, "backups")) for x in fs]
+        self.assertIn("pair.cdae", backups)
 
 if __name__ == "__main__":
     unittest.main()

@@ -455,7 +455,16 @@ class App:
             pos.frombytes(base64.b64decode(it["pos"]))
             try:
                 if root.editable:
-                    s.write_raw(root, rel, daeedit.reshape(root.read(rel), name, list(pos)))
+                    # several objects of one file: each reshape builds on the ones before it
+                    key = root.full_path(rel)
+                    data = s.raw[key][0] if key in s.raw else root.read(rel)
+                    s.write_raw(root, rel, daeedit.reshape(data, name, list(pos)))
+                    # the game would keep drawing its compiled copy of the old shape
+                    cdae = rel[:-4] + ".cdae"
+                    if root.has(cdae) and root.full_path(cdae) not in s.retired:
+                        s.retire(root, cdae)
+                        notes.append("Removed %s, the game's compiled copy of the old model, so it is built again "
+                                     "from the new shape (a backup is kept)." % cdae.split("/")[-1])
                     changed.append(name)
                     continue
                 fr = m.files.get(it.get("f"))
