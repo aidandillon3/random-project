@@ -198,12 +198,12 @@ async function applyBuild(b) {
   if (mine.length && !(await confirmBox('Use the ' + b.title.toLowerCase() + ' build?',
     'It replaces the Garage changes you made so far (your paint stays).', 'Use it'))) return;
   const spec = { axles: {} };
-  const last = info.axles[info.axles.length - 1];
+  const hasFront = info.axles.some(a => a.group === 'F');
   for (const ax of info.axles) {
     const a = spec.axles[ax.id] = {};
     if (ax.slots.length) a.lift = +b.lift.toFixed(4);
     if (ax.canSpacer) a.spacer = +b.spacer.toFixed(4);
-    const [fd, fw] = b.rearTire && ax === last && info.axles.length > 1 ? b.rearTire : b.tire;
+    const [fd, fw] = b.rearTire && ax.group === 'R' && hasFront ? b.rearTire : b.tire;
     if (ax.tire && (Math.abs(fd - 1) > 0.001 || Math.abs(fw - 1) > 0.001)) {
       a.customTire = { diameter: +(ax.radius * 2 * fd).toFixed(4), width: +((ax.width || 0.2) * fw).toFixed(4) };
     }
@@ -228,19 +228,22 @@ function liftPanel(body) {
   const range = { min: metric ? -10 : -4, max: metric ? 30 : 12, step: metric ? 0.5 : 0.25 };
   const linkBox = h('label', { class: 'toggle-row chk' }, h('input', { type: 'checkbox', checked: G.linked,
     onchange: e => { G.linked = e.target.checked; if (G.linked && axles.length > 1) { const v = axleValue(axles[0], 'lift'); for (const a of axles) axleSpec(a.id).lift = v; changed(); } render(); } }),
-  'Same lift front and rear');
+  axles.length > 2 ? 'Same lift on every axle' : 'Same lift front and rear');
   const sliders = [];
-  const lifts = G.linked ? [axles[0]] : axles;
-  for (const ax of lifts) {
+  // axles on one suspension part (a tandem's springs) lift together
+  const lifts = G.linked ? [[axles[0]]] : axles.filter((a, i) => !axles.slice(0, i).some(b => b.liftWith?.includes(a.id)))
+    .map(a => [a, ...axles.filter(b => a.liftWith?.includes(b.id))]);
+  for (const set of lifts) {
+    const ax = set[0];
     const cur = axleValue(ax, 'lift') || 0;
     sliders.push(slider({
-      label: G.linked && axles.length > 1 ? 'Lift' : ax.label + ' lift',
+      label: G.linked && axles.length > 1 ? 'Lift' : set.map(a => a.label).join(' and ') + ' lift',
       min: range.min, max: range.max, step: range.step, value: +len.to(cur).toFixed(2),
       show: v => (v > 0 ? '+' : '') + fmt(v, 2) + ' ' + len.unit,
       scale: [len.fmt(len.from(range.min), 0) + ' (lower)', '+' + len.fmt(len.from(range.max), 0)],
       onInput: (v, done) => {
         const m = +len.from(v).toFixed(4);
-        for (const a of (G.linked ? axles : [ax])) axleSpec(a.id).lift = m;
+        for (const a of (G.linked ? axles : set)) axleSpec(a.id).lift = m;
         changed(true);
         if (done) render();
       },
@@ -251,7 +254,7 @@ function liftPanel(body) {
     axles.length > 1 ? linkBox : null, ...sliders,
     liftable.length < axles.length ? h('p', { class: 'note warn' }, axles.filter(a => !a.slots.length).map(a => a.label).join(' and ') +
       ' suspension is part of the main frame part, so the Garage can\'t lift it. You can still move its nodes in Structure mode.') : null,
-    h('p', { class: 'note' }, 'Parts that move: ', liftable.map(a => a.slots.map(s => s.title).join(', ')).join(' · ') || 'none')));
+    h('p', { class: 'note' }, 'Parts that move: ', [...new Set(liftable.map(a => a.slots.map(s => s.title).join(', ')))].join(' · ') || 'none')));
   if (info.body.length) {
     const cur = 'bodyLift' in G.spec ? G.spec.bodyLift : info.bodyLift || 0;
     const chosen = new Set(G.spec.bodySlots || info.body.filter(b => b.bodyLift || b.checked).map(b => b.path));

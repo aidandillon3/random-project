@@ -28,6 +28,7 @@ import time
 from . import build, expr, jbeamfile, partedit
 
 MOVE_KEY = "nodeMove7"
+AXLE_GAP = 0.3       # m along the vehicle: wheels closer than this share an axle
 TRACK_KEY = "nodeOffset6"
 META_KEY = "jbeamEditor"
 
@@ -68,6 +69,23 @@ def ancestors(slot_path):
     """"/a/b/" -> ["/a/", "/a/b/"] (top first)."""
     segs = [s for s in slot_path.split("/") if s]
     return ["/" + "/".join(segs[:i]) + "/" for i in range(1, len(segs) + 1)]
+
+
+def _text(v):
+    """A slot description as text (some are {"description": ..., ...} tables)."""
+    if isinstance(v, dict):
+        v = v.get("description") or " ".join(str(x) for x in v.values() if isinstance(x, str))
+    return v if isinstance(v, str) else ""
+
+
+def spacer_of(meta, rim_id, default=0.0):
+    """The spacer a garage copy gave one of its rim slots (older copies kept one for all)."""
+    if not meta:
+        return default
+    per = meta.get("spacers")
+    if isinstance(per, dict):
+        return per.get(rim_id, default)
+    return meta.get("spacer", default)
 
 
 def walk(slot):
@@ -184,7 +202,7 @@ class Info:
             return None
         chosen = entry.get("chosen") or ""
         src, meta = self.source(chosen) if chosen else ("", {})
-        out = {"path": entry["path"], "id": entry["id"], "description": entry.get("description") or entry["id"],
+        out = {"path": entry["path"], "id": entry["id"], "description": _text(entry.get("description")) or entry["id"],
                "part": chosen, "title": self.sc["partTitles"].get(chosen) or (self.part(chosen).title if self.part(chosen) else chosen),
                "source": src, "meta": meta}
         if extra:
@@ -205,44 +223,81 @@ class Info:
         return out
 
     def _axles(self):
+        """One entry per axle (wheels at the same length along the vehicle, duals included).
+
+        Axles in the front half are "F", "F2", ...; in the back half "R", "R2", ... (front to
+        back), so a car keeps plain "F" and "R"."""
         wl = self.wheels
         if not wl:
             return []
         ys = [w["c"][1] for w in wl]
         mid = (min(ys) + max(ys)) / 2
         span = max(ys) - min(ys)
-        group = {}
+        rows = []                           # [[y, [wheels]]] front to back
+        for w in sorted(wl, key=lambda w: w["c"][1]):
+            if rows and w["c"][1] - rows[-1][0] < AXLE_GAP:
+                rows[-1][1].append(w)
+                rows[-1][0] = sum(x["c"][1] for x in rows[-1][1]) / len(rows[-1][1])
+            else:
+                rows.append([w["c"][1], [w]])
+        half = lambda y: "F" if span > 0.3 and y < mid else "R"  # noqa: E731
+        group = {w["name"]: half(y) for y, ws in rows for w in ws}
+        counts = {"F": 0, "R": 0}
+        for y, _ in rows:
+            counts[half(y)] += 1
+        axle_of, made, seen = {}, [], {"F": 0, "R": 0}
+        for y, ws in rows:
+            g = half(y)
+            seen[g] += 1
+            n = seen[g]
+            word = "Front" if g == "F" else "Rear"
+            made.append({"id": g if n == 1 else "%s%d" % (g, n), "group": g,
+                         "label": word if counts[g] == 1 else "%s %d" % (word, n), "mine": ws})
+            for w in ws:
+                axle_of[w["name"]] = len(made) - 1
+
+        def top_slot(w, same):
+            """The highest slot above a wheel that holds no wheels but those that are same() as it."""
+            for a in ancestors(w["slot"]):
+                inside = [x for x in wl if x["slot"].startswith(a)]
+                if inside and all(same(x) for x in inside):
+                    return a if self.slots.get(a, {}).get("chosen") else None
+            return None
+
+        # what lifts: the suspension parts holding one end's wheels (a tandem's springs carry two axles)
+        lift_slots = {}
         for w in wl:
-            group[w["name"]] = "F" if span > 0.3 and w["c"][1] < mid else "R"
+            a = top_slot(w, lambda x, g=group[w["name"]]: group[x["name"]] == g)
+            if a:
+                lift_slots.setdefault(a, set()).add(axle_of[w["name"]])
         axles = []
-        for g, label in (("F", "Front"), ("R", "Rear")):
-            mine = [w for w in wl if group[w["name"]] == g]
-            if not mine:
-                continue
-            slots = []
+        for i, ax in enumerate(made):
+            mine = ax["mine"]
+            slots = [a for a, owners in lift_slots.items() if i in owners]
+            shared = sorted({j for a in slots for j in lift_slots[a]} - {i})
+            # where the rim and tire are: the part tree of this axle alone
+            own = []
             for w in mine:
-                for a in ancestors(w["slot"]):
-                    inside = [x for x in wl if x["slot"].startswith(a)]
-                    if inside and all(group[x["name"]] == g for x in inside):
-                        if a not in slots and self.slots.get(a, {}).get("chosen"):
-                            slots.append(a)
-                        break
-            rim, tire = self._wheel_slots(g, slots)
+                a = top_slot(w, lambda x: axle_of[x["name"]] == i)
+                if a and a not in own:
+                    own.append(a)
+            alone = counts[ax["group"]] == 1
+            rim, tire = self._wheel_slots(ax["group"], own) if own or alone else (None, None)
             xs = [w["c"][0] for w in mine]
             lift = spacer = 0.0
             for sp in slots:
                 _, meta = self.source(self.slots[sp]["chosen"])
                 lift = meta.get("lift", lift) if meta else lift
-                spacer = meta.get("spacer", spacer) if meta else spacer
             if rim:
                 owner = self.slots.get(parent_slot(rim["path"]))
                 if owner and owner.get("chosen"):
                     _, meta = self.source(owner["chosen"])
-                    spacer = meta.get("spacer", spacer) if meta else spacer
+                    spacer = spacer_of(meta, rim["id"], spacer)
             tire_meta = self.source(tire["part"])[1] if tire and tire.get("part") else {}
             axles.append({
-                "id": g, "label": label, "wheels": [w["name"] for w in mine],
+                "id": ax["id"], "label": ax["label"], "group": ax["group"], "wheels": [w["name"] for w in mine],
                 "slots": [self.slot_json(self.slots[sp]) for sp in slots],
+                "liftWith": [made[j]["id"] for j in shared],
                 "rim": rim, "tire": tire,
                 "radius": sum(w["r"] for w in mine) / len(mine),
                 "width": next((w["width"] for w in mine if w["width"]), None),
@@ -263,7 +318,7 @@ class Info:
                 continue
             inside = any(e["path"].startswith(sp) for sp in susp_slots)
             named = bool(re.search(r"(_%s(_|$)|\b%s)" % (g, "front" if g == "F" else "rear"),
-                                   e["id"] + " " + (e.get("description") or ""), re.I))
+                                   e["id"] + " " + _text(e.get("description")), re.I))
             if inside or (not susp_slots and named):
                 cands.append(e)
         for e in cands:
@@ -432,7 +487,8 @@ class Plan:
         s = self.slots.get(entry["path"])
         if s is None:
             src, meta = self.info.source(entry["chosen"])
-            s = self.slots[entry["path"]] = {"entry": entry, "source": src, "meta": meta, "set": {}, "touched": False}
+            s = self.slots[entry["path"]] = {"entry": entry, "source": src, "meta": meta, "set": {}, "labels": {},
+                                           "touched": False}
         return s
 
     def _pick(self, section, key, current):
@@ -454,8 +510,11 @@ class Plan:
                                   "use the Structure mode." % ax["label"])
             for sj in ax["slots"]:
                 sl = self._slot(info.slots[sj["path"]])
+                if "lift" in sl["set"] and not t:
+                    continue        # a part shared with an axle already counted (a tandem's springs)
                 sl["set"]["lift"] = lift
-                sl["axle"] = ax["label"]
+                sl["labels"]["lift"] = " and ".join(a["label"] for a in info.axles
+                                                    if a["id"] == ax["id"] or a["id"] in ax["liftWith"])
                 sl["touched"] |= t
             spacer, t = self._pick(sect, "spacer", ax["spacer"])
             spacer = float(spacer or 0)
@@ -463,8 +522,8 @@ class Plan:
             owner = info.slots.get(parent_slot(rim["path"])) if rim else None
             if owner and owner["path"] != "/" and owner.get("chosen"):
                 sl = self._slot(owner)
-                sl["set"]["spacer"] = (rim["id"], spacer)
-                sl["axle"] = ax["label"]
+                sl["set"].setdefault("spacer", {})[rim["id"]] = spacer
+                sl["labels"][rim["id"]] = ax["label"]
                 sl["touched"] |= t
             elif abs(spacer) > 0.0005:
                 self.notes.append("%s: no rim slot found under a part that can be copied, so no spacers." % ax["label"])
@@ -472,7 +531,7 @@ class Plan:
             if ax.get("tire"):
                 sl = self._slot(info.slots[ax["tire"]["path"]])
                 sl["set"]["tire"] = ct or None
-                sl["axle"] = ax["label"]
+                sl["labels"]["tire"] = ax["label"]
                 sl["touched"] |= t
         if info.engine and info.engine.get("slot"):
             eng = spec.get("engine")
@@ -508,7 +567,7 @@ class Plan:
 
     @staticmethod
     def _neutral(st):
-        return (abs(st.get("lift", 0)) < 0.0005 and abs((st.get("spacer") or (None, 0))[1]) < 0.0005
+        return (abs(st.get("lift", 0)) < 0.0005 and all(abs(v) < 0.0005 for v in (st.get("spacer") or {}).values())
                 and not st.get("tire") and abs(st.get("power", 1) - 1) < 0.004 and abs(st.get("rpm", 0)) < 1
                 and abs(st.get("brakes", 1) - 1) < 0.004 and abs(st.get("bodyLift", 0)) < 0.0005)
 
@@ -532,11 +591,13 @@ class Plan:
                 c["ops"].append(("move", -lift))
                 c["meta"]["lift"] = round(lift, 4)
                 c["what"].append("%s %s" % (inches(abs(lift)), "lift" if lift > 0 else "lower"))
-            rim_id, spacer = st.get("spacer") or (None, 0)
-            if abs(spacer) > 0.0005:
-                c["ops"].append(("slotopt", rim_id, {TRACK_KEY: {"x": round(spacer, 4), "y": 0, "z": 0}}))
-                c["meta"]["spacer"] = round(spacer, 4)
-                c["what"].append("%d mm spacers" % round(spacer * 1000))
+            spacers = {k: round(v, 4) for k, v in (st.get("spacer") or {}).items() if abs(v) > 0.0005}
+            for rim_id, spacer in spacers.items():
+                c["ops"].append(("slotopt", rim_id, {TRACK_KEY: {"x": spacer, "y": 0, "z": 0}}))
+            if spacers:
+                c["meta"]["spacers"] = spacers
+                c["meta"]["spacer"] = max(spacers.values(), key=abs)
+                c["what"].append("%s mm spacers" % "/".join(sorted({"%d" % round(v * 1000) for v in spacers.values()})))
             ct = st.get("tire")
             if ct:
                 srcp = info.part(sl["source"])
@@ -566,16 +627,17 @@ class Plan:
                 c["what"].append("%s body lift" % inches(bl))
 
     def _describe(self, sl):
-        st, label = sl["set"], sl.get("axle", "")
+        st, labels = sl["set"], sl["labels"]
         lift = st.get("lift", 0)
         if abs(lift) > 0.0005:
-            self._say("%s suspension %s by %s (%d mm)" % (label, "lifted" if lift > 0 else "lowered", inches(abs(lift)),
-                                                         round(abs(lift) * 1000)))
-        spacer = (st.get("spacer") or (None, 0))[1]
-        if abs(spacer) > 0.0005:
-            self._say("%s wheels %s by %d mm each side" % (label, "pushed out" if spacer > 0 else "pulled in",
-                                                         round(abs(spacer) * 1000)))
+            self._say("%s suspension %s by %s (%d mm)" % (labels.get("lift", ""), "lifted" if lift > 0 else "lowered",
+                                                         inches(abs(lift)), round(abs(lift) * 1000)))
+        for rim_id, spacer in (st.get("spacer") or {}).items():
+            if abs(spacer) > 0.0005:
+                self._say("%s wheels %s by %d mm each side" % (labels.get(rim_id, ""), "pushed out" if spacer > 0
+                                                             else "pulled in", round(abs(spacer) * 1000)))
         if st.get("tire"):
+            label = labels.get("tire", "")
             d, w = st["tire"].get("diameter"), st["tire"].get("width")
             self._say("%s tires: %s tall%s" % (label, inches(d) if d else "same", ", %d mm wide" % round(w * 1000) if w else ""))
         if abs(st.get("power", 1) - 1) > 0.004 or abs(st.get("rpm", 0)) >= 1:
