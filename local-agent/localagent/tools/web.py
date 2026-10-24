@@ -6,9 +6,10 @@ import html
 import re
 import time
 from html.parser import HTMLParser
+from pathlib import Path
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
-from .base import RUN, SAFE, ToolContext, ToolError, tool, truncate
+from .base import EDIT, RUN, SAFE, ToolContext, ToolError, path_risk, tool, truncate
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"
 MAX_BYTES = 3_000_000     # a page bigger than this is cut
@@ -154,26 +155,182 @@ def web_fetch(ctx: ToolContext, a: dict):
                     ctx.settings.max_tool_output)
 
 
+def _clean(s: str | None) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
+
+
+def _ddg_url(href: str) -> str:
+    href = html.unescape(href)
+    if "uddg=" in href:
+        href = unquote(parse_qs(urlparse(href).query).get("uddg", [href])[0])
+    return "https:" + href if href.startswith("//") else href
+
+
 def parse_ddg(page: str, limit: int = 8) -> list[dict]:
     results = []
     for m in re.finditer(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>(.*?)(?=<a[^>]+class="result__a"|$)',
                          page, re.S):
         href, title, rest = m.groups()
-        if "uddg=" in href:
-            href = unquote(parse_qs(urlparse(href).query).get("uddg", [href])[0])
         snip = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', rest, re.S)
-        clean = lambda s: html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
-        results.append({"title": clean(title), "url": href, "snippet": clean(snip.group(1) if snip else "")})
+        results.append({"title": _clean(title), "url": _ddg_url(href), "snippet": _clean(snip.group(1) if snip else "")})
         if len(results) >= limit:
             break
     return results
 
 
-@tool("web_search", "Search the web (DuckDuckGo) and get titles, links and snippets. Then use web_fetch to read a page.",
+def parse_ddg_lite(page: str, limit: int = 8) -> list[dict]:
+    """lite.duckduckgo.com: <a ... class='result-link' href=...>, then <td class='result-snippet'>."""
+    results = []
+    for m in re.finditer(r"<a([^>]*class=['\"]result-link['\"][^>]*)>(.*?)</a>(.*?)(?=<a[^>]*class=['\"]result-link|$)", page, re.S):
+        attrs, title, rest = m.groups()
+        href = re.search(r"href=['\"]([^'\"]+)", attrs)
+        if not href:
+            continue
+        snip = re.search(r"class=['\"]result-snippet['\"][^>]*>(.*?)</td>", rest, re.S)
+        results.append({"title": _clean(title), "url": _ddg_url(href.group(1)),
+                        "snippet": _clean(snip.group(1) if snip else "")})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _bing_url(href: str) -> str:
+    """Bing's click links (bing.com/ck/a?...&u=a1<base64 of the address>) to the address itself."""
+    href = html.unescape(href)
+    if "bing.com/ck/" in href:
+        u = parse_qs(urlparse(href).query).get("u", [""])[0]
+        if u.startswith("a1"):
+            import base64
+            try:
+                return base64.urlsafe_b64decode(u[2:] + "=" * (-len(u[2:]) % 4)).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                pass
+    return href
+
+
+def parse_bing(page: str, limit: int = 8) -> list[dict]:
+    results = []
+    for chunk in re.split(r'<li class="b_algo"', page)[1:]:
+        a = re.search(r'<h2[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', chunk, re.S)
+        if not a:
+            continue
+        snip = re.search(r"<p[^>]*>(.*?)</p>", chunk, re.S)
+        results.append({"title": _clean(a.group(2)), "url": _bing_url(a.group(1)),
+                        "snippet": _clean(snip.group(1) if snip else "")})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def parse_mojeek(page: str, limit: int = 8) -> list[dict]:
+    results = []
+    for m in re.finditer(r'<a[^>]+class="title"[^>]*>(.*?)</a>(.*?)(?=<a[^>]+class="title"|$)', page, re.S):
+        href = re.search(r'href="([^"]+)"', m.group(0))
+        snip = re.search(r'<p class="s"[^>]*>(.*?)</p>', m.group(2), re.S)
+        if href:
+            results.append({"title": _clean(m.group(1)), "url": html.unescape(href.group(1)),
+                            "snippet": _clean(snip.group(1) if snip else "")})
+        if len(results) >= limit:
+            break
+    return results
+
+
+# Tried in order until one gives results. DuckDuckGo often answers a program with a "are you a robot" page instead
+# of results (on Aidan's PC: 23 of 33 searches came back empty), so the next one is asked; one that failed is
+# skipped for a while, so every search doesn't wait for it first.
+ENGINES = [("DuckDuckGo", "https://html.duckduckgo.com/html/?q=", parse_ddg),
+           ("Bing", "https://www.bing.com/search?setlang=en&q=", parse_bing),
+           ("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/?q=", parse_ddg_lite),
+           ("Mojeek", "https://www.mojeek.com/search?q=", parse_mojeek)]
+SKIP_FAILED_FOR = 600     # seconds
+_failed: dict[str, float] = {}
+
+
+@tool("web_search", "Search the web and get titles, links and snippets. Then use web_fetch to read a page.",
       {"query": {"type": "string"}}, required=["query"], group="web")
 def web_search(ctx: ToolContext, a: dict):
-    r = _get("https://html.duckduckgo.com/html/?q=" + quote_plus(a["query"]))
-    results = parse_ddg(r.text)
-    if not results:
-        return "No results (the search page may have changed or blocked the request). Try web_fetch on a site directly."
-    return "\n\n".join(f"{i + 1}. {x['title']}\n{x['url']}\n{x['snippet']}" for i, x in enumerate(results))
+    q = quote_plus(str(a["query"]))
+    now, tried = time.time(), []
+    engines = [e for e in ENGINES if now - _failed.get(e[0], 0) > SKIP_FAILED_FOR] or ENGINES
+    for name, base, parse in engines:
+        try:
+            r = _get(base + q, timeout=12)
+            results = parse(r.text) if r.status_code == 200 else []
+        except ToolError:
+            results = []
+        if results:
+            _failed.pop(name, None)
+            return f"Results from {name}:\n\n" + "\n\n".join(
+                f"{i + 1}. {x['title']}\n{x['url']}\n{x['snippet']}" for i, x in enumerate(results))
+        _failed[name] = time.time()
+        tried.append(name)
+    return (f"No results ({', '.join(tried)} gave none or blocked the request). "
+            "Try other words, or web_fetch a site you know directly.")
+
+
+MAX_FILE_BYTES = 8_000_000_000   # one file
+
+
+def _download_risk(ctx: ToolContext, a: dict) -> str:
+    if _web_risk(ctx, a) == RUN:
+        return RUN
+    return path_risk(ctx, a.get("path"))
+
+
+@tool("download_file", """
+Save any file (zip, installer, image...) from a web address in one step, instead of run_command or
+run_python. path: a file, or a folder to keep the file's own name.""",
+      {"url": {"type": "string"}, "path": {"type": "string"}}, required=["url", "path"], group="web",
+      risk=EDIT, risk_for=_download_risk,
+      describe=lambda a: f"Download {a.get('url')} to {a.get('path')}")
+def download_file(ctx: ToolContext, a: dict):
+    import zipfile
+
+    import requests
+
+    url = str(a["url"]).strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    dest = ctx.resolve(a["path"])
+    try:
+        r = requests.get(url, headers={"User-Agent": UA}, timeout=30, stream=True)
+    except requests.RequestException as e:
+        raise ToolError(f"Could not load {url}: {e}")
+    with r:
+        if r.status_code >= 400:
+            raise ToolError(f"{r.url} answered {r.status_code}: nothing was saved.")
+        if dest.is_dir() or str(a["path"]).rstrip().endswith(("/", "\\")):
+            name = ""
+            cd = r.headers.get("content-disposition", "")
+            m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", cd, re.I)
+            if m:
+                name = unquote(m.group(1)).strip()
+            name = Path(name or unquote(urlparse(r.url).path.rsplit("/", 1)[-1]) or "download").name
+            dest = dest / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = dest.with_name(dest.name + ".part")
+        size = 0
+        try:
+            with open(part, "wb") as f:
+                for chunk in r.iter_content(1 << 20):
+                    if ctx.stop.is_set():
+                        raise ToolError("Stopped: nothing was saved.")
+                    f.write(chunk)
+                    size += len(chunk)
+                    if size > MAX_FILE_BYTES:
+                        raise ToolError(f"{r.url} is over {MAX_FILE_BYTES // 1_000_000_000} GB: nothing was saved.")
+            part.replace(dest)
+        except (requests.RequestException, OSError) as e:
+            raise ToolError(f"The download of {url} stopped ({e}): nothing was saved.")
+        finally:
+            part.unlink(missing_ok=True)
+        ctype = r.headers.get("content-type", "").split(";")[0]
+    note = ""
+    if "html" in ctype and dest.suffix.lower() not in (".html", ".htm"):
+        note = (" Warning: this is a web page, not the file itself (the site may want a click, a sign-in or a "
+                "different link). web_fetch the page to find the real download link.")
+    elif dest.suffix.lower() == ".zip" and not zipfile.is_zipfile(dest):
+        note = " Warning: it is not a valid zip file."
+    mb = size / 1_000_000
+    return f"Saved {dest} ({mb:.1f} MB, {ctype or 'unknown type'}, from {r.url}).{note}"
+

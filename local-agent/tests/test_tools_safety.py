@@ -1,6 +1,7 @@
 """Safety and robustness of the tools: risk levels, dangerous commands, encodings, links, the
 process runner and the web reader."""
 
+import io
 import os
 import shutil
 import sys
@@ -8,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -347,10 +349,19 @@ class WebTest(unittest.TestCase):
             "/nohead": ("text/html; charset=utf-8", b"<!doctype html><html><head><title>x</title><body><h1>Real</h1></body></html>"),
             "/bin": ("application/octet-stream", b"\x00" * 1000),
             "/big": ("text/plain", b"a" * 5_000_000),
+            "/mods/cool%20car.zip": ("application/zip", None),
+            "/login": ("text/html", b"<html><body>Sign in to download</body></html>"),
         }
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("vehicles/car/info.json", "{}")
+        pages["/mods/cool%20car.zip"] = ("application/zip", buf.getvalue())
 
         class H(BaseHTTPRequestHandler):
             def do_GET(self):
+                if self.path not in pages:
+                    self.send_error(404)
+                    return
                 ct, body = pages[self.path]
                 self.send_response(200)
                 self.send_header("Content-Type", ct)
@@ -390,6 +401,22 @@ class WebTest(unittest.TestCase):
         with self.assertRaises(ToolError):
             self.fetch("/bin")
         self.assertIn("only the first 3 MB", self.fetch("/big"))
+
+    def test_download_file(self):
+        out = run(self.ctx, "download_file", url=self.base + "/mods/cool%20car.zip", path="mods/")
+        saved = self.ctx.workspace / "mods" / "cool car.zip"                  # a folder keeps the file's name
+        self.assertTrue(zipfile.is_zipfile(saved), out)
+        self.assertFalse(saved.with_name("cool car.zip.part").exists())
+        self.assertNotIn("Warning", out)
+        out = run(self.ctx, "download_file", url=self.base + "/bin", path="data/x.bin")
+        self.assertEqual((self.ctx.workspace / "data" / "x.bin").stat().st_size, 1000)   # any file type
+        self.assertIn("not the file itself", run(self.ctx, "download_file", url=self.base + "/login", path="a.zip"))
+        with self.assertRaises(ToolError):
+            run(self.ctx, "download_file", url=self.base + "/missing", path="b.zip")
+        self.assertEqual(risk(self.ctx, "download_file", url="https://x.org/a.zip", path="a.zip"), "edit")
+        self.assertEqual(risk(self.ctx, "download_file", url="https://x.org/a.zip", path="E:/elsewhere/a.zip"
+                              if os.name == "nt" else "/elsewhere/a.zip"), "run")
+        self.assertEqual(risk(self.ctx, "download_file", url="https://x.org/a.zip?k=secret", path="a.zip"), "run")
 
 
 if __name__ == "__main__":
