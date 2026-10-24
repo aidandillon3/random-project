@@ -160,6 +160,7 @@ class GuiTest(unittest.TestCase):
         blocks = [b for b in bodies if isinstance(b, self.gui.AssistantBlock) and not b.isHidden()]
         self.assertIn("hello.txt", blocks[-1].text)
         self.assertFalse(blocks[-1].think_btn.isHidden())
+        self.assertIn("StepGroup", [type(b).__name__ for b in bodies])        # its steps folded into one line
         self.assertTrue(list((Path(os.environ["LOCALAGENT_DATA"]) / "chats").glob("*.json")))
         out = os.environ.get("GUI_SHOT")
         if out:
@@ -769,13 +770,14 @@ class GuiTest(unittest.TestCase):
         feed = lambda: [chat.feed.itemAt(i).widget() for i in range(chat.feed.count() - 1)  # noqa: E731
                         if chat.feed.itemAt(i).widget() is not chat.welcome]
 
-        def turn(reasoning, content):
+        def turn(reasoning, content, calls=()):
             chat._on_assistant_start()
             chat.current.add_reasoning(reasoning)
             chat.current.add_text(content)
-            chat._on_assistant_end(SimpleNamespace(reasoning=reasoning, content=content, usage={}))
+            chat._on_assistant_end(SimpleNamespace(reasoning=reasoning, content=content, usage={},
+                                                   tool_calls=list(calls)))
 
-        turn("Find mods first.", "")
+        turn("Find mods first.", "Let me search for popular mods.", calls=["web_search"])
         chat._on_tool_start("1", "web_search", {"query": "beamng mods"}, "Search the web for beamng mods")
         group = chat.group
         self.assertIn("Search the web for beamng mods", group.head.text())        # what it is doing now
@@ -793,7 +795,8 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(group.summary(), "Searched the web, read web pages, downloaded files · 4 steps · 1 failed")
         self.assertTrue(group.head.text().startswith("▸ ⚠️ Searched the web"))
         self.assertFalse(group.body.isVisibleTo(group))                          # folded until clicked
-        self.assertEqual(group.rows.count(), 6)                                  # 2 thinking steps + 4 tools
+        self.assertEqual(group.rows.count(), 6)                                  # a note, a thinking step, 4 tools
+        self.assertIn("Let me search", group.rows.itemAt(0).widget().text)          # the note is folded too
         group.toggle()
         self.assertTrue(group.body.isVisibleTo(group))
         self.assertIn("I saved 1 mod.", items[1].text)

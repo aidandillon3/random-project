@@ -1320,10 +1320,12 @@ class ChatPage(QWidget):
             blk.finish()
             if blk.is_empty():
                 blk.setVisible(False)
-            elif not blk.text.strip():
-                self._fold(blk)               # thinking between steps: with the steps, not in the chat
+            elif getattr(turn, "tool_calls", None) or not blk.text.strip():
+                # thinking, or a note ("Let me check the docs"), on the way to more steps: with the steps
+                blk.copy_btn.setVisible(False)
+                self._fold(blk)
             else:
-                self._end_steps()             # an answer (or a note before more steps) ends the run
+                self._end_steps()             # the answer ends the run
         self.current = None
         self._show_timings(getattr(turn, "usage", None) or {})
 
