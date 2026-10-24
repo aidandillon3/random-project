@@ -1,0 +1,130 @@
+# Builds the Strata engine from xyehya/Strata's q36-r2 branch (ykarout's Qwen3.6-35B-A3B speed work: about 230 tokens/s
+# writing and 6500 tokens/s reading on an RTX 5080, against about 170 / 3200 for the released Strata engine) for Windows
+# with CUDA, for RTX 50 cards (sm_120). The fork publishes no Windows engine, and its setup would otherwise fetch the
+# released one, so the zip has the files of a ready-made engine (strata.exe, strata_kq.dll, BUILD.json) plus every DLL
+# they need. It goes to a pre-release of this repo, where the Local Agent app's Qwen3.6 35B mode downloads it.
+name: Strata Qwen3.6 engine for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/strata-q36-windows.yml
+
+permissions:
+  contents: write
+
+env:
+  FORK: xyehya/Strata
+  FORK_COMMIT: e073a5200be56f911aa038ada8b4cb8f80285647
+  # the llama.cpp the fork's setup.py pins (LLAMA_CPP_COMMIT): ggml for the build
+  LLAMA_COMMIT: 3cf03257f219afbe7334045ff7c6a06ac68c627d
+  CUDA: "13.4"
+  ASSET: localagent-strata-q36-win-cuda-13.4-x64.zip
+  # raise with every change to what's in the zip: the app replaces an installed build older than its strata.Q36_BUILD
+  BUILD: "1"
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 300
+    steps:
+      - name: Get the fork and llama.cpp
+        shell: bash
+        run: |
+          git init -q fork
+          git -C fork remote add origin "https://github.com/$FORK"
+          git -C fork fetch -q --depth 1 origin "$FORK_COMMIT"
+          git -C fork checkout -q FETCH_HEAD
+          git init -q llama
+          git -C llama remote add origin https://github.com/ggml-org/llama.cpp
+          git -C llama fetch -q --depth 1 origin "$LLAMA_COMMIT"
+          git -C llama checkout -q FETCH_HEAD
+          grep -q "$LLAMA_COMMIT" fork/setup.py || { echo "the fork pins another llama.cpp now"; exit 1; }
+
+      - name: Install the CUDA toolkit
+        uses: ./llama/.github/actions/windows-setup-cuda
+        with:
+          cuda_version: ${{ env.CUDA }}
+          cuda_arch: x64
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      # the release build's options (the fork's packaging/build_cuda_linux.sh), for sm_120 only
+      - name: Build the engine
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S fork -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF ^
+            -DSTRATA_EXPERIMENTAL_SM60=OFF -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON -DSTRATA_Q6K_EXPERTS=ON ^
+            -DSTRATA_MMQ_KQUANTS=ON "-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual" ^
+            -DSTRATA_GGML_DIR=%GITHUB_WORKSPACE:\=/%/llama
+          if errorlevel 1 exit /b 1
+          cmake --build build --target strata strata_kq -j %NUMBER_OF_PROCESSORS%
+          if errorlevel 1 (
+            echo   the build stopped - trying it once more, as the fork's setup does
+            cmake --build build --target strata strata_kq -j %NUMBER_OF_PROCESSORS%
+          )
+          if errorlevel 1 exit /b 1
+
+      - name: Pack it with every DLL it needs
+        shell: pwsh
+        run: |
+          $out = "engine"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $exe = Get-ChildItem build -Recurse -Filter strata.exe | Select-Object -First 1
+          $kq = Get-ChildItem build -Recurse -Filter strata_kq.dll | Select-Object -First 1
+          if (-not $exe) { throw "no strata.exe in the build" }
+          Copy-Item $exe.FullName $out
+          if ($kq) { Copy-Item $kq.FullName $out } else { Write-Host "no strata_kq.dll (built without it)" }
+          $vs = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC"
+          $dumpbin = (Get-ChildItem "$vs\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -Last 1).FullName
+          # CUDA's DLLs (cuBLAS: the released engine takes them from pip packages of CUDA 13.0; these are 13.4's, next
+          # to the exe so Windows loads them first) and the MSVC runtime and OpenMP, in case anything links them
+          $cuda = Get-ChildItem $env:CUDA_PATH -Recurse -Filter *.dll | ForEach-Object DirectoryName | Sort-Object -Unique
+          $from = @(Get-ChildItem "$vs\Redist\MSVC\*\x64\Microsoft.VC143.CRT", "$vs\Redist\MSVC\*\x64\Microsoft.VC143.OpenMP" |
+              Sort-Object FullName -Descending | ForEach-Object FullName) + @($cuda)
+          $missing = @()
+          do {
+            $added = 0
+            foreach ($f in Get-ChildItem $out -Include *.exe, *.dll -Recurse) {
+              $deps = & $dumpbin /nologo /dependents $f.FullName | ForEach-Object { $_.Trim() } |
+                Where-Object { $_ -match "^[\w.\-]+\.dll$" }
+              foreach ($d in $deps) {
+                if (Test-Path "$out\$d") { continue }
+                $hit = $from | ForEach-Object { Join-Path $_ $d } | Where-Object { Test-Path $_ } | Select-Object -First 1
+                if ($hit) { Copy-Item $hit $out; $added++; Write-Host "packed $d (for $($f.Name)) from $hit"; continue }
+                if (($d -match "^(api-ms-|ext-ms-)") -or ($d -eq "nvcuda.dll") -or (Test-Path "$env:WINDIR\System32\$d")) { continue }
+                if ($missing -notcontains "$d (for $($f.Name))") { $missing += "$d (for $($f.Name))" }
+              }
+            }
+          } while ($added -gt 0)
+          # cuBLAS opens cuBLASLt itself
+          foreach ($lt in Get-ChildItem $cuda -Filter "cublasLt64_*.dll" -ErrorAction SilentlyContinue) {
+            if (-not (Test-Path "$out\$($lt.Name)")) { Copy-Item $lt.FullName $out; Write-Host "packed $($lt.Name)" }
+          }
+          $missing = $missing | Where-Object { -not (Test-Path ("$out\" + ($_ -split " ")[0])) }
+          if ($missing) { throw "Not packed, so the engine wouldn't start: $($missing -join ', ')" }
+          $ver = (Select-String -Path fork\CMakeLists.txt -Pattern 'project\(strata VERSION ([\d.]+)').Matches[0].Groups[1].Value
+          # what the fork's setup.py reads (get_prebuilt): a ready-made CUDA engine of this version for sm_120, so it
+          # keeps this one instead of fetching the released engine
+          @{ version = $ver; source = "prebuilt"; backend = "cuda"; archs = @(120); ptx = $true; cuda = $env:CUDA;
+             portable = $true; fork = $env:FORK; commit = $env:FORK_COMMIT; built_from = $env:GITHUB_SHA;
+             build = [int]$env:BUILD } | ConvertTo-Json | Set-Content "$out\BUILD.json"
+          # (no GPU here: it may stop without one, which says nothing about the zip)
+          & "$out\strata.exe" --families
+          Write-Host "strata --families exited with $LASTEXITCODE"
+          $global:LASTEXITCODE = 0
+          Get-ChildItem $out | Format-Table Name, Length
+          Compress-Archive -Path "$out\*" -DestinationPath $env:ASSET
+
+      - name: Publish the pre-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="strata-q36-b${BUILD}-${FORK_COMMIT:0:7}-${GITHUB_SHA:0:7}"
+          gh release create "$tag" "$ASSET" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "Strata Qwen3.6 engine for Windows ($tag)" \
+            --notes "The Strata engine from $FORK at $FORK_COMMIT (branch q36-r2), CUDA $CUDA, sm_120 (RTX 50). Downloaded by the Local Agent app's Qwen3.6 35B mode."
