@@ -894,6 +894,8 @@ class Builder:
                 f, pname, ri = src_of(row)
                 wheels.append({
                     "name": row.get("name"), "sec": sec, "n1": i1, "n2": i2,
+                    # the groups of the nodes the game makes for it (its 3D models use them)
+                    "groups": [g for g in (row.get("hubGroup"), row.get("group")) if isinstance(g, str) and g],
                     "radius": _num(row.get("radius"), 0.3), "hubRadius": _num(row.get("hubRadius"), None),
                     "width": _num(row.get("tireWidth"), None) or _num(row.get("hubWidth"), None),
                     "hubWidth": _num(row.get("hubWidth"), None), "pressurePSI": _num(row.get("pressurePSI"), None),

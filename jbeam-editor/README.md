@@ -23,7 +23,9 @@ vehicle:
 ## Starting it
 
 You need Python 3.8 or newer (from python.org or the Microsoft Store). Nothing
-else is required.
+else is required. Extract the zip first; the launcher can't run from inside it.
+If it finds no Python it says so; when installing from python.org, tick
+"Add python.exe to PATH".
 
 1. Double-click **Start JBeam Editor.bat** (or run `python run.py`).
 2. It opens in its own window. With [pywebview](https://pywebview.flowrl.com/)
@@ -129,6 +131,10 @@ its folder in Settings (the one with `Data` and `Survival` in it).
   *Stretch* and drag the side handle, or type a factor under *Stretch* in the
   properties. A model that belongs to the game is copied into your mod under a
   new name instead of being changed.
+- A model whose nodes all move the same way (say the whole rear half moved back)
+  keeps its shape: saving moves its `pos` in the part instead. Rims and tires go
+  with their wheel's hub nodes, since the game makes a wheel's other nodes
+  itself. Tires and rims in parts you can't edit (the game's own) stay put.
 - Every node, beam and triangle option is editable, and any part's text can be
   opened and edited directly.
 - **Weights and stability**: each node is checked against the stiffness and

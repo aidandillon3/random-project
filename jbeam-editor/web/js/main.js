@@ -14,7 +14,7 @@ import { clearImport, importActive, initImporter, showImportPrompt, startImport 
 import { hideHome, homeOpen, initHome, remember, renderGallery, showHome } from './home.js';
 import { hydrateIcons, icon } from './icons.js';
 import { closePanel as closeDropTest, runDropTest } from './droptest.js';
-import { followOn, markRest, reshapedMeshes, setFollow, updateDeform } from './deform.js';
+import { followOn, markRest, reshapedMeshes, setFollow, shiftedMeshes, updateDeform } from './deform.js';
 import { b64 } from './partmaker.js';
 import { $, $$, closeModal, h, modalOpen, openModal, popupMenu, setLoading, toast, fmt, debounce } from './util.js';
 
@@ -280,6 +280,9 @@ function wheelMeshes() {
 }
 
 // ---- saving -------------------------------------------------------------------------------
+// the 3D models that follow moved nodes: bent ones get a new shape, moved ones a new position
+const movedMeshes = () => [...reshapedMeshes().map(m => ({ ...m, pos: b64(m.pos) })), ...shiftedMeshes()];
+
 let saving = null;
 async function save({ quiet = false } = {}) {
   while (saving) await saving;
@@ -289,8 +292,7 @@ async function save({ quiet = false } = {}) {
   saving = (async () => {
     setLoading(true, 'Saving…');
     try {
-      const meshes = reshapedMeshes().map(m => ({ ...m, pos: b64(m.pos) }));
-      const r = await api.save(S.model, ops, S.config, meshes);
+      const r = await api.save(S.model, ops, S.config, movedMeshes());
       if (!r.ok) { saveError(r.error); return false; }
       S.pending.splice(0, n);
       S.summary = r.summary;
@@ -328,9 +330,10 @@ async function saveOps(extra, label) {
   const n = S.pending.length;
   setLoading(true, 'Saving…');
   try {
-    const r = await api.save(S.model, compactOps(S.pending).concat(extra), S.config);
+    const r = await api.save(S.model, compactOps(S.pending).concat(extra), S.config, movedMeshes());
     if (!r.ok) return r.error;
     S.pending.splice(0, n);
+    for (const name of r.reshaped || []) V.meshCache.delete(name);
     S.undo = []; S.redo = [];
     S.summary = r.summary;
     setScene(r.scene);

@@ -58,7 +58,36 @@ function movesOf(nodes) {
   return any ? m : null;
 }
 
+// the hub nodes of the wheels a model belongs to: wheel and tire models use the groups of
+// the nodes the game makes for a wheel, which aren't in the files, so they go with the hubs
+function hubNodes(fb) {
+  const want = new Set(fb.groups), out = [];
+  for (const w of S.scene.wheels || []) {
+    if ((w.groups || []).some(g => want.has(g))) out.push(w.n1, w.n2);
+  }
+  return out;
+}
+
+// how far a model moves without changing shape: all its nodes moved by the same amount (or,
+// for a wheel or tire, by the middle of its hubs); null when it has to bend instead
+function shiftOf(fb) {
+  const sc = S.scene;
+  const hubs = hubNodes(fb).filter(i => sc.nodes[i] && sc.nodes[i].p0);
+  const nodes = hubs.length ? hubs : groupNodes(fb);
+  const m = nodes.length && movesOf(nodes);
+  if (!m) return hubs.length ? [0, 0, 0] : null;
+  const d = [0, 0, 0];
+  for (let j = 0; j < nodes.length; j++) for (let q = 0; q < 3; q++) d[q] += m[j * 3 + q] / nodes.length;
+  if (hubs.length) return d;
+  for (let j = 0; j < nodes.length; j++) {
+    for (let q = 0; q < 3; q++) if (Math.abs(m[j * 3 + q] - d[q]) > 1e-4) return null;
+  }
+  return d;
+}
+
 function restore(mesh) {
+  if (mesh.userData.base) mesh.matrix.copy(mesh.userData.base);
+  delete mesh.userData.shift;
   if (mesh.userData.sharedGeometry) return;
   mesh.geometry.dispose();
   mesh.geometry = V.meshCache.get(mesh.userData.fb.mesh);
@@ -73,12 +102,22 @@ export function updateDeform() {
   for (const mesh of V.groups.mesh.children) {
     const fb = mesh.userData.fb;
     const base = fb && V.meshCache.get(fb.mesh);
-    if (!follow || !base || twice.get(fb.mesh) > 1) { restore(mesh); continue; }
+    if (!follow || !base) { restore(mesh); continue; }
+    const d = shiftOf(fb);
+    if (d) {
+      restore(mesh);
+      if (d.some(v => Math.abs(v) > 1e-6)) {
+        mesh.matrix.premultiply(new THREE.Matrix4().makeTranslation(d[0], d[1], d[2]));
+        mesh.userData.shift = d;
+      }
+      continue;
+    }
+    if (twice.get(fb.mesh) > 1) { restore(mesh); continue; }
     let bd = bindings.get(mesh);
     if (!bd) {
       const nodes = groupNodes(fb);
       if (!nodes.length || !movesOf(nodes)) { restore(mesh); continue; }
-      mesh.updateMatrix();
+      if (mesh.userData.base) mesh.matrix.copy(mesh.userData.base);
       const src = base.attributes.position.array;
       const rest = new Float32Array(src.length);
       const v = new THREE.Vector3();
@@ -111,6 +150,21 @@ export function updateDeform() {
     mesh.geometry.computeBoundingSphere();
   }
   V.dirty = true;
+}
+
+// the models that moved without changing shape, for saving: [{ mesh, shift ([dx, dy, dz] in the
+// part's own space, before any nodeOffset turn), f, part, row }]
+export function shiftedMeshes() {
+  const out = [];
+  if (!follow || !V.groups.mesh) return out;
+  for (const mesh of V.groups.mesh.children) {
+    const d = mesh.userData.shift, fb = mesh.userData.fb;
+    if (!d || fb.row === null || fb.row === undefined) continue;
+    const v = new THREE.Vector3(...d);
+    if (fb.xf) v.applyQuaternion(new THREE.Quaternion(...fb.xf.q).invert());
+    out.push({ mesh: fb.mesh, shift: [v.x, v.y, v.z].map(x => +x.toFixed(5)), f: S.scene.files[fb.f]?.key, part: fb.part, row: fb.row });
+  }
+  return out;
 }
 
 // the models whose shape changed, for saving: [{ mesh, pos (Float32Array, in the file's space), f, part, row }]

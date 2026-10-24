@@ -323,6 +323,58 @@ scenario('reshape', async page => {
   await page.click('#gizmoModes [data-gizmo=translate]');
 });
 
+const meshAt = (page, pred) => page.evaluate(src => {
+  const { V } = window.jbe;
+  const f = new Function('m', 'return ' + src);
+  const m = V.groups.mesh.children.find(c => f(c));
+  if (!m) return null;
+  m.geometry.computeBoundingBox();
+  const b = m.geometry.boundingBox.clone().applyMatrix4(m.matrix);
+  return { y: (b.min.y + b.max.y) / 2, shared: m.userData.sharedGeometry };
+}, pred);
+
+// moving a whole part moves its model without reshaping it, and wheels and tires go with their hubs
+scenario('move-with-wheels', async page => {
+  await page.click('#modeTabs [data-mode=structure]');
+  const part = "m.userData.part === 'test_pick_part'";
+  const a0 = await meshAt(page, part);
+  await page.evaluate(() => {
+    const { S, V, emit } = window.jbe;
+    S.sel.nodes.clear();
+    S.scene.nodes.forEach((n, i) => { if (!n.del && n.part === 'test_pick_part') S.sel.nodes.add(i); });
+    emit('selection');
+    document.querySelector('#gizmoModes [data-gizmo=translate]').click();
+    V.gizmo.dispatchEvent({ type: 'dragging-changed', value: true });
+    V.pivot.position.y += 0.3;
+    V.gizmo.dispatchEvent({ type: 'objectChange' });
+    V.gizmo.dispatchEvent({ type: 'dragging-changed', value: false });
+  });
+  const a1 = await meshAt(page, part);
+  if (!(Math.abs(a1.y - a0.y - 0.3) < 0.01) || !a1.shared) throw new Error(`model did not move: ${JSON.stringify([a0, a1])}`);
+  // a wheel's hub nodes move: its rim and tire models follow (their own nodes aren't in the files)
+  const tire = "m.userData.fb.groups.includes('tire_FR')";
+  const t0 = await meshAt(page, tire);
+  await page.evaluate(() => {
+    const { S, emit } = window.jbe;
+    const w = S.scene.wheels.find(x => x.name === 'FR');
+    for (const i of [w.n1, w.n2]) S.scene.nodes[i].p[1] += 0.2;
+    emit('dragging');
+  });
+  const t1 = await meshAt(page, tire);
+  await page.evaluate(() => {
+    const { S, emit } = window.jbe;
+    const w = S.scene.wheels.find(x => x.name === 'FR');
+    for (const i of [w.n1, w.n2]) S.scene.nodes[i].p[1] -= 0.2;
+    emit('dragging');
+  });
+  if (!(Math.abs(t1.y - t0.y - 0.2) < 0.01)) throw new Error(`tire did not follow its hub: ${t0.y} -> ${t1.y}`);
+  await page.evaluate(() => window.jbe.A.save({ quiet: true }));
+  await waitIdle(page);
+  const a2 = await meshAt(page, part);
+  const pos = await page.evaluate(() => window.jbe.S.scene.flexbodies.find(f => f.part === 'test_pick_part').pos);
+  if (!(Math.abs(a2.y - a1.y) < 0.01) || !pos || !(Math.abs(pos[1] - 0.3) < 1e-4)) throw new Error(`saved: ${JSON.stringify([a1, a2, pos])}`);
+});
+
 // a part copied from the game keeps the game's model: reshaping it saves a copy of the model in the mod
 scenario('reshape-copy', async page => {
   const r = await page.evaluate(async () => {

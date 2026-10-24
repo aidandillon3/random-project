@@ -438,14 +438,27 @@ class App:
     def _reshape_meshes(self, m, s, items):
         """3D models that follow moved nodes: [{mesh, pos (base64 float32, as extracted), f, part, row}].
         A model in a mod folder is changed where it is; one in the game or a zip is copied into the mod of
-        the part that uses it, under a new name. Returns (names whose shape changed, notes for the person)."""
+        the part that uses it, under a new name. An item with "shift" ([dx, dy, dz]) instead of "pos" moved
+        without changing shape: its flexbody row's position moves by that much and the model file stays.
+        Returns (names whose shape changed, notes for the person)."""
         changed, notes = [], []
         if not items:
             return changed, notes
-        index = self.meshes.index(m.name)
+        index = self.meshes.index(m.name) if any(it.get("shift") is None for it in items) else {}
         taken = set(index)
         for it in items:
             name = it["mesh"]
+            if it.get("shift") is not None:
+                # moved along with its nodes, shape unchanged: only its position in the part changes
+                try:
+                    fr = m.files.get(it.get("f"))
+                    if fr is None or not fr.root.editable:
+                        raise patch.EditError("it belongs to a part you can't edit")
+                    s.apply({"op": "flex.shift", "f": it["f"], "part": it["part"], "row": it["row"],
+                             "d": [float(v) for v in it["shift"]]})
+                except patch.EditError as e:
+                    notes.append("Couldn't move the model %s with its nodes: %s." % (name, e))
+                continue
             loc = index.get(name)
             if loc is None:
                 notes.append("The model %s wasn't found, so it stays as it was." % name)

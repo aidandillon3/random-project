@@ -416,6 +416,7 @@ export function buildMeshes() {
     }
     mesh.matrixAutoUpdate = false;
     mesh.matrix.copy(inner);
+    mesh.userData.base = inner.clone();   // where the part puts it (deform.js moves it from here)
     mesh.renderOrder = 0;
     V.groups.mesh.add(mesh);
   }

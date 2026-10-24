@@ -2031,14 +2031,21 @@ class ServerPage(QWidget):
             model = Path(s.model_path)
             args = strata.setup_args(p, model, s) if strata.needs_setup(p, model, s) else strata.serve_args(p, s)
             self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
-            first = not strata.installed() or not strata.set_up_before()
+            ins = strata.install_of(p)
+            first = not strata.installed(ins.root) or not strata.set_up_before(ins.root)
             again = not first and strata.needs_setup(p, model, s)
             self.plan_label.setText(
                 f"<b style='color:{OK}'>Runs on Strata.</b> It places the model itself: attention and the busiest "
-                "experts on the GPU, the other experts in RAM (worked on by the CPU at the same time), the n-gram "
-                "table on the SSD, plus a draft layer for faster writing. Context length, vision and port below "
-                "still apply; the other settings are llama.cpp's."
-                + ("<br>The first start downloads Strata (about 55 MB) and runs its setup, which installs Python if "
+                + ("experts on the GPU, the rest in RAM (worked on by the CPU at the same time), and the model's own "
+                   "MTP layer drafts ahead for faster writing. Context length and port below still apply; the other "
+                   "settings are llama.cpp's." if ins.engine else
+                   "experts on the GPU, the other experts in RAM (worked on by the CPU at the same time), the n-gram "
+                   "table on the SSD, plus a draft layer for faster writing. Context length, vision and port below "
+                   "still apply; the other settings are llama.cpp's.")
+                + ("<br>The first start downloads the Strata fork for this model (about 90 MB) and its engine (built "
+                   "in your GitHub repo; needs the token in Settings > GitHub), then runs its setup, which installs "
+                   "Python if needed. Later starts take 30-90 seconds." if first and ins.engine else
+                   "<br>The first start downloads Strata (about 55 MB) and runs its setup, which installs Python if "
                    "needed and fetches its engine and a ~6 GB draft layer. Later starts take 30-90 seconds."
                    if first else "<br>The next start runs Strata's setup again first, for this size and these "
                    "settings (its engine and draft layer are already here)." if again else ""))
@@ -2187,14 +2194,17 @@ class ServerPage(QWidget):
             # a stopped start can still be unpacking its download; two at once would trip over each other
             self.state.setText("Still stopping the last start. Press Start model again in a few seconds.")
             return
-        if not strata.installed():
-            if QMessageBox.question(
-                    self, "Strata",
-                    "Download Strata (about 55 MB, from github.com/Niko1221/Strata) into\n"
-                    f"{strata.STRATA_DIR}\nand run its setup?\n\nSetup installs Python for your account if it's "
+        ins = strata.install_of(p)
+        if not strata.installed(ins.root):
+            what = (f"Download the Strata fork for this model (about 90 MB, from github.com/{ins.repo}) into\n"
+                    f"{ins.root}\nwith its engine (built in your GitHub repo), and run its setup?\n\nSetup installs "
+                    "Python for your account if it's missing. Your model files are used where they are."
+                    if ins.engine else
+                    f"Download Strata (about 55 MB, from github.com/{ins.repo}) into\n"
+                    f"{ins.root}\nand run its setup?\n\nSetup installs Python for your account if it's "
                     "missing, then fetches Strata's engine and a ~6 GB draft layer into\n"
-                    f"{strata.data_dir(model)}.\nYour model files are used where they are.") \
-                    != QMessageBox.Yes:
+                    f"{strata.data_dir(model)}.\nYour model files are used where they are.")
+            if QMessageBox.question(self, "Strata", what) != QMessageBox.Yes:
                 return
         self.proc.stop()
         self.proc.lines.clear()
@@ -2213,17 +2223,21 @@ class ServerPage(QWidget):
             # every step that starts a program checks stop under the lock Stop takes: a cancelled start
             # never starts anything later (nor stops a model started since)
             try:
-                if not strata.installed() or strata.outdated():
-                    if strata.installed():
-                        say(f"Updating Strata to v{strata.VERSION} (its setup runs again after)...")
-                    strata.download(say, stop=stop)
-                    self.proc.lines.append(f"Strata v{strata.VERSION} ({strata.COMMIT[:7]}) downloaded to "
-                                           f"{strata.STRATA_DIR}")
+                if not strata.installed(ins.root) or strata.outdated(ins.root, ins.commit):
+                    if strata.installed(ins.root):
+                        say(f"Updating Strata to {ins.version} (its setup runs again after)...")
+                    strata.download_install(ins, say, stop=stop)
+                    self.proc.lines.append(f"Strata {ins.version} ({ins.commit[:7]}) downloaded to {ins.root}")
+                if stop.is_set():
+                    return
+                if not strata.engine_ready(ins):
+                    exe = strata.download_engine(ins, run, say, stop=stop)
+                    self.proc.lines.append(f"Strata engine for {ins.version} downloaded to {exe.parent}")
                 if stop.is_set():
                     return
                 if strata.needs_setup(p, model, run):
                     say("Running Strata's setup (the first time it downloads its engine and draft layer)...")
-                    code = self.proc.run_step(strata.setup_args(p, model, run), strata.STRATA_DIR, cancel=stop)
+                    code = self.proc.run_step(strata.setup_args(p, model, run), ins.root, cancel=stop)
                     if code is None or stop.is_set():
                         return
                     if code != 0 or not strata.config_path(p).is_file():
@@ -2231,7 +2245,7 @@ class ServerPage(QWidget):
                             "Start model to try again, it carries on where it stopped.")
                         return
                     strata.mark_setup_done(p, model, run)
-                if self.proc.start(strata.serve_args(p, run), cwd=strata.STRATA_DIR, clear=False, cancel=stop):
+                if self.proc.start(strata.serve_args(p, run), cwd=ins.root, clear=False, cancel=stop):
                     say("Loading the model...")
             except strata.Stopped:
                 pass

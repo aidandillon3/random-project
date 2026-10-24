@@ -42,6 +42,7 @@ class Preset:
     odp: dict | None = None               # the 1-bit engine's prefill blocks, when it runs on it (odp.py)
     family: str = ""                      # the model, as the pickers list it (Qwen3.8 27B, Qwen3.8 Flash Next)
     variant: str = ""                     # this quant or version of it, in the family's second list
+    revision: str = "main"                # the model repo's commit to download from (Strata's setup checks a pinned one)
 
     def remote(self, repo: str, name: str) -> str:
         """The file's path in its Hugging Face repo."""
@@ -160,6 +161,35 @@ PRESETS = [
         strata={"family": "coder", "model": "IQ1_M", "tag": "coder-",
                 "engine_args": {"--conversation-cache-mib": "8192"}},
     ),
+    # Qwen3.6-35B-A3B on xyehya's Strata fork (branch q36-r2, ykarout's speed work; strata.Q36): 22.9 GB, so with 16 GB
+    # of VRAM most experts sit on the GPU. The fork's setup checks the file against Unsloth's commit below, and the
+    # engine drafts with the file's own MTP block. The expert profile (which experts start on the GPU) is ykarout's,
+    # learned on a 16 GB card from agent coding sessions.
+    Preset(
+        key="qwen36-35b-strata",
+        title="Qwen3.6 35B-A3B UD-Q4_K_XL (fastest, Strata fork)",
+        family="Qwen3.6 35B-A3B", variant="UD-Q4_K_XL (fastest, Strata fork)",
+        blurb="Qwen's smaller MoE (35B, 3B active per token) at 4 bits, on a Strata fork tuned for it: about "
+              "230 tokens/s writing and 6,500 tokens/s reading prompts on an RTX 5080 by its maker's tests (up to "
+              "~290 in agent work), about twice Flash Next. It is a smaller, older model than Flash Next, so expect "
+              "weaker answers on hard tasks. 262K context. No vision in this mode. Its engine is built in your "
+              "GitHub repo.",
+        repo="unsloth/Qwen3.6-35B-A3B-MTP-GGUF", revision="5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+        files=["Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"],
+        extra=[("ykarout/Strata-Qwen3.6-35B-A3B", "expert-profile-agent-qwen36-v2.prof")],
+        mmproj=None,
+        folder="Qwen3.6-35B-A3B",
+        sizes={"Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf": 22853663008, "expert-profile-agent-qwen36-v2.prof": 83992},
+        launch={"ctx_size": 262144, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": False,
+                "engine": "strata"},
+        # ykarout's config (strata-qwen36.json on the model card): the options its 5080 numbers were measured with
+        strata={"family": "qwen36", "model": "UD-Q4_K_XL", "tag": "qwen36-", "install": "q36",
+                "engine_args": {"--kv": "int8", "--gqa-attn": None, "--hybrid-zero-copy": None,
+                                "--expert-prefetch": "2", "--expert-profile": "expert-profile-agent-qwen36-v2.prof",
+                                "--decode-swaps": "64", "--snapshots": "2", "--spec-min-p": "0.5",
+                                "--mtp-sampled": "q"},
+                "env": {"STRATA_Q8_PACKED": "0"}},
+    ),
     # IST-DASLab's disaggregated quantization (odp.py): Unsloth's 1-bit 27B writes, the NVFP4 prefill blocks
     # trained for exactly that file read the prompt, streamed from the SSD. 64 blocks, every 4th one smaller.
     Preset(
@@ -225,8 +255,8 @@ def families() -> dict[str, list[Preset]]:
     return out
 
 
-def url(repo: str, file: str, base: str = HF) -> str:
-    return f"{base}/{repo}/resolve/main/{file}"
+def url(repo: str, file: str, base: str = HF, revision: str = "main") -> str:
+    return f"{base}/{repo}/resolve/{revision}/{file}"
 
 
 def locate(preset: Preset, dirs: list[Path]) -> dict[str, Path]:
@@ -368,7 +398,7 @@ def download(preset: Preset, dest: Path, progress=lambda msg, frac: None, stop: 
         headers = {"Range": f"bytes={start}-"} if start else {}
         h = None
         try:
-            link = url(repo, preset.remote(repo, name), base)
+            link = url(repo, preset.remote(repo, name), base, preset.revision if repo == preset.repo else "main")
             with session.get(link, headers=headers, stream=True, timeout=60) as r:
                 sha = _sha256_of(r)
                 h = hashlib.sha256() if sha else None
