@@ -42,26 +42,15 @@ def _s(b: str) -> bytes:
 
 
 def sized_file(path, size: int, head: bytes = b"") -> None:
-    """A file `size` bytes long that takes no drive space. Linux makes this sparse on its own; Windows
-    fills the gap with real zeros unless the file is marked sparse first (an unmarked run wrote 108 GB to
-    a user's temp folder). The file is deleted when the tests end."""
+    """A file `size` bytes long that takes no drive space on Linux, where truncate() leaves a hole.
+    On Windows truncate() writes every byte as a real zero (twice that filled a user's C: drive with
+    60+ GB), so there a test that needs a file over 64 MB is skipped instead. Deleted when the tests end."""
+    if os.name == "nt" and size > 64 * 1024 * 1024:
+        raise unittest.SkipTest(f"needs a {size / 1024 ** 3:.1f} GB stand-in file, which Windows would really write")
     with open(path, "wb") as f:
-        if os.name == "nt":
-            import ctypes
-            import msvcrt
-            from ctypes import wintypes
-            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            k32.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
-                                            wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
-                                            wintypes.LPVOID]
-            done = wintypes.DWORD()
-            if not k32.DeviceIoControl(msvcrt.get_osfhandle(f.fileno()), 0x900C4,  # FSCTL_SET_SPARSE
-                                       None, 0, None, 0, ctypes.byref(done), None):
-                f.close()
-                os.unlink(path)
-                raise unittest.SkipTest(f"can't make a sparse file in {Path(path).parent} (would use {size >> 30} GB)")
         f.write(head)
         f.truncate(size)
+
     def drop():
         try:
             Path(path).unlink(missing_ok=True)
