@@ -121,6 +121,7 @@ class StrataTest(unittest.TestCase):
         self.assertEqual(cfg["sampling"], {"temperature": 1.0})
         # Strata's two opt-in speed-ups (README, v0.1.44+)
         self.assertEqual(val("--adapt-async"), "1")
+        self.assertEqual(val("--vram-reserve-mib"), "1728")                 # room for the desktop: no paging
         self.assertEqual(cfg["env"], {"STRATA_PIN_BY_NEED": "1"})
         self.assertFalse(strata.tune_config(self.flash, self.root))            # already there: file left alone
         cfg["env"] = {"STRATA_PIN_BY_NEED": "0", "OTHER": "x"}                 # turned off by hand: kept
@@ -324,7 +325,14 @@ class StrataTest(unittest.TestCase):
         self.assertEqual(val("--expert-profile"),
                          str(Path("/models/Qwen3.6-35B-A3B") / "expert-profile-agent-qwen36-v2.prof"))
         self.assertEqual(cfg["env"], {"STRATA_Q8_PACKED": "0"})
+        self.assertNotIn("--vram-reserve-mib", args)                          # not an option of this engine
+        self.assertEqual(val("--expert-vram"), "4.1")                         # 256K: less room than at 64K
         self.assertFalse(strata.tune_config(q, self.root, Path("/models/Qwen3.6-35B-A3B")))   # already there
+        for ctx, gib in (("65536", "6.5"), ("32768", "6.5"), ("131072", "5.7")):
+            cfg_path.write_text(json.dumps({"args": ["--native", "x.gguf", "--max-context", ctx]}), encoding="utf-8")
+            self.assertTrue(strata.tune_config(q, self.root))
+            args = json.loads(cfg_path.read_text(encoding="utf-8"))["args"]
+            self.assertEqual(val("--expert-vram"), gib)
 
     def test_qwen36_engine_comes_from_this_repos_releases(self):
         ins = strata.Install("q36", self.root, "xyehya/Strata", strata.Q36.commit, "test", dict(strata.Q36.engine))

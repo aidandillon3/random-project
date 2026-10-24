@@ -373,8 +373,11 @@ def mark_setup_done(preset, model: Path, settings, root: Path | None = None) -> 
 # --adapt-async 1: the expert cache swaps on a helper thread instead of pausing the answer (Strata's README, #1904,
 # v0.1.44+: +4-5% decode, +7-10% on code and long documents on an RTX 5070; answers can differ slightly from the
 # default but stay the same from run to run). The engine turns it off by itself, saying why, where it can't run.
+# --vram-reserve-mib 1728: VRAM the expert cache leaves free. With the desktop on the same card (Aidan's four
+# monitors take about 3 GB) the cache otherwise fills it to 0 MiB free, Windows pages GPU memory to system RAM and
+# decode falls (IQ3_XXS at 64K: about 50 tok/s, 85-117 with it). 1728 is what the engine's own warning asked for.
 ENGINE_ARGS = {"--prompt-cache": "10", "--conversation-cache-mib": "4096", "--conversation-cache-min-tokens": "8192",
-               "--adapt-async": "1"}
+               "--adapt-async": "1", "--vram-reserve-mib": "1728"}
 # Put into the config's "env" the same way. STRATA_PIN_BY_NEED: Windows lets a program lock only about half the RAM
 # for the graphics card; this locks the experts the card needs most first (#1905, v0.1.44+: +4.4% prompt reading).
 ENGINE_ENV = {"STRATA_PIN_BY_NEED": "1"}
@@ -405,6 +408,15 @@ def tune_config(preset, root: Path | None = None, model_dir: Path | None = None)
         if model_dir is not None and flag == "--expert-profile":
             value = str(Path(model_dir) / value)
         add += [flag, value]
+    # a fork's VRAM budget for the experts (strata["expert_vram"]: GiB at 64K context, GiB less per 32K more): its
+    # engine fills the card to 0 free otherwise, with the same paging as above (Qwen3.6: 50-73 tok/s, 105-148)
+    ev = preset.strata.get("expert_vram")
+    if ev and "--expert-vram" not in args:
+        try:
+            ctx = int(args[args.index("--max-context") + 1])
+        except (ValueError, IndexError):
+            ctx = 65536
+        add += ["--expert-vram", f"{max(ev[0] - ev[1] * max(ctx - 65536, 0) / 32768, 1.0):.1f}"]
     env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
     add_env = {k: v for k, v in {**({} if own else ENGINE_ENV), **preset.strata.get("env", {})}.items()
                if k not in env}
