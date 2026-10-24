@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover
     QApplication = None
 
 from tests.mockserver import MockServer, calls, text  # noqa: E402
-from tests.test_launcher import NEW_HELP, moe_model  # noqa: E402
+from tests.test_launcher import NEW_HELP, moe_model, sized_file  # noqa: E402
 
 
 def free_port() -> int:
@@ -76,8 +76,7 @@ def flash_files(d: Path):
     flash = catalog.BY_KEY["swift-flash-next"]
     (d / flash.folder).mkdir()
     for _, name in flash.all_files():
-        with open(d / flash.folder / name, "wb") as f:
-            f.truncate(flash.sizes[name])          # sparse: right size, no real data
+        sized_file(d / flash.folder / name, flash.sizes[name])
     return flash
 
 
@@ -240,8 +239,7 @@ class GuiTest(unittest.TestCase):
         folder = d / flash.folder
         folder.mkdir()
         for _, name in flash.all_files():
-            with open(folder / name, "wb") as f:
-                f.truncate(flash.sizes[name])          # sparse: right size, no real data
+            sized_file(folder / name, flash.sizes[name])
         exe = d / "llama-server"
         exe.write_text("#!/bin/sh\ncat <<'EOF'\n" + NEW_HELP + "\nEOF\n")
         exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
@@ -274,8 +272,7 @@ class GuiTest(unittest.TestCase):
         b27 = catalog.BY_KEY["swift-27b"]
         (d / b27.folder).mkdir()
         for _, name in b27.all_files():
-            with open(d / b27.folder / name, "wb") as f:
-                f.truncate(b27.sizes[name])
+            sized_file(d / b27.folder / name, b27.sizes[name])
         page.preset_box.setCurrentIndex(page.preset_box.findData("swift-27b"))
         self.assertTrue(self.wait_until(lambda: "On this PC" in page.preset_info.text(), 10), page.preset_info.text())
         w.close()
@@ -289,8 +286,7 @@ class GuiTest(unittest.TestCase):
         folder = d / p.folder
         folder.mkdir()
         for _, name in p.all_files():
-            with open(folder / name, "wb") as f:
-                f.truncate(p.sizes[name])
+            sized_file(folder / name, p.sizes[name])
         old, odp.ODP_DIR = odp.ODP_DIR, d / "odp-llama"
         self.addCleanup(setattr, odp, "ODP_DIR", old)
         llama = d / "llama"
@@ -361,8 +357,7 @@ class GuiTest(unittest.TestCase):
         folder = d / flash.folder
         folder.mkdir()
         for _, name in flash.all_files():
-            with open(folder / name, "wb") as f:
-                f.truncate(flash.sizes[name])
+            sized_file(folder / name, flash.sizes[name])
         root = d / "strata"
         fake_strata(root)
         old, strata.STRATA_DIR = strata.STRATA_DIR, root

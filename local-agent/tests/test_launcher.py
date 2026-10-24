@@ -1,3 +1,4 @@
+import atexit
 import os
 import struct
 import sys
@@ -40,6 +41,35 @@ def _s(b: str) -> bytes:
     return struct.pack("<Q", len(e)) + e
 
 
+def sized_file(path, size: int, head: bytes = b"") -> None:
+    """A file `size` bytes long that takes no drive space. Linux makes this sparse on its own; Windows
+    fills the gap with real zeros unless the file is marked sparse first (an unmarked run wrote 108 GB to
+    a user's temp folder). The file is deleted when the tests end."""
+    with open(path, "wb") as f:
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                                            wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+                                            wintypes.LPVOID]
+            done = wintypes.DWORD()
+            if not k32.DeviceIoControl(msvcrt.get_osfhandle(f.fileno()), 0x900C4,  # FSCTL_SET_SPARSE
+                                       None, 0, None, 0, ctypes.byref(done), None):
+                f.close()
+                os.unlink(path)
+                raise unittest.SkipTest(f"can't make a sparse file in {Path(path).parent} (would use {size >> 30} GB)")
+        f.write(head)
+        f.truncate(size)
+    def drop():
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+    atexit.register(drop)
+
+
 def write_gguf(path: Path, meta: dict, tensors: list[tuple[str, int]], pad_to: int = 0):
     """Tiny GGUF writer: metadata plus tensor infos whose offsets imply the given byte sizes."""
     out = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(meta))
@@ -61,9 +91,7 @@ def write_gguf(path: Path, meta: dict, tensors: list[tuple[str, int]], pad_to: i
         off += size
     align = 32
     out += b"\0" * ((-len(out)) % align)
-    with open(path, "wb") as f:
-        f.write(out)
-        f.truncate(len(out) + off)   # sparse file: sizes without real data
+    sized_file(path, len(out) + off, out)
 
 
 def moe_model(path: Path):
