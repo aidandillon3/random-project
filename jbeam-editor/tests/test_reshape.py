@@ -170,3 +170,43 @@ class SaveReshapeTests(InstallCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShiftModelTests(InstallCase):
+    def _copy(self):
+        self.unpack_copy("testcar_body")
+        cfg = self.build()["config"]
+        cfg["parts"]["testcar_body"] = "testcar_body_copy"
+        return cfg, self.build(cfg)
+
+    def _shift(self, cfg, sc, d, part="testcar_body_copy"):
+        fb = next(f for f in sc["flexbodies"] if f["part"] == part)
+        return self.app.api_save({"model": "testcar", "ops": [], "config": cfg, "meshes": [
+            {"mesh": fb["mesh"], "shift": d, "f": sc["files"][fb["f"]]["key"], "part": fb["part"], "row": fb["row"]}]})
+
+    def test_moved_model_gets_a_new_position(self):
+        cfg, sc = self._copy()
+        # the row has no options (and no nonFlexMaterials) yet
+        out = self._shift(cfg, sc, [0, 0.5, 0])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["reshaped"], [])
+        fb = next(f for f in out["scene"]["flexbodies"] if f["part"] == "testcar_body_copy")
+        self.assertEqual(fb["pos"], [0, 0.5, 0])
+        self.assertEqual(fb["mesh"], "testcar_body")       # the model file is left alone
+        out = self._shift(cfg, out["scene"], [0.25, -0.5, 0.1])
+        fb = next(f for f in out["scene"]["flexbodies"] if f["part"] == "testcar_body_copy")
+        self.assertEqual(fb["pos"], [0.25, 0, 0.1])
+
+    def test_part_that_cant_be_edited_stays(self):
+        cfg = self.build()["config"]
+        sc = self.build(cfg)
+        tire = next(f for f in sc["flexbodies"] if f["mesh"].startswith("tire_test"))
+        out = self._shift(cfg, sc, [0, 1, 0], part=tire["part"])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["written"], [])
+        self.assertIn("can't edit", " ".join(out["notes"]))
+
+    def test_wheels_name_their_groups(self):
+        sc = self.build()
+        fr = next(w for w in sc["wheels"] if w["name"] == "FR")
+        self.assertEqual(fr["groups"], ["wheel_FR", "tire_FR"])

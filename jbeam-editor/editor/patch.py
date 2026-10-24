@@ -385,6 +385,31 @@ class Session:
                     raise EditError("cell not found")
                 return edits_replace(row.items[op["col"]], op["value"], 6)
             self._try(doc, fn)
+        elif t == "flex.shift":
+            # move a 3D model by d (its nodes moved together): add d to the row's "pos"
+            def fn():
+                sec = find_section(doc, pname, "flexbodies")
+                if sec is None or not (1 <= op["row"] < len(sec.items)) or sec.items[op["row"]].kind != "arr":
+                    raise EditError("row %s of flexbodies not found" % op["row"])
+                row, h = sec.items[op["row"]], header_len(sec)
+                items = row.items
+                has = len(items) == h + 1 and items[h].kind == "obj"
+                opts = items[h].to_py() if has else {}
+                pos = opts.get("pos") if isinstance(opts.get("pos"), dict) else {}
+                pos = dict(pos)
+                for a, d in zip("xyz", op["d"]):
+                    v = pos.get(a, 0)
+                    if isinstance(v, bool) or not isinstance(v, (int, float)):
+                        raise EditError("its position %s is %s, not a number" % (a, dumps_inline(v)))
+                    pos[a] = round(v + d, 5)
+                opts["pos"] = pos
+                if has:
+                    return [(items[h].start, items[h].end, dumps_inline(opts))]
+                if 0 < len(items) <= h:
+                    # rows often leave out nonFlexMaterials: fill the missing cells first
+                    return [(items[-1].end, items[-1].end, ", []" * (h - len(items)) + ", " + dumps_inline(opts))]
+                raise EditError("flexbody row %s has %d cells but the header has %d" % (op["row"], len(items), h))
+            self._try(doc, fn)
         elif t == "rowidx.del":
             def fn():
                 sec = find_section(doc, pname, op["sec"])
