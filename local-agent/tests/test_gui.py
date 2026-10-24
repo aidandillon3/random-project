@@ -758,6 +758,65 @@ class GuiTest(unittest.TestCase):
         page.stop()
         w.close()
 
+    def test_steps_fold_into_one_line(self):
+        from types import SimpleNamespace
+
+        from localagent.config import Settings
+        from localagent.tools import ToolResult
+
+        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1"))
+        chat = w.chat
+        feed = lambda: [chat.feed.itemAt(i).widget() for i in range(chat.feed.count() - 1)  # noqa: E731
+                        if chat.feed.itemAt(i).widget() is not chat.welcome]
+
+        def turn(reasoning, content):
+            chat._on_assistant_start()
+            chat.current.add_reasoning(reasoning)
+            chat.current.add_text(content)
+            chat._on_assistant_end(SimpleNamespace(reasoning=reasoning, content=content, usage={}))
+
+        turn("Find mods first.", "")
+        chat._on_tool_start("1", "web_search", {"query": "beamng mods"}, "Search the web for beamng mods")
+        group = chat.group
+        self.assertIn("Search the web for beamng mods", group.head.text())        # what it is doing now
+        chat._on_tool_end("1", "web_search", ToolResult("1. Mods"))
+        turn("Open the first one.", "")
+        chat._on_tool_start("2", "web_fetch", {"url": "https://x.org"}, "Open https://x.org")
+        chat._on_tool_start("3", "web_fetch", {"url": "https://y.org"}, "Open https://y.org")
+        chat._on_tool_end("2", "web_fetch", ToolResult("page"))
+        chat._on_tool_end("3", "web_fetch", ToolResult("Error", ok=False))
+        chat._on_tool_start("4", "download_file", {"url": "https://x.org/a.zip"}, "Download")
+        chat._on_tool_end("4", "download_file", ToolResult("Saved"))
+        turn("Done.", "I saved 1 mod.")
+        items = feed()
+        self.assertEqual([type(x).__name__ for x in items], ["StepGroup", "AssistantBlock"])   # one line, then the answer
+        self.assertEqual(group.summary(), "Searched the web, read web pages, downloaded files · 4 steps · 1 failed")
+        self.assertTrue(group.head.text().startswith("▸ ⚠️ Searched the web"))
+        self.assertFalse(group.body.isVisibleTo(group))                          # folded until clicked
+        self.assertEqual(group.rows.count(), 6)                                  # 2 thinking steps + 4 tools
+        group.toggle()
+        self.assertTrue(group.body.isVisibleTo(group))
+        self.assertIn("I saved 1 mod.", items[1].text)
+        # the next steps start a new line under the answer
+        chat._on_tool_start("5", "read_file", {"path": "a"}, "Read a")
+        self.assertIsNot(chat.group, group)
+        chat._on_tool_end("5", "read_file", ToolResult("x"))
+        chat._done_common()
+        self.assertIsNone(chat.group)
+        # a saved chat shows the same way
+        chat.new_chat()
+        chat._ensure_agent()
+        chat.agent.messages = [
+            {"role": "user", "content": "get mods"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "a"}]},
+            {"role": "tool", "name": "web_search", "tool_call_id": "a", "content": "1. Mods"},
+            {"role": "tool", "name": "run_command", "tool_call_id": "b", "content": "ok"},
+            {"role": "assistant", "content": "Here they are."}]
+        chat._render_history()
+        self.assertEqual([type(x).__name__ for x in feed()], ["UserBubble", "StepGroup", "AssistantBlock"])
+        self.assertEqual(feed()[1].summary(), "Searched the web, ran commands · 2 steps")
+        w.close()
+
     def test_a_late_closing_think_tag_ends_the_thinking_line(self):
         from types import SimpleNamespace
 

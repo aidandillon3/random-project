@@ -84,6 +84,9 @@ QFrame#user {{ background: {USER_BG}; border-radius: 14px; }}
 QFrame#assistant {{ background: transparent; }}
 QLabel#answer {{ font-family: {SANS}; }}
 QFrame#tool {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 10px; }}
+QFrame#steps {{ background: transparent; }}
+QFrame#steps > QToolButton {{ color: {MUTED}; border: none; border-radius: 8px; padding: 3px 6px; text-align: left; }}
+QFrame#steps > QToolButton:hover {{ background: {RAISED}; color: {TEXT}; }}
 QFrame#side {{ background: {SIDEBAR}; border-left: 1px solid #2b2a28; }}
 QFrame#composer {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 18px; }}
 QPlainTextEdit#composerInput {{ background: transparent; border: none; padding: 0; }}
@@ -517,6 +520,77 @@ class ToolCard(QFrame):
         self.images.addStretch(1)
 
 
+# what a run of steps did, for the line it folds into: the tools by kind, in the order they first ran
+STEP_KINDS = {"web_search": "searched the web", "web_fetch": "read web pages", "download_file": "downloaded files",
+              "read_file": "read files", "list_dir": "looked at folders", "search_text": "searched files",
+              "find_files": "searched files", "write_file": "edited files", "edit_file": "edited files",
+              "multi_edit": "edited files", "delete_path": "deleted files", "move_path": "moved files",
+              "run_command": "ran commands", "run_python": "ran Python", "screenshot": "looked at the screen",
+              "remember": "saved notes", "recall": "checked notes"}
+
+
+class StepGroup(QFrame):
+    """The steps between two answers (tool calls and the thinking around them) folded into one line,
+    "▸ Searched the web, read web pages · 6 steps", as the Claude app does. Click it for each step."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("steps")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 0, 4, 0)
+        lay.setSpacing(4)
+        self.head = QToolButton()
+        self.head.setObjectName("flat")
+        self.head.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.head.clicked.connect(self.toggle)
+        lay.addWidget(self.head)
+        self.body = QWidget()
+        self.rows = QVBoxLayout(self.body)
+        self.rows.setContentsMargins(14, 0, 0, 0)
+        self.rows.setSpacing(4)
+        self.body.setVisible(False)
+        lay.addWidget(self.body)
+        self.kinds: list[str] = []
+        self.steps = self.failed = self.running = 0
+        self.now = ""
+        self._show()
+
+    def add(self, w: QWidget):
+        self.rows.addWidget(w)
+
+    def add_tool(self, card: "ToolCard", name: str, summary: str):
+        kind = STEP_KINDS.get(name, "used tools")
+        if kind not in self.kinds:
+            self.kinds.append(kind)
+        self.steps += 1
+        self.running += 1
+        self.now = summary or name
+        self.add(card)
+        self._show()
+
+    def tool_done(self, ok: bool):
+        self.running = max(0, self.running - 1)
+        self.failed += 0 if ok else 1
+        self._show()
+
+    def toggle(self):
+        self.body.setVisible(not self.body.isVisible())
+        self._show()
+
+    def summary(self) -> str:
+        what = ", ".join(self.kinds) or "thought it through"
+        what = what[0].upper() + what[1:]
+        steps = f" · {self.steps} step{'s' if self.steps != 1 else ''}" if self.steps else ""
+        return what + steps + (f" · {self.failed} failed" if self.failed else "")
+
+    def _show(self):
+        arrow = "▾" if self.body.isVisible() else "▸"
+        if self.running:
+            self.head.setText(f"{arrow} ⏳ {self.now[:110]}")
+        else:
+            self.head.setText(f"{arrow} {'⚠️ ' if self.failed else ''}{self.summary()}")
+
+
 def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -714,7 +788,8 @@ class ChatPage(QWidget):
         self.thread: threading.Thread | None = None
         self.pending_images: list[bytes] = []
         self.current: AssistantBlock | None = None
-        self.cards: dict[str, ToolCard] = {}
+        self.cards: dict[str, tuple] = {}     # call id: (its card, the folded steps it is in)
+        self.group: StepGroup | None = None    # the steps since the last answer, folded into one line
         self.chat_file: Path | None = None
         self._plan_shown = False
         self._build()
@@ -951,6 +1026,20 @@ class ChatPage(QWidget):
         self.welcome.setVisible(False)
         self.feed.insertWidget(self.feed.count() - 1, w)
 
+    def _steps(self) -> StepGroup:
+        if self.group is None:
+            self.group = StepGroup()
+            self._add(self.group)
+        return self.group
+
+    def _end_steps(self):
+        self.group = None
+
+    def _fold(self, w: QWidget):
+        """Move a widget already in the chat (a thinking-only step) into the folded steps."""
+        self.feed.removeWidget(w)
+        self._steps().add(w)
+
     def apply_text_size(self):
         """The chat's text size and the answers' font (Settings > Look, Ctrl + / Ctrl -)."""
         pt = max(MIN_TEXT_PT, min(MAX_TEXT_PT, int(self.s.chat_text_pt)))
@@ -1104,6 +1193,7 @@ class ChatPage(QWidget):
             return
         self._ensure_agent()
         images = self.pending_images
+        self._end_steps()
         self._add(UserBubble(text, images))
         self.input.clear()
         self._clear_pending()
@@ -1150,6 +1240,7 @@ class ChatPage(QWidget):
             _stop_background(self.agent)
             self.agent.reset()
         self.chat_file = None
+        self._end_steps()
         while self.feed.count() > 1:
             w = self.feed.takeAt(0).widget()
             if w and w is not self.welcome:
@@ -1193,8 +1284,10 @@ class ChatPage(QWidget):
             text = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or [] if p.get("type") == "text")
             text = m.get("_shown", text)
             if m["role"] == "user" and "_kind" not in m:
+                self._end_steps()
                 self._add(UserBubble(text, []))
             elif m["role"] == "assistant" and text.strip():
+                self._end_steps()
                 blk = AssistantBlock()
                 blk.add_text(text)
                 blk.finish()
@@ -1202,9 +1295,13 @@ class ChatPage(QWidget):
             elif m["role"] == "tool" and m.get("name") != "todo_write":
                 card = ToolCard(m.get("name", "tool"), "", {})
                 card.done(ToolResult(text))
-                self._add(card)
+                steps = self._steps()
+                steps.add_tool(card, m.get("name", "tool"), "")
+                steps.tool_done(True)
             elif m.get("_kind") == "summary":
+                self._end_steps()
                 self._add(muted("ℹ️ Earlier messages were summarized."))
+        self._end_steps()
 
     # ---------------------------------------------------------------- signal handlers
     def _on_assistant_start(self):
@@ -1223,6 +1320,10 @@ class ChatPage(QWidget):
             blk.finish()
             if blk.is_empty():
                 blk.setVisible(False)
+            elif not blk.text.strip():
+                self._fold(blk)               # thinking between steps: with the steps, not in the chat
+            else:
+                self._end_steps()             # an answer (or a note before more steps) ends the run
         self.current = None
         self._show_timings(getattr(turn, "usage", None) or {})
 
@@ -1244,13 +1345,14 @@ class ChatPage(QWidget):
         if name == "todo_write":       # the plan already shows on the right
             return
         card = ToolCard(name, summary, args)
-        self.cards[call_id] = card
-        self._add(card)
+        self.cards[call_id] = (card, self._steps())
+        self.group.add_tool(card, name, summary)
 
     def _on_tool_end(self, call_id, name, result):
-        card = self.cards.pop(call_id, None)
+        card, steps = self.cards.pop(call_id, (None, None))
         if card:
             card.done(result)
+            steps.tool_done(result.ok)
 
     def _on_todos(self, todos):
         if not todos:
@@ -1300,6 +1402,7 @@ class ChatPage(QWidget):
         w.event.set()
 
     def _done_common(self):
+        self._end_steps()
         self._set_busy(False)
         self.status.setText("")
         self._restore()
