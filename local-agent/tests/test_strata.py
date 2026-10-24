@@ -269,6 +269,83 @@ class StrataTest(unittest.TestCase):
         self.assertFalse(strata.outdated(self.root))
         self.assertFalse(strata.needs_setup(self.flash, self.model, s, self.root))
 
+    def test_qwen36_runs_on_the_fork_in_its_own_folder(self):
+        q = catalog.BY_KEY["qwen36-35b-strata"]
+        self.assertIs(strata.install_of(q), strata.Q36)
+        self.assertIs(strata.install_of(self.flash), strata.MAIN)          # Flash Next keeps the pinned release
+        self.assertNotEqual(strata.Q36.root, strata.MAIN.root)
+        self.assertTrue(strata.active(Settings(engine="auto"), q))
+        self.assertEqual(strata.Q36.zip_url,
+                         f"https://github.com/xyehya/Strata/archive/{strata.Q36.commit}.zip")
+        # the fork's setup names the file Qwen3.6-35B-A3B-{size}.gguf and checks it against Unsloth's pinned commit
+        self.assertEqual(q.files[0], "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf")
+        self.assertIn("5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+                      catalog.url(q.repo, q.files[0], revision=q.revision))
+        model = Path("/models/Qwen3.6-35B-A3B") / q.files[0]
+        a = strata.setup_args(q, model, Settings(ctx_size=262144, use_vision=False, port=8085), self.root)
+        val = lambda k: a[a.index(k) + 1]  # noqa: E731
+        self.assertEqual((val("--family"), val("--model"), val("--vision")), ("qwen36", "UD-Q4_K_XL", "no"))
+        self.assertEqual(strata.config_path(q, self.root).name, "strata-qwen36-ud-q4_k_xl.json")
+        self.assertEqual(sampling_for("qwen3.6-35b-a3b-ud-q4_k_xl")["temperature"], 0.6)   # ykarout's config too
+
+    def test_qwen36_config_gets_the_forks_options_only(self):
+        q = catalog.BY_KEY["qwen36-35b-strata"]
+        self.root.mkdir(parents=True)
+        cfg_path = strata.config_path(q, self.root)
+        cfg_path.write_text(json.dumps({"args": ["--native", "x.gguf", "--max-context", "262144", "--prefill", "auto",
+                                                 "--mtp", "2", "--pool-workers", "15"]}), encoding="utf-8")
+        s = Settings(model_path=str(Path("/models/Qwen3.6-35B-A3B") / q.files[0]))
+        strata.serve_args(q, s, self.root)
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        args = cfg["args"]
+        val = lambda k: args[args.index(k) + 1]  # noqa: E731
+        # the main path's cache options are not options of this engine: it would refuse to start
+        for flag in ("--prompt-cache", "--conversation-cache-mib", "--adapt-async"):
+            self.assertNotIn(flag, args)
+        self.assertIn("--gqa-attn", args)
+        self.assertIn("--hybrid-zero-copy", args)
+        self.assertEqual((val("--kv"), val("--mtp-sampled"), val("--pool-workers")), ("int8", "q", "15"))
+        self.assertEqual(val("--expert-profile"),
+                         str(Path("/models/Qwen3.6-35B-A3B") / "expert-profile-agent-qwen36-v2.prof"))
+        self.assertEqual(cfg["env"], {"STRATA_Q8_PACKED": "0"})
+        self.assertFalse(strata.tune_config(q, self.root, Path("/models/Qwen3.6-35B-A3B")))   # already there
+
+    def test_qwen36_engine_comes_from_this_repos_releases(self):
+        ins = strata.Install("q36", self.root, "xyehya/Strata", strata.Q36.commit, "test", dict(strata.Q36.engine))
+        self.assertFalse(strata.engine_ready(ins))
+        asset = ins.engine["asset"]
+        tag = f"strata-q36-b{strata.Q36_BUILD}-{ins.commit[:7]}-abcdef0"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr(strata.ENGINE_EXE, "exe")
+            z.writestr("BUILD.json", json.dumps({"version": "0.1.48", "source": "prebuilt", "archs": [120],
+                                                 "commit": ins.commit, "build": strata.Q36_BUILD}))
+        routes = {}
+        httpd, base = serve(routes)                    # (routes is read per request: filled in below)
+        self.addCleanup(httpd.shutdown)
+        releases = [
+            {"tag_name": "odp-llama-b2-a0557fc-1234567", "assets": [{"name": "x.zip", "url": base + "/nope"}]},
+            {"tag_name": f"strata-q36-b{strata.Q36_BUILD}-0000000-abcdef0", "published_at": "2026-10-25",
+             "assets": [{"name": asset, "url": base + "/nope"}]},             # another commit of the fork
+            {"tag_name": tag, "published_at": "2026-10-24", "assets": [{"name": asset, "url": base + "/asset"}]},
+        ]
+        routes.update({"/repos/aidandillon3/random-project/releases?per_page=50": (200, json.dumps(releases).encode()),
+                       "/asset": (200, buf.getvalue())})
+        rel, _ = strata.pick_engine_release(ins, releases)
+        self.assertEqual(rel["tag_name"], tag)
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": ""}), \
+                mock.patch("shutil.which", return_value=None), self.assertRaises(RuntimeError):
+            strata.download_engine(ins, Settings(github_token=""), api=base)   # no token: says where to put one
+        exe = strata.download_engine(ins, Settings(github_token="t"), api=base)
+        self.assertEqual(exe, self.root / "engine" / strata.ENGINE_EXE)
+        self.assertTrue(strata.engine_ready(ins))
+        meta = json.loads((self.root / "engine" / "BUILD.json").read_text())
+        meta["commit"] = "0" * 40                                              # a build of another commit
+        (self.root / "engine" / "BUILD.json").write_text(json.dumps(meta))
+        self.assertFalse(strata.engine_ready(ins))
+        self.assertTrue(strata.engine_ready(strata.MAIN))                      # the release fetches its own
+
     def test_ready_waits_for_strata_to_load(self):
         routes = {"/health": (200, json.dumps({"status": "ok", "loaded": False}).encode())}
         httpd, _ = serve(routes)

@@ -504,7 +504,7 @@ class GuiTest(unittest.TestCase):
         w.server._use_preset = lambda: picked.append(w.server.preset_box.currentData())
         chat._fill_model_menu()
         menus = {a.text(): a.menu() for a in chat.model_menu.actions() if a.menu()}
-        self.assertEqual(list(menus), ["Qwen3.8 27B", "Qwen3.8 Flash Next", "Ornith 1.5 122B"])       # one entry per model
+        self.assertEqual(list(menus), ["Qwen3.8 27B", "Qwen3.8 Flash Next", "Qwen3.6 35B-A3B", "Ornith 1.5 122B"])       # one entry per model
         self.assertEqual([a.text() for a in menus["Qwen3.8 Flash Next"].actions()][-1],
                          "Coder IQ1_M (for coding, less RAM)")                  # and its quants inside
         menus["Qwen3.8 27B"].actions()[0].trigger()

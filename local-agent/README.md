@@ -256,6 +256,7 @@ follow whichever model is running.
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_XXS** | 77 GB | The same model at 3 bits: 43 GB of experts in RAM, about 20% slower than IQ2_XS | Hardest tasks, better answers |
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_S** | 85 GB | The same model at 3.5 bits: 50 GB of experts in RAM, about a third slower than IQ2_XS | Best answers, with little else open |
 | **Qwen3.8 Flash Next Coder IQ1_M** | 59 GB | The original Flash Next with half its experts removed, the rest stored like IQ3_S: 23 GB of experts in RAM | Coding, with Unity or a game open |
+| **Qwen3.6 35B-A3B UD-Q4_K_XL** (Strata fork) | 23 GB | Qwen's smaller MoE (3B active) on a Strata fork tuned for it, most experts on the GPU, 262K context, no vision | Fast tool and test loops; about twice Flash Next's speed, weaker on hard tasks |
 | **Ornith 1.5 122B** (UD-IQ3_XXS, UD-Q3_K_XL, UD-Q2_K_XL, Q3_K_L + MTP) | 45-66 GB | A coding and agent fine-tune of a 122B MoE, on llama.cpp with its experts in RAM | Trying the newest coding model; slower than Flash Next on Strata |
 | **Qwen3.8 27B 1-bit + NVFP4 prefill** (experimental) | 20 GB | A 1-bit 27B on the GPU writes; a 4-bit copy of its layers, streamed from the SSD, reads your prompt. No vision, no MTP | Trying the 1-bit research trick |
 
@@ -296,6 +297,21 @@ experts take only 23 GB of RAM, so Unity or a game can stay open. It is the plai
 the Swift fine-tune, so it thinks for longer before it answers. It has its own folder
 (`Qwen3.8-Flash-Next-Coder`) and vision file, and Strata sets it up once the first time it starts.
 Switch to it for coding from the model menu in the message box, and back to a Swift size for the rest.
+
+The Qwen3.6 35B mode runs [Qwen3.6-35B-A3B](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF)
+(Unsloth's UD-Q4_K_XL with its MTP layer) on [xyehya's Strata fork](https://github.com/xyehya/Strata/tree/q36-r2),
+branch `q36-r2`, with the settings and expert profile from
+[ykarout's model card](https://huggingface.co/ykarout/Strata-Qwen3.6-35B-A3B). By that card, on an RTX 5080 with
+64 GB of RAM it writes about 230 tokens/s at 4K context and 160 at 240K, peaks near 290 in agent work, and reads
+prompts at about 6,500 tokens/s (on the Sage fine-tune of the same model, the released Strata engine wrote about
+173 and llama.cpp about 166, reading at 3,200). Those are one
+person's runs, and nobody has measured it with this app yet. It is a much smaller model than Flash Next, so
+expect weaker answers on hard tasks (ykarout's one agent test: 62 of 83 hidden tests passed). The fork has no
+Windows engine, so this repo's `Strata Qwen3.6 engine for Windows` job (under Actions) builds one for RTX 50 cards
+and puts it in a pre-release. The first start downloads the fork into `strata-q36` beside the app's `strata`
+folder (Flash Next keeps its own pinned Strata), downloads that engine (it needs the GitHub token in Settings >
+GitHub, as the 1-bit mode does), and runs the fork's setup. Vision is off in this mode: the engine build has no
+image reader.
 
 The 1-bit mode is IST-DASLab's [disaggregated prefill](https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-NVFP4-prefiller)
 research. A 1-bit model is small but answers badly, mostly because it misreads the prompt. Here a

@@ -8,6 +8,11 @@ among them), so the 27B mode stays on llama.cpp.
 This app downloads Strata into its own folder, runs Strata's setup once (which fetches its engine,
 Python packages and the draft layer, and reuses the model files already downloaded here), then
 starts Strata's server, which speaks the same OpenAI API the chat uses.
+
+Qwen3.6-35B-A3B runs on a fork instead (Q36: xyehya/Strata, branch q36-r2, ykarout's speed work for that model),
+installed in a folder of its own so Flash Next keeps the version it was checked with. The fork has no Windows engine,
+so this repo's GitHub Actions builds one (.github/workflows/strata-q36-windows.yml) into a pre-release, which is put
+in its engine folder before its setup runs: setup then keeps it as a ready-made engine.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from pathlib import Path
 
 import requests
 
+from . import odp
 from .config import APP_DIR
 
 WINDOWS = sys.platform == "win32"
@@ -35,6 +41,38 @@ ZIP_URL = f"https://github.com/Niko1221/Strata/archive/{COMMIT}.zip"
 STAMP = "localagent-setup.json"
 INSTALLED = "localagent-commit.txt"     # the commit this app downloaded (installs before 2026-10-20 have none)
 SOURCE_FILES = "localagent-files.txt"   # Strata's own files, so an update can tell them from setup's
+
+
+class Install:
+    """A Strata folder: which repo and commit it's downloaded from, and the engine build it takes, if any."""
+
+    def __init__(self, key: str, root: Path | None, repo: str, commit: str, version: str, engine: dict | None = None):
+        self.key, self._root, self.repo, self.commit, self.version, self.engine = key, root, repo, commit, version, engine
+
+    @property
+    def root(self) -> Path:
+        return self._root or STRATA_DIR       # (the main one: STRATA_DIR as it is now)
+
+    @property
+    def zip_url(self) -> str:
+        return f"https://github.com/{self.repo}/archive/{self.commit}.zip"
+
+
+MAIN = Install("", None, "Niko1221/Strata", COMMIT, f"v{VERSION}")
+# The fork's q36-r2 branch at the commit ykarout's numbers were measured on (2026-10-23). Its engine: the newest build
+# of the workflow's pre-releases, of build Q36_BUILD or newer (the workflow's BUILD), for this commit.
+Q36_BUILD = 1
+Q36 = Install("q36", APP_DIR / "strata-q36", "xyehya/Strata", "e073a5200be56f911aa038ada8b4cb8f80285647",
+              "q36-r2 e073a52",
+              engine={"tag_prefix": "strata-q36-", "asset": "localagent-strata-q36-win-cuda-13.4-x64.zip",
+                      "build": Q36_BUILD, "workflow": "Strata Qwen3.6 engine for Windows"})
+INSTALLS = {MAIN.key: MAIN, Q36.key: Q36}
+ENGINE_EXE = "strata.exe" if WINDOWS else "strata"
+
+
+def install_of(preset) -> Install:
+    """The Strata folder that runs this mode."""
+    return INSTALLS.get((getattr(preset, "strata", None) or {}).get("install", ""), MAIN)
 
 
 def supports(preset) -> bool:
@@ -54,14 +92,14 @@ def installed(root: Path | None = None) -> bool:
     return (root / "setup.py").is_file() and (root / "serve" / "server.py").is_file()
 
 
-def outdated(root: Path | None = None) -> bool:
+def outdated(root: Path | None = None, commit: str = COMMIT) -> bool:
     """Installed, but not the version this app is pinned to."""
     root = root or STRATA_DIR
     try:
         have = (root / INSTALLED).read_text(encoding="utf-8").strip()
     except OSError:
         have = ""
-    return installed(root) and have != COMMIT
+    return installed(root) and have != commit
 
 
 def python(root: Path | None = None) -> Path:
@@ -71,7 +109,7 @@ def python(root: Path | None = None) -> Path:
 
 def config_path(preset, root: Path | None = None) -> Path:
     """setup.py writes strata-<tag>.json: the family's tag ("swift-", or "" for the original) + the size."""
-    root = root or STRATA_DIR
+    root = root or install_of(preset).root
     st = preset.strata
     return root / f"strata-{(st.get('tag', '') + st['model']).lower()}.json"
 
@@ -90,7 +128,7 @@ def _source_files(root: Path) -> list[str]:
 
 
 def download(progress=lambda msg, frac: None, root: Path | None = None, url: str = ZIP_URL, session=None,
-             stop=None) -> Path:
+             stop=None, commit: str = COMMIT) -> Path:
     """Fetch Strata's source (about 55 MB) into root. Its setup fetches the rest. stop: an Event that ends
     it early (Stopped), leaving the folder as it was."""
     root = root or STRATA_DIR
@@ -130,9 +168,107 @@ def download(progress=lambda msg, frac: None, root: Path | None = None, url: str
     if not WINDOWS:
         for sh in root.glob("*.sh"):
             sh.chmod(0o755)
-    (root / INSTALLED).write_text(COMMIT, encoding="utf-8")
+    (root / INSTALLED).write_text(commit, encoding="utf-8")
     progress("Strata downloaded.", 1.0)
     return root
+
+
+def download_install(ins: Install, progress=lambda msg, frac: None, session=None, stop=None) -> Path:
+    return download(progress, ins.root, ins.zip_url, session, stop, ins.commit)
+
+
+def engine_ready(ins: Install) -> bool:
+    """The install needs no engine of ours (its setup fetches one), or ours is in its engine folder: a build of the
+    install's commit, not older than it takes."""
+    if not ins.engine:
+        return True
+    eng = ins.root / "engine"
+    try:
+        meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return ((eng / ENGINE_EXE).is_file() and isinstance(meta, dict) and meta.get("commit") == ins.commit
+            and int(meta.get("build") or 0) >= ins.engine["build"])
+
+
+def pick_engine_release(ins: Install, releases: list) -> tuple[dict | None, dict | None]:
+    """The newest finished pre-release with the install's engine: (release, its zip)."""
+    e = ins.engine
+    want = f"{e['tag_prefix']}b"
+
+    def build(tag: str) -> int:
+        rest = tag[len(want):] if tag.startswith(want) else ""
+        num = rest.split("-", 1)[0]
+        return int(num) if num.isdigit() else 0
+
+    ordered = sorted((r for r in releases if isinstance(r, dict) and not r.get("draft")
+                      and build(str(r.get("tag_name", ""))) >= e["build"]
+                      and f"-{ins.commit[:7]}-" in str(r.get("tag_name", ""))),
+                     key=lambda r: r.get("published_at") or r.get("created_at") or "", reverse=True)
+    for rel in ordered:
+        asset = next((a for a in rel.get("assets", []) if a.get("name") == e["asset"]
+                      and a.get("state", "uploaded") == "uploaded"), None)
+        if asset:
+            return rel, asset
+    return None, None
+
+
+def download_engine(ins: Install, settings, progress=lambda msg, frac: None, session=None, stop=None,
+                    api: str = odp.API) -> Path:
+    """Put the install's engine (built in this repo's GitHub Actions) into its engine folder, replacing what is
+    there. The repo is private, so it needs the GitHub token from Settings (or the gh CLI's login)."""
+    session = session or requests.Session()
+    tok = odp.github_token(settings)
+    if not tok:
+        raise RuntimeError("This mode's engine is built in your private GitHub repo, so downloading it needs a GitHub "
+                           "token: put one in Settings > GitHub (a fine-grained token with read access to "
+                           f"{odp.REPO}'s contents is enough).")
+    auth = {"Authorization": f"Bearer {tok}", "X-GitHub-Api-Version": "2022-11-28"}
+    progress("Asking GitHub for the Strata engine for Qwen3.6...", 0.0)
+    r = session.get(f"{api}/repos/{odp.REPO}/releases?per_page=50", timeout=30,
+                    headers={**auth, "Accept": "application/vnd.github+json"})
+    data = r.json() if r.content else {}
+    if r.status_code in (401, 403, 404) or not isinstance(data, list):
+        msg = data.get("message", r.status_code) if isinstance(data, dict) else r.status_code
+        raise RuntimeError(f"GitHub refused to list {odp.REPO}'s releases ({msg}). Check the token in Settings > "
+                           "GitHub: it needs read access to that repo's contents.")
+    rel, asset = pick_engine_release(ins, data)
+    if not asset:
+        raise RuntimeError(f"No build of this mode's engine in {odp.REPO}'s releases yet. It's made by the "
+                           f"'{ins.engine['workflow']}' job under the repo's Actions tab.")
+    progress(f"Downloading {asset['name']}...", 0.0)
+    buf = io.BytesIO()
+    with session.get(asset["url"], stream=True, timeout=60,
+                     headers={**auth, "Accept": "application/octet-stream"}) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("content-length") or asset.get("size") or 0)
+        for chunk in r.iter_content(1 << 20):
+            if stop is not None and stop.is_set():
+                raise Stopped()
+            buf.write(chunk)
+            if total:
+                progress(f"Downloading {asset['name']} ({buf.tell() / 1e6:.0f} MB)...", buf.tell() / total)
+    eng = ins.root / "engine"
+    tmp = ins.root / "engine.new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    with zipfile.ZipFile(buf) as z:
+        z.extractall(tmp)
+    old = ins.root / "engine.old"
+    shutil.rmtree(old, ignore_errors=True)
+    if eng.exists():
+        try:
+            eng.rename(old)
+        except OSError as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise RuntimeError(f"Couldn't replace {eng} ({e}). Stop the model and try again.")
+    tmp.rename(eng)
+    shutil.rmtree(old, ignore_errors=True)
+    if not engine_ready(ins):
+        raise RuntimeError(f"Downloaded {asset['name']}, but it isn't a build of this mode's engine "
+                           f"(no {ENGINE_EXE}, or not for {ins.commit[:7]}).")
+    progress(f"Strata engine {rel.get('tag_name', '')} is ready.", 1.0)
+    return eng / ENGINE_EXE
 
 
 def data_dir(model: Path) -> Path:
@@ -144,7 +280,7 @@ def wanted(preset, model: Path, settings) -> dict:
     """What setup is run with; when it changes, setup runs again (the port is given at each start). A new Strata
     version too: its setup fetches the engine that goes with it."""
     return {"family": preset.strata["family"], "model": preset.strata["model"], "gguf_dir": str(model.parent),
-            "context": int(settings.ctx_size), "vision": bool(settings.use_vision), "strata": COMMIT}
+            "context": int(settings.ctx_size), "vision": bool(settings.use_vision), "strata": install_of(preset).commit}
 
 
 def _stamps(root: Path) -> dict:
@@ -177,7 +313,7 @@ def _files_gone(config: Path) -> bool:
 
 
 def needs_setup(preset, model: Path, settings, root: Path | None = None) -> bool:
-    root = root or STRATA_DIR
+    root = root or install_of(preset).root
     if not (config_path(preset, root).is_file() and python(root).is_file()):
         return True
     if _files_gone(config_path(preset, root)):
@@ -188,7 +324,7 @@ def needs_setup(preset, model: Path, settings, root: Path | None = None) -> bool
 
 def setup_args(preset, model: Path, settings, root: Path | None = None) -> list[str]:
     """Strata's own installer, without questions. It uses the model files where they are (--gguf-dir)."""
-    root = root or STRATA_DIR
+    root = root or install_of(preset).root
     w = wanted(preset, model, settings)
     if not WINDOWS:
         launch = ["sh", str(root / "setup.sh")]
@@ -207,7 +343,7 @@ def setup_args(preset, model: Path, settings, root: Path | None = None) -> list[
 
 
 def mark_setup_done(preset, model: Path, settings, root: Path | None = None) -> None:
-    root = root or STRATA_DIR
+    root = root or install_of(preset).root
     w = wanted(preset, model, settings)
     stamps = {**_stamps(root), f"{w['family']}:{w['model']}": w}
     (root / STAMP).write_text(json.dumps(stamps), encoding="utf-8")
@@ -227,10 +363,12 @@ ENGINE_ARGS = {"--prompt-cache": "10", "--conversation-cache-mib": "4096", "--co
 ENGINE_ENV = {"STRATA_PIN_BY_NEED": "1"}
 
 
-def tune_config(preset, root: Path | None = None) -> bool:
+def tune_config(preset, root: Path | None = None, model_dir: Path | None = None) -> bool:
     """Add ENGINE_ARGS (with the mode's own values) to strata-<model>.json where it doesn't have them (it keeps
-    values set by hand). True when the file changed."""
-    path = config_path(preset, root or STRATA_DIR)
+    values set by hand). True when the file changed. A fork's mode (strata["install"]) takes only its own options:
+    the main path's are not options of its engine, which then refuses to start. An option without a value (None) is
+    a switch; a file name value (the expert profile) is the file in the model's folder."""
+    path = config_path(preset, root or install_of(preset).root)
     try:
         cfg = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
@@ -238,10 +376,21 @@ def tune_config(preset, root: Path | None = None) -> bool:
     args = cfg.get("args")
     if not isinstance(args, list):
         return False
-    want = {**ENGINE_ARGS, **preset.strata.get("engine_args", {})}
-    add = [x for flag, value in want.items() if flag not in args for x in (flag, value)]
+    own = bool(preset.strata.get("install"))
+    want = {**({} if own else ENGINE_ARGS), **preset.strata.get("engine_args", {})}
+    add = []
+    for flag, value in want.items():
+        if flag in args:
+            continue
+        if value is None:
+            add.append(flag)
+            continue
+        if model_dir is not None and flag == "--expert-profile":
+            value = str(Path(model_dir) / value)
+        add += [flag, value]
     env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
-    add_env = {k: v for k, v in ENGINE_ENV.items() if k not in env}
+    add_env = {k: v for k, v in {**({} if own else ENGINE_ENV), **preset.strata.get("env", {})}.items()
+               if k not in env}
     if not add and not add_env:
         return False
     cfg["args"] = args + add
@@ -260,7 +409,8 @@ def serve_args(preset, settings, root: Path | None = None) -> list[str]:
     """What Strata's run-<model> script runs, minus opening the browser. --fit-max-tokens: a request whose prompt
     plus max_tokens is longer than the context gets a shorter answer instead of an error. Also makes sure the
     config has ENGINE_ARGS (setup rewrites them away)."""
-    root = root or STRATA_DIR
-    tune_config(preset, root)
+    root = root or install_of(preset).root
+    model = getattr(settings, "model_path", "")
+    tune_config(preset, root, Path(model).parent if model else None)
     return [str(python(root)), str(root / "serve" / "server.py"), "--engine", "strata",
             "--config", str(config_path(preset, root)), "--port", str(settings.port), "--fit-max-tokens"]
