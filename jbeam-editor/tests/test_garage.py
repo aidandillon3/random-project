@@ -143,5 +143,89 @@ class GarageTests(InstallCase):
         self.assertEqual(sc4["garage"]["finalConfig"]["parts"]["testcar_suspension_F"], "testcar_suspension_F")
 
 
+class _Part:
+    def __init__(self, name, slot_type, data):
+        self.name, self.slot_type, self.title = name, slot_type, name
+        self.data = dict(data, information={"name": name})
+
+    def slot_types(self):
+        return [self.slot_type]
+
+
+class _Model:
+    def __init__(self, parts):
+        self.parts = {p.name: p for p in parts}
+
+
+RIM = {"pressureWheels": [["name"], {"hubRadius": 0.25, "hubWidth": 0.2}]}
+TIRE = {"pressureWheels": [["name"], {"radius": 0.5, "tireWidth": 0.3}]}
+
+
+def _truck():
+    """A front axle and a tandem (two rear axles on one spring part), with duals at the back."""
+    parts, nodes, wheels, parts_json = [], [], [], {}
+    tree = {"id": "main", "path": "/", "chosen": "truck", "options": ["truck"], "children": []}
+
+    def slot(parent, sid, part, data=None):
+        e = {"id": sid, "path": parent["path"] + sid + "/", "chosen": part, "options": [part], "children": []}
+        parent["children"].append(e)
+        parts.append(_Part(part, sid, data or {}))
+        parts_json[part] = {"path": e["path"] + part, "title": part}
+        return e
+
+    def wheel(name, part, x, y):
+        nodes.extend([{"p": [x * 1.1, y, 0.5], "part": part}, {"p": [x * 0.9, y, 0.5], "part": part}])
+        wheels.append({"name": name, "n1": len(nodes) - 2, "n2": len(nodes) - 1, "radius": 0.5, "width": 0.3})
+
+    frame = slot(tree, "frame", "frame")
+    front = slot(frame, "susp_F", "susp_F")
+    rim = slot(front, "rim_F", "rim_F", RIM)
+    slot(rim, "tire_F", "tire_F", TIRE)
+    for s in (1, -1):
+        wheel("F" + "LR"[s < 0], "susp_F", s, -3.0)
+    tandem = slot(frame, "susp_R", "tandem")
+    for i, y in ((1, 2.0), (2, 3.3)):
+        hub = slot(tandem, "hub_R%d" % i, "hub_R%d" % i)
+        rim = slot(hub, "rim_R%d" % i, "rim_R%d" % i, RIM)
+        slot(rim, "tire_R%d" % i, "tire_R%d" % i, TIRE)
+        for s in (1, -1):
+            for d in (1, 2):    # duals: inner and outer at the same place along the truck
+                wheel("R%d%s%d" % (i, "LR"[s < 0], d), "hub_R%d" % i, s * (0.8 if d == 1 else 1.1), y)
+    scene = {"tree": tree, "nodes": nodes, "wheels": wheels, "parts": parts_json, "variables": [],
+             "partTitles": {p.name: p.name for p in parts}, "engine": {}}
+    return _Model(parts), scene
+
+
+class MultiAxleTests(unittest.TestCase):
+    def test_each_axle_gets_its_own_wheels(self):
+        from editor import garage
+        info = garage.Info(*_truck())
+        ax = {a["id"]: a for a in info.axles}
+        self.assertEqual(list(ax), ["F", "R", "R2"])
+        self.assertEqual([a["label"] for a in info.axles], ["Front", "Rear 1", "Rear 2"])
+        self.assertEqual(len(ax["R"]["wheels"]), 4)
+        self.assertEqual(ax["R"]["rim"]["id"], "rim_R1")
+        self.assertEqual(ax["R2"]["rim"]["id"], "rim_R2")
+        self.assertEqual(ax["R2"]["tire"]["id"], "tire_R2")
+        self.assertTrue(ax["R2"]["canSpacer"])
+        # the tandem's springs carry both rear axles, so they lift together
+        self.assertEqual([s["path"] for s in ax["R"]["slots"]], ["/frame/susp_R/"])
+        self.assertEqual(ax["R"]["liftWith"], ["R2"])
+        self.assertEqual(ax["F"]["liftWith"], [])
+
+    def test_spacers_and_lift_per_axle(self):
+        from editor import garage
+        info = garage.Info(*_truck())
+        plan = garage.Plan(info, {"axles": {"R": {"spacer": 0.03, "lift": 0.05},
+                                            "R2": {"spacer": 0.06, "lift": 0.05}}}, "t")
+        ops = {path: c["ops"] for path, c in plan.copies.items()}
+        self.assertEqual(ops["/frame/susp_R/"], [("move", -0.05)])
+        self.assertEqual(ops["/frame/susp_R/hub_R1/"][0][1], "rim_R1")
+        self.assertAlmostEqual(ops["/frame/susp_R/hub_R1/"][0][2]["nodeOffset6"]["x"], 0.03)
+        self.assertAlmostEqual(ops["/frame/susp_R/hub_R2/"][0][2]["nodeOffset6"]["x"], 0.06)
+        self.assertIn("Rear 1 and Rear 2 suspension lifted by 2 in (50 mm)", plan.changes)
+        self.assertIn("Rear 2 wheels pushed out by 60 mm each side", plan.changes)
+
+
 if __name__ == "__main__":
     unittest.main()

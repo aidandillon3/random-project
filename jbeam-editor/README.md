@@ -58,6 +58,9 @@ is never changed.
   rear can differ. Body lifts too.
 - **Wheels & tires**: tire size and width (also sizes the vehicle has no part
   for; bigger tires get heavier like real ones), rims, spacers and track width.
+- Trucks with more than two axles get these settings for every axle (Front 1,
+  Front 2, Rear 1, Rear 2, ...). Axles that hang on one suspension part, like a
+  tandem on shared springs, lift together.
 - **Engine**: more or less power and a different rev limit, with the torque curve
   (electric vehicles: the motor's power and top speed).
 - **Brakes** and **Paint**, and **Fine tuning** for the vehicle's own sliders.
