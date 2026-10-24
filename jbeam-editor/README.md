@@ -23,7 +23,9 @@ vehicle:
 ## Starting it
 
 You need Python 3.8 or newer (from python.org or the Microsoft Store). Nothing
-else is required.
+else is required. Extract the zip first; the launcher can't run from inside it.
+If it finds no Python it says so; when installing from python.org, tick
+"Add python.exe to PATH".
 
 1. Double-click **Start JBeam Editor.bat** (or run `python run.py`).
 2. It opens in its own window. With [pywebview](https://pywebview.flowrl.com/)

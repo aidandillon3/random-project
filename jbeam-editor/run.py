@@ -15,6 +15,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+_NO_CONSOLE = False
 
 
 def _log_to_file(data_dir):
@@ -72,6 +73,8 @@ def main():
     a = ap.parse_args()
     data = os.path.abspath(a.data)
     if sys.stdout is None or sys.stderr is None:
+        global _NO_CONSOLE
+        _NO_CONSOLE = True   # pythonw: errors must show in a message box
         _log_to_file(data)
 
     from editor import appwindow, server
@@ -135,7 +138,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except SystemExit:
+    except SystemExit as e:
+        if isinstance(e.code, str) and _NO_CONSOLE:
+            _message_box("The JBeam Editor could not start:\n\n" + e.code)
         raise
     except Exception:
         tb = traceback.format_exc()
