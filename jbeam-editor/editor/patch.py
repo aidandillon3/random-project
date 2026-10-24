@@ -278,6 +278,7 @@ class Session:
         self.new_files = {}  # disk path -> text
         self.originals = {}  # file key -> original text
         self.raw = {}        # disk path -> (bytes, root label or None, rel): mesh files
+        self.retired = {}    # disk path -> (root label, rel): files to remove after a backup
 
     def doc(self, fkey):
         if fkey in self.docs:
@@ -501,6 +502,12 @@ class Session:
                 raise EditError("%s can't be changed" % rel)
             self.raw[root.full_path(rel)] = (data, root.label, rel)
 
+    def retire(self, root, rel):
+        """Remove a file on commit (backed up first), such as a model's stale .cdae cache."""
+        if not root.editable:
+            raise EditError("%s can't be changed" % rel)
+        self.retired[root.full_path(rel)] = (root.label, rel)
+
     def commit(self, label="edit"):
         """Validate and write every changed file. Returns the list of written paths."""
         outputs = {}
@@ -539,6 +546,12 @@ class Session:
                     f.write(text)
             os.replace(tmp, path)
             written.append(path)
+        for path, (label_root, rel) in self.retired.items():
+            if os.path.exists(path) and path not in outputs:
+                dst = os.path.join(self.backup_dir, _safe(label_root), stamp, *rel.split("/"))
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(path, dst)
+                os.remove(path)
         return written
 
 
