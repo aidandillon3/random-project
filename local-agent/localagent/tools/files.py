@@ -483,7 +483,7 @@ def search_text(ctx: ToolContext, a: dict):
         except (OSError, ToolError):
             continue
         for i, line in enumerate(io.StringIO(text, newline=""), 1):   # numbered like read_file
-            if rx.search(line):
+            if rx.search(line.rstrip("\r\n")):       # so "$" matches at the end of a Windows (CRLF) line
                 hits.append(f"{rel}:{i}: {line.strip()[:300]}")
                 if len(hits) >= limit:
                     break

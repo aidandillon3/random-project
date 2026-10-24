@@ -60,6 +60,8 @@ class FileToolsTest(unittest.TestCase):
         self.assertIn("offset=503", out)
         hits = run(self.ctx, "search_text", pattern=r"line 99\d$")
         self.assertIn("sub/big.txt:990: line 990", hits)
+        (self.ws / "sub" / "crlf.txt").write_bytes(b"line 1\r\nline 2\r\n")      # Windows line endings
+        self.assertIn("sub/crlf.txt:2: line 2", run(self.ctx, "search_text", pattern=r"^line 2$"))
         self.assertIn("sub/big.txt", run(self.ctx, "find_files", pattern="*.txt"))
         self.assertIn("big.txt", run(self.ctx, "list_dir", depth=2))
 
