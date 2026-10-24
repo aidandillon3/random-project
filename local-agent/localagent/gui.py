@@ -2722,7 +2722,8 @@ class SettingsPage(QWidget):
         self.max_images.setToolTip("Clearing old images makes the model re-read the chat from there, so "
                                    "it's done in batches")
         f.addRow("Clear old images once there are more than:", self.max_images)
-        self.max_steps = self._spin(s.max_steps, 5, 2000)
+        self.max_steps = self._spin(s.max_steps, 0, 5000)
+        self.max_steps.setSpecialValueText("No limit")      # 0: it works until the job is done
         f.addRow("Steps before it checks in:", self.max_steps)
         self.max_out = self._spin(s.max_tool_output, 2000, 200000)
         f.addRow("Longest tool result (characters):", self.max_out)

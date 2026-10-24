@@ -63,13 +63,19 @@ class MockServer:
                     self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
                     self.wfile.flush()
 
+                if reply.get("error"):          # what Strata sends when its engine process died
+                    send({"error": {"type": "server_error", "message": reply["error"]}})
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    return
                 if reply.get("reasoning"):
                     send({"choices": [{"delta": {"reasoning_content": reply["reasoning"]}}]})
                 if "text" in reply:
                     s = reply["text"]
                     for i in range(0, len(s), 7):
                         send({"choices": [{"delta": {"content": s[i:i + 7]}}]})
-                    finish = "stop"
+                    finish = reply.get("finish", "stop")      # "length": cut off by a limit
+                    if reply.get("die"):              # the server crashed partway through the reply
+                        return
                 else:
                     for i, c in enumerate(reply["calls"]):
                         args = json.dumps(c["arguments"]) if not isinstance(c["arguments"], str) else c["arguments"]

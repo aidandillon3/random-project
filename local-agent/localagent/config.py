@@ -49,7 +49,7 @@ class Settings:
     max_images: int = 8                # clear older images only once more than this many pile up
                                        # (each clearing makes the server re-read the chat from there)
     max_tool_output: int = 20000       # characters per tool result
-    max_steps: int = 150               # tool rounds per message before it stops and checks in
+    max_steps: int = 0                 # tool rounds per message before it stops and checks in; 0 = no limit
     compact_at: float = 0.75           # compact the conversation at this share of the context
 
     # safety
@@ -101,7 +101,7 @@ class Settings:
     use_vision: bool = True
 
     extra: dict = field(default_factory=dict)
-    settings_version: int = 4          # bumped when an old saved default needs moving on load
+    settings_version: int = 5          # bumped when an old saved default needs moving on load
 
     # ---------------------------------------------------------------
     def workspace_path(self) -> Path:
@@ -131,6 +131,8 @@ class Settings:
             s.keep_images = 2         # the old default; fewer images, cleared less often, is faster
         if version < 4 and raw.get("answer_font") == "serif":
             s.answer_font = "sans"    # the old default; serif looked odd on Windows
+        if version < 5 and raw.get("max_steps") == 150:
+            s.max_steps = 0           # the old default; a long job paused and waited for "continue"
         s.settings_version = cls.settings_version   # saved as moved on, so a choice made later sticks
         return s
 

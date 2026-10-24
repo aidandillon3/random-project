@@ -27,6 +27,11 @@ class ServerError(Exception):
     pass
 
 
+class ReplyLost(ServerError):
+    """The server stopped answering or dropped the connection partway through a reply (it crashed or
+    restarted). Asking again usually works: the agent retries on its own."""
+
+
 class ToolsUnsupported(ServerError):
     """The server refused the 'tools' field; we fall back to tools-in-the-prompt."""
 
@@ -51,6 +56,8 @@ class _Again(Exception):
 # Only wording that really means "no tools here": other errors that merely mention a tool (say, a
 # history the server couldn't parse) must not switch the chat to tools-in-the-prompt for good.
 _NO_TOOLS = re.compile(r"jinja|tools? (?:are |is )?not supported|does not support tools", re.I)
+# Strata's words when its engine process died: the next request starts a fresh one.
+_ENGINE_DIED = re.compile(r"engine stopped unexpectedly|next request restarts", re.I)
 _NO_IMAGES = re.compile(r"image input is not supported|mmproj|(?:does not|doesn't) support (?:images|image input|vision)"
                         r"|vision is not (?:supported|enabled)", re.I)
 
@@ -464,6 +471,8 @@ class LLMClient:
                 raise ToolsUnsupported(text)
             if _NO_IMAGES.search(text) and _has_images(body["messages"]):
                 raise ImagesUnsupported(f"Server error {r.status_code}: {text}")
+            if r.status_code >= 500 and _ENGINE_DIED.search(text):
+                raise ReplyLost(f"Server error {r.status_code}: {text}")
             raise ServerError(f"Server error {r.status_code}: {text}")
         return r
 
@@ -588,7 +597,8 @@ class LLMClient:
                 except ValueError:
                     continue
                 if chunk.get("error"):
-                    raise ServerError(str(chunk["error"]))
+                    err = str(chunk["error"])
+                    raise (ReplyLost if _ENGINE_DIED.search(err) else ServerError)(err)
                 if chunk.get("usage"):
                     usage = chunk["usage"]
                 if isinstance(chunk.get("timings"), dict):
@@ -627,12 +637,11 @@ class LLMClient:
             if _is_set(stop):
                 turn.stopped = True
             elif isinstance(e, requests.Timeout) or (e.args and isinstance(e.args[0], ReadTimeoutError)):
-                raise ServerError(f"The model server sent nothing for {self.timeout:.0f} seconds.")
+                raise ReplyLost(f"The model server sent nothing for {self.timeout:.0f} seconds.")
             elif not (first_token or calls):
                 raise _Again(STARTING, ServerError(f"The model server closed the connection before answering ({e})."))
             else:
-                raise ServerError(f"The connection to the model server broke in the middle of the reply ({e}). "
-                                  "Say 'continue' to try again.")
+                raise ReplyLost(f"The connection to the model server broke in the middle of the reply ({e}).")
         finally:
             r.close()
         if not done and not turn.finish_reason and not turn.stopped:
@@ -641,8 +650,8 @@ class LLMClient:
             elif not (first_token or calls):
                 raise _Again(STARTING, ServerError("The model server closed the connection before answering."))
             else:     # a plain connection that just ended: the server died mid-reply
-                raise ServerError("The model server closed the connection in the middle of the reply (did it "
-                                  "crash or restart?). Say 'continue' to try again.")
+                raise ReplyLost("The model server closed the connection in the middle of the reply (did it "
+                                "crash or restart?).")
         for kind, s in splitter.flush():
             emit(kind, s)
         turn.usage = {**usage, **stats}
