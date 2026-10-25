@@ -440,6 +440,39 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(page.start_btn.text(), "Start model")
         w.close()
 
+    @unittest.skipIf(os.name == "nt", "the stand-in basalt is a shell script")
+    def test_basalt_file_runs_on_its_own_build(self):
+        from localagent.config import Settings
+
+        port = free_port()
+        root = Path(tempfile.mkdtemp()) / "basalt"
+        (root / "bin").mkdir(parents=True)
+        (root / "models").mkdir()
+        (root / "server.py").write_text(FAKE_SERVER)
+        (root / "basalt_config.json").write_text('{"engine": {"kv": "int8"}}')
+        exe = root / "bin" / "basalt"
+        exe.write_text(f'#!/bin/sh\necho "$@" > "{root}/args.txt"\nexec "{sys.executable}" "{root}/server.py" "$@"\n')
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+        model = root / "models" / "Qwen3.8-FN-GSQ-RCO-IQ3_S.basalt"
+        model.write_bytes(b"BASALT")
+        s = Settings(base_url="http://127.0.0.1:9/v1", port=port, model_path=str(model))
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        page = w.server
+        self.assertTrue(self.wait_until(lambda: "Runs on Basalt" in page.plan_label.text(), 10), page.plan_label.text())
+        self.assertIn("Basalt model file", page.info_label.text())
+        page.start()
+        self.assertTrue(self.wait_until(lambda: "Ready" in page.state.text(), 20), page.state.text())
+        self.assertEqual(s.base_url, f"http://127.0.0.1:{port}/v1")
+        self.assertEqual((root / "args.txt").read_text().split(),
+                         ["serve", "--config", str(root / "basalt_config.json"), "--model", str(model), "--port", str(port)])
+        page.stop()
+        s.model_path = str(Path(tempfile.mkdtemp()) / "x.basalt")      # away from any build: it can't start
+        page._changed()
+        self.assertIn("No Basalt build found", page.plan_label.text())
+        self.assertTrue(self.wait_until(lambda: not page.start_btn.isEnabled(), 5))
+        w.close()
+
     def test_settings_page_keeps_the_model_servers_address(self):
         from localagent.config import Settings
 

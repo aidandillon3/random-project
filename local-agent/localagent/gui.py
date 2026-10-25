@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import catalog, chats, launcher, mcp, odp, plugins, strata
+from . import basalt, catalog, chats, launcher, mcp, odp, plugins, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import gpu_info, model_info
@@ -1864,7 +1864,8 @@ class ServerPage(QWidget):
             self._scan()
 
     def _browse_model(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Model file", self.s.models_dir or str(Path.home()), "GGUF models (*.gguf)")
+        f, _ = QFileDialog.getOpenFileName(self, "Model file", self.s.models_dir or str(Path.home()),
+                                           "Models (*.gguf *.basalt);;GGUF models (*.gguf);;Basalt models (*.basalt)")
         if f:
             self.s.model_path = str(Path(f))     # the dialog says C:/..., the folder scan C:\...
             self.s.mmproj_path = ""
@@ -2094,6 +2095,13 @@ class ServerPage(QWidget):
                 self.s.model_path = path
                 self.s.mmproj_path = ""
                 self.s.save()
+            if basalt.is_model(path):        # one file with its own vision part: no GGUF header to read
+                root = basalt.find_root(Path(path))
+                self.info_label.setText(f"Basalt model file, run by the Basalt build in {root}." if root else
+                                        f"Basalt model file, but no Basalt build (bin\\{basalt.EXE}) was found in a "
+                                        "folder above it.")
+                self._changed()
+                return
             try:
                 self.info = model_info(path)
                 mm = Path(self.s.mmproj_path) if self.s.mmproj_path else launcher.find_mmproj(Path(path), self.info)
@@ -2124,6 +2132,24 @@ class ServerPage(QWidget):
         self.ngl.setEnabled(manual)
         self.ncm.setEnabled(manual)
         self.draft_label.setText(f"Draft model: {Path(s.draft_path).name}" if s.draft_path else "No draft model picked")
+        if basalt.is_model(s.model_path):
+            for w in (self.kv, self.placement, self.speed, self.extra, self.ngl, self.ncm):
+                w.setEnabled(False)
+            self.launch = None
+            root = basalt.find_root(Path(s.model_path))
+            self._startable = root is not None
+            if root is None:
+                self.cmd.setPlainText("")
+                self.plan_label.setText(f"<b style='color:{WARN}'>No Basalt build found.</b> Keep the .basalt file in "
+                                        f"the models folder of your Basalt checkout, next to its bin\\{basalt.EXE}.")
+                return
+            args = basalt.serve_args(Path(s.model_path), s, root)
+            self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
+            self.plan_label.setText(
+                f"<b style='color:{OK}'>Runs on Basalt.</b> It places the model itself (experts in VRAM, RAM and, if "
+                f"they don't fit, the SSD). Its engine settings come from {basalt.CONFIG} in {root}; the port below "
+                "still applies, the other settings are llama.cpp's.")
+            return
         p = catalog.matching(s.model_path)
         on_strata = strata.active(s, p)
         for w in (self.kv, self.placement, self.speed, self.extra):
@@ -2226,6 +2252,9 @@ class ServerPage(QWidget):
         if not self.exe:
             self._refresh_exe()            # the first folder scan may not be back yet
         self._changed()
+        if basalt.is_model(self.s.model_path):
+            self._start_basalt()
+            return
         p = catalog.matching(self.s.model_path)
         if strata.active(self.s, p):
             self._start_strata(p)
@@ -2255,6 +2284,26 @@ class ServerPage(QWidget):
             self.proc.start(self.launch.args)
         except OSError as e:
             QMessageBox.warning(self, "Model server", f"Couldn't start llama-server: {e}")
+            return
+        self._run_port = self.s.port
+        self._was_ready = False
+        self._ready_job = None
+        self.state.setText("Loading the model...")
+        self._sync_start_btn()
+        self.win.refresh_connection()
+
+    def _start_basalt(self):
+        self._cancel_strata()
+        model = Path(self.s.model_path)
+        root = basalt.find_root(model)
+        if root is None:
+            QMessageBox.warning(self, "Basalt", f"No Basalt build (bin\\{basalt.EXE}) was found in a folder above\n"
+                                f"{model}\n\nKeep the .basalt file in the models folder of your Basalt checkout.")
+            return
+        try:
+            self.proc.start(basalt.serve_args(model, self.s, root), cwd=root)
+        except OSError as e:
+            QMessageBox.warning(self, "Model server", f"Couldn't start Basalt: {e}")
             return
         self._run_port = self.s.port
         self._was_ready = False
