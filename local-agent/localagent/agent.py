@@ -247,7 +247,14 @@ class Agent:
                 self.ui.assistant_end(Turn(stopped=True))
                 if lost > MAX_AUTO_RETRIES:
                     raise
-                self.ui.notice(f"{e} Trying again ({lost} of {MAX_AUTO_RETRIES}).")
+                if e.pause:
+                    self.ui.notice(f"{e} Trying again in {e.pause:.0f} seconds ({lost} of {MAX_AUTO_RETRIES}); "
+                                   "closing other programs gives the model more room.")
+                    if self.stop.wait(e.pause):
+                        self.ui.notice("Stopped.")
+                        break
+                else:
+                    self.ui.notice(f"{e} Trying again ({lost} of {MAX_AUTO_RETRIES}).")
                 try:
                     self.client.wait_until_ready(self.stop, self.ui.status)
                 except Stopped:

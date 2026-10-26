@@ -201,6 +201,16 @@ class AgentLoopTest(Base):
         self.assertEqual(agent.run("go"), "whole answer")
         self.assertEqual(sum("Trying again" in n for n in ui.notices), 2)
 
+    def test_basalt_ram_low_waits_then_asks_again(self):
+        from unittest import mock
+        from localagent import llm
+        agent, ui = self.make([{"error": "{'type': 'server_error', 'message': 'RAM low (6734 MiB free < 6738 MiB "
+                                         "guard): request stopped; lower --resident-budget-gib'}"},
+                               text("whole answer")])
+        with mock.patch.object(llm.RamLow, "pause", 0.01):
+            self.assertEqual(agent.run("go"), "whole answer")
+        self.assertTrue(any("Trying again in" in n and "other programs" in n for n in ui.notices))
+
     def test_lost_replies_give_up_after_a_few_tries(self):
         agent, _ = self.make([{"text": "x", "die": True}] * 5)
         with self.assertRaises(ServerError):

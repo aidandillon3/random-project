@@ -29,7 +29,15 @@ class ServerError(Exception):
 
 class ReplyLost(ServerError):
     """The server stopped answering or dropped the connection partway through a reply (it crashed or
-    restarted). Asking again usually works: the agent retries on its own."""
+    restarted). Asking again usually works: the agent retries on its own. `pause` is how many seconds
+    to wait first (the server is up but needs a moment, say for RAM to free up)."""
+    pause = 0.0
+
+
+class RamLow(ReplyLost):
+    """Basalt stopped the reply because the PC's free RAM fell below its guard. The engine stays up,
+    so a retry after a pause usually goes through once other programs give some RAM back."""
+    pause = 20.0
 
 
 class ToolsUnsupported(ServerError):
@@ -58,6 +66,15 @@ class _Again(Exception):
 _NO_TOOLS = re.compile(r"jinja|tools? (?:are |is )?not supported|does not support tools", re.I)
 # Strata's words when its engine process died: the next request starts a fresh one.
 _ENGINE_DIED = re.compile(r"engine stopped unexpectedly|next request restarts", re.I)
+# Basalt's words when free RAM dipped below its guard: that reply stopped, the engine is still up.
+_RAM_LOW = re.compile(r"RAM low\b.*request stopped", re.I | re.S)
+
+
+def _lost_error(text: str):
+    """The exception class for a server error: retryable (ReplyLost/RamLow) or not (ServerError)."""
+    if _RAM_LOW.search(text):
+        return RamLow
+    return ReplyLost if _ENGINE_DIED.search(text) else ServerError
 _NO_IMAGES = re.compile(r"image input is not supported|mmproj|(?:does not|doesn't) support (?:images|image input|vision)"
                         r"|vision is not (?:supported|enabled)", re.I)
 
@@ -471,8 +488,8 @@ class LLMClient:
                 raise ToolsUnsupported(text)
             if _NO_IMAGES.search(text) and _has_images(body["messages"]):
                 raise ImagesUnsupported(f"Server error {r.status_code}: {text}")
-            if r.status_code >= 500 and _ENGINE_DIED.search(text):
-                raise ReplyLost(f"Server error {r.status_code}: {text}")
+            if r.status_code >= 500 and _lost_error(text) is not ServerError:
+                raise _lost_error(text)(f"Server error {r.status_code}: {text}")
             raise ServerError(f"Server error {r.status_code}: {text}")
         return r
 
@@ -598,7 +615,7 @@ class LLMClient:
                     continue
                 if chunk.get("error"):
                     err = str(chunk["error"])
-                    raise (ReplyLost if _ENGINE_DIED.search(err) else ServerError)(err)
+                    raise _lost_error(err)(err)
                 if chunk.get("usage"):
                     usage = chunk["usage"]
                 if isinstance(chunk.get("timings"), dict):
