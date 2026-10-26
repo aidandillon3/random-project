@@ -2252,6 +2252,8 @@ class ServerPage(QWidget):
         if not self.exe:
             self._refresh_exe()            # the first folder scan may not be back yet
         self._changed()
+        if not self.proc.running and not self._clear_port():
+            return
         if basalt.is_model(self.s.model_path):
             self._start_basalt()
             return
@@ -2291,6 +2293,32 @@ class ServerPage(QWidget):
         self.state.setText("Loading the model...")
         self._sync_start_btn()
         self.win.refresh_connection()
+
+    def _clear_port(self) -> bool:
+        """Before a start: a server left running on our port (say from an app that was closed without
+        stopping it) would keep answering instead of the new one. Offer to end it. False: don't start."""
+        port = self.s.port
+        if not launcher.port_taken(port):
+            return True
+        pids = launcher.port_owners(port)
+        if not pids:
+            QMessageBox.warning(self, "Model server", f"Another program is already using port {port}, so the model "
+                                "can't start there. Close it (or end a leftover server in Task Manager), or pick "
+                                "another port under Advanced.")
+            return False
+        if QMessageBox.question(self, "Model server", f"A model server is still running on port {port} from "
+                                "earlier, holding memory and answering in place of a new one. End it and start "
+                                "fresh?") != QMessageBox.Yes:
+            return False
+        for pid in pids:
+            launcher.kill_tree(pid)
+        for _ in range(20):
+            if not launcher.port_taken(port):
+                return True
+            time.sleep(0.25)
+        QMessageBox.warning(self, "Model server", f"Port {port} is still in use. End the leftover server in Task "
+                            "Manager, then press Start model again.")
+        return False
 
     def _start_basalt(self):
         self._cancel_strata()

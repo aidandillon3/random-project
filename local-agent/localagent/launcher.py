@@ -421,6 +421,50 @@ class ServerProcess:
             return False
 
 
+def port_taken(port: int) -> bool:
+    """True when something on this PC already listens on the port (on Windows a new server can share
+    the port with a leftover one, and requests then keep reaching the old one)."""
+    import socket
+    with socket.socket() as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def port_owners(port: int) -> list[int]:
+    """The process ids listening on the port (Windows only: read from netstat; [] elsewhere)."""
+    if not WINDOWS:
+        return []
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=10,
+                             creationflags=subprocess.CREATE_NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return listeners(out, port)
+
+
+def listeners(netstat_out: str, port: int) -> list[int]:
+    """PIDs in `netstat -ano` output that listen on the port."""
+    pids = []
+    for line in netstat_out.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[0] == "TCP" and parts[3] == "LISTENING" \
+                and parts[1].rsplit(":", 1)[-1] == str(port) and parts[4].isdigit() and int(parts[4]) not in pids:
+            pids.append(int(parts[4]))
+    return pids
+
+
+def kill_tree(pid: int) -> None:
+    """End a process and everything it started (a server and its engine)."""
+    if WINDOWS:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    else:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------------- downloading llama.cpp
 # Not /releases/latest: llama.cpp marks its build releases (b1234) as pre-releases, and the
 # release GitHub calls "latest" (e.g. v0.6.0) has no Windows builds at all.

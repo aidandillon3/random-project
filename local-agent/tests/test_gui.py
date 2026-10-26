@@ -441,6 +441,42 @@ class GuiTest(unittest.TestCase):
         w.close()
 
     @unittest.skipIf(os.name == "nt", "the stand-in basalt is a shell script")
+    def test_leftover_server_on_the_port_is_offered_to_end_first(self):
+        import socket
+        from localagent import launcher
+        from localagent.config import Settings
+
+        held = socket.socket()
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        port = held.getsockname()[1]
+        s = Settings(base_url="http://127.0.0.1:9/v1", port=port, model_path=str(Path(tempfile.mkdtemp()) / "m.basalt"))
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        page = w.server
+        asked, warned, killed = [], [], []
+        orig = (self.gui.QMessageBox.question, self.gui.QMessageBox.warning, launcher.port_owners, launcher.kill_tree)
+        try:
+            self.gui.QMessageBox.warning = staticmethod(lambda *a, **k: warned.append(a[2]))
+            launcher.port_owners = lambda p: []          # held by something we can't name: say so, don't start
+            page.start()
+            self.assertIn(f"port {port}", warned[-1])
+            self.assertFalse(page.proc.running)
+            launcher.port_owners = lambda p: [4242]
+            self.gui.QMessageBox.question = staticmethod(lambda *a, **k: asked.append(a[2]) or self.gui.QMessageBox.No)
+            page.start()
+            self.assertIn("still running", asked[-1])
+            self.assertFalse(page.proc.running)
+            self.gui.QMessageBox.question = staticmethod(lambda *a, **k: self.gui.QMessageBox.Yes)
+            launcher.kill_tree = lambda pid: (killed.append(pid), held.close())
+            self.assertTrue(page._clear_port())
+            self.assertEqual(killed, [4242])
+        finally:
+            (self.gui.QMessageBox.question, self.gui.QMessageBox.warning, launcher.port_owners,
+             launcher.kill_tree) = orig
+            held.close()
+            w.close()
+
     def test_basalt_file_runs_on_its_own_build(self):
         from localagent.config import Settings
 

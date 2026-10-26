@@ -492,3 +492,20 @@ class LaunchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PortTest(unittest.TestCase):
+    def test_listeners_read_from_netstat(self):
+        from localagent.launcher import listeners
+        out = """
+Active Connections
+
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1104
+  TCP    127.0.0.1:8070         0.0.0.0:0              LISTENING       23116
+  TCP    127.0.0.1:8070         0.0.0.0:0              LISTENING       30480
+  TCP    127.0.0.1:8070         127.0.0.1:51234        ESTABLISHED     23116
+  TCP    127.0.0.1:18070        0.0.0.0:0              LISTENING       999
+"""
+        self.assertEqual(listeners(out, 8070), [23116, 30480])
+        self.assertEqual(listeners(out, 1), [])
