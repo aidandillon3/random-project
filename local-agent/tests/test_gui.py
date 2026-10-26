@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover
     QApplication = None
 
 from tests.mockserver import MockServer, calls, text  # noqa: E402
-from tests.test_launcher import NEW_HELP, moe_model  # noqa: E402
+from tests.test_launcher import NEW_HELP, moe_model, sized_file  # noqa: E402
 
 
 def free_port() -> int:
@@ -76,8 +76,7 @@ def flash_files(d: Path):
     flash = catalog.BY_KEY["swift-flash-next"]
     (d / flash.folder).mkdir()
     for _, name in flash.all_files():
-        with open(d / flash.folder / name, "wb") as f:
-            f.truncate(flash.sizes[name])          # sparse: right size, no real data
+        sized_file(d / flash.folder / name, flash.sizes[name])
     return flash
 
 
@@ -160,6 +159,7 @@ class GuiTest(unittest.TestCase):
         blocks = [b for b in bodies if isinstance(b, self.gui.AssistantBlock) and not b.isHidden()]
         self.assertIn("hello.txt", blocks[-1].text)
         self.assertFalse(blocks[-1].think_btn.isHidden())
+        self.assertIn("StepGroup", [type(b).__name__ for b in bodies])        # its steps folded into one line
         self.assertTrue(list((Path(os.environ["LOCALAGENT_DATA"]) / "chats").glob("*.json")))
         out = os.environ.get("GUI_SHOT")
         if out:
@@ -239,8 +239,7 @@ class GuiTest(unittest.TestCase):
         folder = d / flash.folder
         folder.mkdir()
         for _, name in flash.all_files():
-            with open(folder / name, "wb") as f:
-                f.truncate(flash.sizes[name])          # sparse: right size, no real data
+            sized_file(folder / name, flash.sizes[name])
         exe = d / "llama-server"
         exe.write_text("#!/bin/sh\ncat <<'EOF'\n" + NEW_HELP + "\nEOF\n")
         exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
@@ -273,8 +272,7 @@ class GuiTest(unittest.TestCase):
         b27 = catalog.BY_KEY["swift-27b"]
         (d / b27.folder).mkdir()
         for _, name in b27.all_files():
-            with open(d / b27.folder / name, "wb") as f:
-                f.truncate(b27.sizes[name])
+            sized_file(d / b27.folder / name, b27.sizes[name])
         page.preset_box.setCurrentIndex(page.preset_box.findData("swift-27b"))
         self.assertTrue(self.wait_until(lambda: "On this PC" in page.preset_info.text(), 10), page.preset_info.text())
         w.close()
@@ -288,8 +286,7 @@ class GuiTest(unittest.TestCase):
         folder = d / p.folder
         folder.mkdir()
         for _, name in p.all_files():
-            with open(folder / name, "wb") as f:
-                f.truncate(p.sizes[name])
+            sized_file(folder / name, p.sizes[name])
         old, odp.ODP_DIR = odp.ODP_DIR, d / "odp-llama"
         self.addCleanup(setattr, odp, "ODP_DIR", old)
         llama = d / "llama"
@@ -360,8 +357,7 @@ class GuiTest(unittest.TestCase):
         folder = d / flash.folder
         folder.mkdir()
         for _, name in flash.all_files():
-            with open(folder / name, "wb") as f:
-                f.truncate(flash.sizes[name])
+            sized_file(folder / name, flash.sizes[name])
         root = d / "strata"
         fake_strata(root)
         old, strata.STRATA_DIR = strata.STRATA_DIR, root
@@ -442,6 +438,39 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(self.wait_until(lambda: "stopped" in page.state.text(), 10), page.state.text())
         self.assertTrue(page.log.isVisibleTo(page))
         self.assertEqual(page.start_btn.text(), "Start model")
+        w.close()
+
+    @unittest.skipIf(os.name == "nt", "the stand-in basalt is a shell script")
+    def test_basalt_file_runs_on_its_own_build(self):
+        from localagent.config import Settings
+
+        port = free_port()
+        root = Path(tempfile.mkdtemp()) / "basalt"
+        (root / "bin").mkdir(parents=True)
+        (root / "models").mkdir()
+        (root / "server.py").write_text(FAKE_SERVER)
+        (root / "basalt_config.json").write_text('{"engine": {"kv": "int8"}}')
+        exe = root / "bin" / "basalt"
+        exe.write_text(f'#!/bin/sh\necho "$@" > "{root}/args.txt"\nexec "{sys.executable}" "{root}/server.py" "$@"\n')
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+        model = root / "models" / "Qwen3.8-FN-GSQ-RCO-IQ3_S.basalt"
+        model.write_bytes(b"BASALT")
+        s = Settings(base_url="http://127.0.0.1:9/v1", port=port, model_path=str(model))
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        page = w.server
+        self.assertTrue(self.wait_until(lambda: "Runs on Basalt" in page.plan_label.text(), 10), page.plan_label.text())
+        self.assertIn("Basalt model file", page.info_label.text())
+        page.start()
+        self.assertTrue(self.wait_until(lambda: "Ready" in page.state.text(), 20), page.state.text())
+        self.assertEqual(s.base_url, f"http://127.0.0.1:{port}/v1")
+        self.assertEqual((root / "args.txt").read_text().split(),
+                         ["serve", "--config", str(root / "basalt_config.json"), "--model", str(model), "--port", str(port)])
+        page.stop()
+        s.model_path = str(Path(tempfile.mkdtemp()) / "x.basalt")      # away from any build: it can't start
+        page._changed()
+        self.assertIn("No Basalt build found", page.plan_label.text())
+        self.assertTrue(self.wait_until(lambda: not page.start_btn.isEnabled(), 5))
         w.close()
 
     def test_settings_page_keeps_the_model_servers_address(self):
@@ -756,6 +785,67 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(self.wait_until(lambda: "Ready" in page.state.text(), 15), page.state.text())
         self.assertEqual(s.base_url, f"http://127.0.0.1:{port}/v1")
         page.stop()
+        w.close()
+
+    def test_steps_fold_into_one_line(self):
+        from types import SimpleNamespace
+
+        from localagent.config import Settings
+        from localagent.tools import ToolResult
+
+        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1"))
+        chat = w.chat
+        feed = lambda: [chat.feed.itemAt(i).widget() for i in range(chat.feed.count() - 1)  # noqa: E731
+                        if chat.feed.itemAt(i).widget() is not chat.welcome]
+
+        def turn(reasoning, content, calls=()):
+            chat._on_assistant_start()
+            chat.current.add_reasoning(reasoning)
+            chat.current.add_text(content)
+            chat._on_assistant_end(SimpleNamespace(reasoning=reasoning, content=content, usage={},
+                                                   tool_calls=list(calls)))
+
+        turn("Find mods first.", "Let me search for popular mods.", calls=["web_search"])
+        chat._on_tool_start("1", "web_search", {"query": "beamng mods"}, "Search the web for beamng mods")
+        group = chat.group
+        self.assertIn("Search the web for beamng mods", group.head.text())        # what it is doing now
+        chat._on_tool_end("1", "web_search", ToolResult("1. Mods"))
+        turn("Open the first one.", "")
+        chat._on_tool_start("2", "web_fetch", {"url": "https://x.org"}, "Open https://x.org")
+        chat._on_tool_start("3", "web_fetch", {"url": "https://y.org"}, "Open https://y.org")
+        chat._on_tool_end("2", "web_fetch", ToolResult("page"))
+        chat._on_tool_end("3", "web_fetch", ToolResult("Error", ok=False))
+        chat._on_tool_start("4", "download_file", {"url": "https://x.org/a.zip"}, "Download")
+        chat._on_tool_end("4", "download_file", ToolResult("Saved"))
+        turn("Done.", "I saved 1 mod.")
+        items = feed()
+        self.assertEqual([type(x).__name__ for x in items], ["StepGroup", "AssistantBlock"])   # one line, then the answer
+        self.assertEqual(group.summary(), "Searched the web, read web pages, downloaded files · 4 steps · 1 failed")
+        self.assertTrue(group.head.text().startswith("▸ ⚠️ Searched the web"))
+        self.assertFalse(group.body.isVisibleTo(group))                          # folded until clicked
+        self.assertEqual(group.rows.count(), 6)                                  # a note, a thinking step, 4 tools
+        self.assertIn("Let me search", group.rows.itemAt(0).widget().text)          # the note is folded too
+        group.toggle()
+        self.assertTrue(group.body.isVisibleTo(group))
+        self.assertIn("I saved 1 mod.", items[1].text)
+        # the next steps start a new line under the answer
+        chat._on_tool_start("5", "read_file", {"path": "a"}, "Read a")
+        self.assertIsNot(chat.group, group)
+        chat._on_tool_end("5", "read_file", ToolResult("x"))
+        chat._done_common()
+        self.assertIsNone(chat.group)
+        # a saved chat shows the same way
+        chat.new_chat()
+        chat._ensure_agent()
+        chat.agent.messages = [
+            {"role": "user", "content": "get mods"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "a"}]},
+            {"role": "tool", "name": "web_search", "tool_call_id": "a", "content": "1. Mods"},
+            {"role": "tool", "name": "run_command", "tool_call_id": "b", "content": "ok"},
+            {"role": "assistant", "content": "Here they are."}]
+        chat._render_history()
+        self.assertEqual([type(x).__name__ for x in feed()], ["UserBubble", "StepGroup", "AssistantBlock"])
+        self.assertEqual(feed()[1].summary(), "Searched the web, ran commands · 2 steps")
         w.close()
 
     def test_a_late_closing_think_tag_ends_the_thinking_line(self):

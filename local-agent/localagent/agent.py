@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import itertools
 import json
 import re
 import threading
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from . import prompts
 from .guide import sampling_for
-from .llm import (ImagesUnsupported, LLMClient, ServerError, Stopped, ToolCall, ToolsUnsupported, Turn,
+from .llm import (ImagesUnsupported, LLMClient, ReplyLost, ServerError, Stopped, ToolCall, ToolsUnsupported, Turn,
                   extract_text_tool_calls, parse_args, strip_thinking)
 from .permissions import ApprovalRequest, Decision, Policy, danger_text, is_dangerous, risk_text
 from .tools import SAFE, ToolContext, ToolError, ToolResult, enabled_tools, shell
@@ -25,6 +26,9 @@ MANY_IMAGES = 4             # pictures in one task after which the model is remi
 MANY_IMAGES_NOTE = ("\n(That's picture {n} of this task. If it already runs and shows what was asked, stop "
                     "adjusting the look: show the user and ask what to change.)")
 CHARS_PER_TOKEN = 3.5
+MAX_AUTO_RETRIES = 3        # a lost or cut-off reply is retried this many times in a row before it gives up
+CARRY_ON = ("(automatic) Your last reply was cut off by a length limit. Carry on exactly where it stopped; "
+            "don't repeat what you already wrote.")
 SUMMARY_TOKENS = 3072        # room a summary made inside the conversation may take
 NO_VISION = "[image not shown: this model can't see images]"
 STOPPED = "Not run: stopped by the user."
@@ -225,7 +229,9 @@ class Agent:
         self._task_images = 0
         final = ""
         tool_rounds = 0
-        for step in range(int(self.settings.max_steps)):
+        lost = cut = 0          # replies in a row lost to a server crash / cut off by a length limit
+        limit = int(self.settings.max_steps)
+        for step in (range(limit) if limit > 0 else itertools.count()):
             if self.stop.is_set():
                 self.ui.notice("Stopped.")
                 break
@@ -236,6 +242,18 @@ class Agent:
                 break
             try:
                 turn = self._call_model()
+            except ReplyLost as e:
+                lost += 1
+                self.ui.assistant_end(Turn(stopped=True))
+                if lost > MAX_AUTO_RETRIES:
+                    raise
+                self.ui.notice(f"{e} Trying again ({lost} of {MAX_AUTO_RETRIES}).")
+                try:
+                    self.client.wait_until_ready(self.stop, self.ui.status)
+                except Stopped:
+                    self.ui.notice("Stopped.")
+                    break
+                continue
             except ToolsUnsupported:
                 if self.prompt_mode or self.settings.tool_mode == "native":
                     raise
@@ -255,16 +273,21 @@ class Agent:
             if turn.stopped:
                 self.ui.notice("Stopped.")
                 break
+            lost = 0
             if not calls:
-                if turn.finish_reason == "length" and (self._clamped or
-                                                       self.estimate_total() > self.context_limit() * 0.9):
-                    self.ui.notice("The reply filled the whole context and was cut off. Pick a longer "
-                                   "'Context length' on the Model server page, or say 'continue'.")
-                elif turn.finish_reason == "length":
-                    self.ui.notice("The reply hit the max-tokens limit and was cut off. Raise "
-                                   "'Max reply tokens' in Settings, or say 'continue'.")
+                if turn.finish_reason == "length" and cut < MAX_AUTO_RETRIES:
+                    # cut off by a length limit: carry on by itself (older steps get summarized
+                    # first if the context is what ran out) instead of waiting for "continue"
+                    cut += 1
+                    self.ui.notice("The reply was cut off by a length limit, so it's carrying on from there.")
+                    self.messages.append({"role": "user", "content": CARRY_ON, "_kind": "carry_on"})
+                    continue
+                if turn.finish_reason == "length":
+                    self.ui.notice("The reply was still being cut off after a few tries. Raise 'Max reply "
+                                   "tokens' in Settings or the 'Context length' on the Model server page.")
                 final = content_text
                 break
+            cut = 0
             tool_rounds += 1
             cut_off = turn.finish_reason == "length" and not all(_valid_json(c.arguments) for c in calls)
             if cut_off:
@@ -272,7 +295,8 @@ class Agent:
                                "wasn't run; the model was asked to do it in smaller pieces.")
             self._run_calls(calls, cut_off)
         else:
-            self.ui.notice(f"Paused after {self.settings.max_steps} steps. Say 'continue' to keep going.")
+            self.ui.notice(f"Paused after {limit} steps (Settings > 'Steps before it checks in'; 0 = no limit). "
+                           "Say 'continue' to keep going.")
         if final and tool_rounds >= 3 and self.depth == 0 and self.settings.auto_memory and not self.stop.is_set():
             self._save_memories(text, final)
         return final

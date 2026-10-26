@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import catalog, chats, launcher, mcp, odp, plugins, strata
+from . import basalt, catalog, chats, launcher, mcp, odp, plugins, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import gpu_info, model_info
@@ -84,6 +84,9 @@ QFrame#user {{ background: {USER_BG}; border-radius: 14px; }}
 QFrame#assistant {{ background: transparent; }}
 QLabel#answer {{ font-family: {SANS}; }}
 QFrame#tool {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 10px; }}
+QFrame#steps {{ background: transparent; }}
+QFrame#steps > QToolButton {{ color: {MUTED}; border: none; border-radius: 8px; padding: 3px 6px; text-align: left; }}
+QFrame#steps > QToolButton:hover {{ background: {RAISED}; color: {TEXT}; }}
 QFrame#side {{ background: {SIDEBAR}; border-left: 1px solid #2b2a28; }}
 QFrame#composer {{ background: {SURFACE}; border: 1px solid {LINE}; border-radius: 18px; }}
 QPlainTextEdit#composerInput {{ background: transparent; border: none; padding: 0; }}
@@ -517,6 +520,77 @@ class ToolCard(QFrame):
         self.images.addStretch(1)
 
 
+# what a run of steps did, for the line it folds into: the tools by kind, in the order they first ran
+STEP_KINDS = {"web_search": "searched the web", "web_fetch": "read web pages", "download_file": "downloaded files",
+              "read_file": "read files", "list_dir": "looked at folders", "search_text": "searched files",
+              "find_files": "searched files", "write_file": "edited files", "edit_file": "edited files",
+              "multi_edit": "edited files", "delete_path": "deleted files", "move_path": "moved files",
+              "run_command": "ran commands", "run_python": "ran Python", "screenshot": "looked at the screen",
+              "remember": "saved notes", "recall": "checked notes"}
+
+
+class StepGroup(QFrame):
+    """The steps between two answers (tool calls and the thinking around them) folded into one line,
+    "▸ Searched the web, read web pages · 6 steps", as the Claude app does. Click it for each step."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("steps")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 0, 4, 0)
+        lay.setSpacing(4)
+        self.head = QToolButton()
+        self.head.setObjectName("flat")
+        self.head.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.head.clicked.connect(self.toggle)
+        lay.addWidget(self.head)
+        self.body = QWidget()
+        self.rows = QVBoxLayout(self.body)
+        self.rows.setContentsMargins(14, 0, 0, 0)
+        self.rows.setSpacing(4)
+        self.body.setVisible(False)
+        lay.addWidget(self.body)
+        self.kinds: list[str] = []
+        self.steps = self.failed = self.running = 0
+        self.now = ""
+        self._show()
+
+    def add(self, w: QWidget):
+        self.rows.addWidget(w)
+
+    def add_tool(self, card: "ToolCard", name: str, summary: str):
+        kind = STEP_KINDS.get(name, "used tools")
+        if kind not in self.kinds:
+            self.kinds.append(kind)
+        self.steps += 1
+        self.running += 1
+        self.now = summary or name
+        self.add(card)
+        self._show()
+
+    def tool_done(self, ok: bool):
+        self.running = max(0, self.running - 1)
+        self.failed += 0 if ok else 1
+        self._show()
+
+    def toggle(self):
+        self.body.setVisible(not self.body.isVisible())
+        self._show()
+
+    def summary(self) -> str:
+        what = ", ".join(self.kinds) or "thought it through"
+        what = what[0].upper() + what[1:]
+        steps = f" · {self.steps} step{'s' if self.steps != 1 else ''}" if self.steps else ""
+        return what + steps + (f" · {self.failed} failed" if self.failed else "")
+
+    def _show(self):
+        arrow = "▾" if self.body.isVisible() else "▸"
+        if self.running:
+            self.head.setText(f"{arrow} ⏳ {self.now[:110]}")
+        else:
+            self.head.setText(f"{arrow} {'⚠️ ' if self.failed else ''}{self.summary()}")
+
+
 def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -714,7 +788,8 @@ class ChatPage(QWidget):
         self.thread: threading.Thread | None = None
         self.pending_images: list[bytes] = []
         self.current: AssistantBlock | None = None
-        self.cards: dict[str, ToolCard] = {}
+        self.cards: dict[str, tuple] = {}     # call id: (its card, the folded steps it is in)
+        self.group: StepGroup | None = None    # the steps since the last answer, folded into one line
         self.chat_file: Path | None = None
         self._plan_shown = False
         self._build()
@@ -951,6 +1026,20 @@ class ChatPage(QWidget):
         self.welcome.setVisible(False)
         self.feed.insertWidget(self.feed.count() - 1, w)
 
+    def _steps(self) -> StepGroup:
+        if self.group is None:
+            self.group = StepGroup()
+            self._add(self.group)
+        return self.group
+
+    def _end_steps(self):
+        self.group = None
+
+    def _fold(self, w: QWidget):
+        """Move a widget already in the chat (a thinking-only step) into the folded steps."""
+        self.feed.removeWidget(w)
+        self._steps().add(w)
+
     def apply_text_size(self):
         """The chat's text size and the answers' font (Settings > Look, Ctrl + / Ctrl -)."""
         pt = max(MIN_TEXT_PT, min(MAX_TEXT_PT, int(self.s.chat_text_pt)))
@@ -1104,6 +1193,7 @@ class ChatPage(QWidget):
             return
         self._ensure_agent()
         images = self.pending_images
+        self._end_steps()
         self._add(UserBubble(text, images))
         self.input.clear()
         self._clear_pending()
@@ -1150,6 +1240,7 @@ class ChatPage(QWidget):
             _stop_background(self.agent)
             self.agent.reset()
         self.chat_file = None
+        self._end_steps()
         while self.feed.count() > 1:
             w = self.feed.takeAt(0).widget()
             if w and w is not self.welcome:
@@ -1193,8 +1284,10 @@ class ChatPage(QWidget):
             text = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or [] if p.get("type") == "text")
             text = m.get("_shown", text)
             if m["role"] == "user" and "_kind" not in m:
+                self._end_steps()
                 self._add(UserBubble(text, []))
             elif m["role"] == "assistant" and text.strip():
+                self._end_steps()
                 blk = AssistantBlock()
                 blk.add_text(text)
                 blk.finish()
@@ -1202,9 +1295,13 @@ class ChatPage(QWidget):
             elif m["role"] == "tool" and m.get("name") != "todo_write":
                 card = ToolCard(m.get("name", "tool"), "", {})
                 card.done(ToolResult(text))
-                self._add(card)
+                steps = self._steps()
+                steps.add_tool(card, m.get("name", "tool"), "")
+                steps.tool_done(True)
             elif m.get("_kind") == "summary":
+                self._end_steps()
                 self._add(muted("ℹ️ Earlier messages were summarized."))
+        self._end_steps()
 
     # ---------------------------------------------------------------- signal handlers
     def _on_assistant_start(self):
@@ -1223,6 +1320,12 @@ class ChatPage(QWidget):
             blk.finish()
             if blk.is_empty():
                 blk.setVisible(False)
+            elif getattr(turn, "tool_calls", None) or not blk.text.strip():
+                # thinking, or a note ("Let me check the docs"), on the way to more steps: with the steps
+                blk.copy_btn.setVisible(False)
+                self._fold(blk)
+            else:
+                self._end_steps()             # the answer ends the run
         self.current = None
         self._show_timings(getattr(turn, "usage", None) or {})
 
@@ -1244,13 +1347,14 @@ class ChatPage(QWidget):
         if name == "todo_write":       # the plan already shows on the right
             return
         card = ToolCard(name, summary, args)
-        self.cards[call_id] = card
-        self._add(card)
+        self.cards[call_id] = (card, self._steps())
+        self.group.add_tool(card, name, summary)
 
     def _on_tool_end(self, call_id, name, result):
-        card = self.cards.pop(call_id, None)
+        card, steps = self.cards.pop(call_id, (None, None))
         if card:
             card.done(result)
+            steps.tool_done(result.ok)
 
     def _on_todos(self, todos):
         if not todos:
@@ -1300,6 +1404,7 @@ class ChatPage(QWidget):
         w.event.set()
 
     def _done_common(self):
+        self._end_steps()
         self._set_busy(False)
         self.status.setText("")
         self._restore()
@@ -1759,7 +1864,8 @@ class ServerPage(QWidget):
             self._scan()
 
     def _browse_model(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Model file", self.s.models_dir or str(Path.home()), "GGUF models (*.gguf)")
+        f, _ = QFileDialog.getOpenFileName(self, "Model file", self.s.models_dir or str(Path.home()),
+                                           "Models (*.gguf *.basalt);;GGUF models (*.gguf);;Basalt models (*.basalt)")
         if f:
             self.s.model_path = str(Path(f))     # the dialog says C:/..., the folder scan C:\...
             self.s.mmproj_path = ""
@@ -1989,6 +2095,13 @@ class ServerPage(QWidget):
                 self.s.model_path = path
                 self.s.mmproj_path = ""
                 self.s.save()
+            if basalt.is_model(path):        # one file with its own vision part: no GGUF header to read
+                root = basalt.find_root(Path(path))
+                self.info_label.setText(f"Basalt model file, run by the Basalt build in {root}." if root else
+                                        f"Basalt model file, but no Basalt build (bin\\{basalt.EXE}) was found in a "
+                                        "folder above it.")
+                self._changed()
+                return
             try:
                 self.info = model_info(path)
                 mm = Path(self.s.mmproj_path) if self.s.mmproj_path else launcher.find_mmproj(Path(path), self.info)
@@ -2019,6 +2132,24 @@ class ServerPage(QWidget):
         self.ngl.setEnabled(manual)
         self.ncm.setEnabled(manual)
         self.draft_label.setText(f"Draft model: {Path(s.draft_path).name}" if s.draft_path else "No draft model picked")
+        if basalt.is_model(s.model_path):
+            for w in (self.kv, self.placement, self.speed, self.extra, self.ngl, self.ncm):
+                w.setEnabled(False)
+            self.launch = None
+            root = basalt.find_root(Path(s.model_path))
+            self._startable = root is not None
+            if root is None:
+                self.cmd.setPlainText("")
+                self.plan_label.setText(f"<b style='color:{WARN}'>No Basalt build found.</b> Keep the .basalt file in "
+                                        f"the models folder of your Basalt checkout, next to its bin\\{basalt.EXE}.")
+                return
+            args = basalt.serve_args(Path(s.model_path), s, root)
+            self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
+            self.plan_label.setText(
+                f"<b style='color:{OK}'>Runs on Basalt.</b> It places the model itself (experts in VRAM, RAM and, if "
+                f"they don't fit, the SSD). Its engine settings come from {basalt.CONFIG} in {root}; the port below "
+                "still applies, the other settings are llama.cpp's.")
+            return
         p = catalog.matching(s.model_path)
         on_strata = strata.active(s, p)
         for w in (self.kv, self.placement, self.speed, self.extra):
@@ -2121,6 +2252,9 @@ class ServerPage(QWidget):
         if not self.exe:
             self._refresh_exe()            # the first folder scan may not be back yet
         self._changed()
+        if basalt.is_model(self.s.model_path):
+            self._start_basalt()
+            return
         p = catalog.matching(self.s.model_path)
         if strata.active(self.s, p):
             self._start_strata(p)
@@ -2150,6 +2284,26 @@ class ServerPage(QWidget):
             self.proc.start(self.launch.args)
         except OSError as e:
             QMessageBox.warning(self, "Model server", f"Couldn't start llama-server: {e}")
+            return
+        self._run_port = self.s.port
+        self._was_ready = False
+        self._ready_job = None
+        self.state.setText("Loading the model...")
+        self._sync_start_btn()
+        self.win.refresh_connection()
+
+    def _start_basalt(self):
+        self._cancel_strata()
+        model = Path(self.s.model_path)
+        root = basalt.find_root(model)
+        if root is None:
+            QMessageBox.warning(self, "Basalt", f"No Basalt build (bin\\{basalt.EXE}) was found in a folder above\n"
+                                f"{model}\n\nKeep the .basalt file in the models folder of your Basalt checkout.")
+            return
+        try:
+            self.proc.start(basalt.serve_args(model, self.s, root), cwd=root)
+        except OSError as e:
+            QMessageBox.warning(self, "Model server", f"Couldn't start Basalt: {e}")
             return
         self._run_port = self.s.port
         self._was_ready = False
@@ -2237,6 +2391,7 @@ class ServerPage(QWidget):
                     return
                 if strata.needs_setup(p, model, run):
                     say("Running Strata's setup (the first time it downloads its engine and draft layer)...")
+                    strata.mark_downloaded(p, model)
                     code = self.proc.run_step(strata.setup_args(p, model, run), ins.root, cancel=stop)
                     if code is None or stop.is_set():
                         return
@@ -2616,7 +2771,8 @@ class SettingsPage(QWidget):
         self.max_images.setToolTip("Clearing old images makes the model re-read the chat from there, so "
                                    "it's done in batches")
         f.addRow("Clear old images once there are more than:", self.max_images)
-        self.max_steps = self._spin(s.max_steps, 5, 2000)
+        self.max_steps = self._spin(s.max_steps, 0, 5000)
+        self.max_steps.setSpecialValueText("No limit")      # 0: it works until the job is done
         f.addRow("Steps before it checks in:", self.max_steps)
         self.max_out = self._spin(s.max_tool_output, 2000, 200000)
         f.addRow("Longest tool result (characters):", self.max_out)

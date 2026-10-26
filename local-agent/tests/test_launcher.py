@@ -1,3 +1,4 @@
+import atexit
 import os
 import struct
 import sys
@@ -40,6 +41,24 @@ def _s(b: str) -> bytes:
     return struct.pack("<Q", len(e)) + e
 
 
+def sized_file(path, size: int, head: bytes = b"") -> None:
+    """A file `size` bytes long that takes no drive space on Linux, where truncate() leaves a hole.
+    On Windows truncate() writes every byte as a real zero (twice that filled a user's C: drive with
+    60+ GB), so there a test that needs a file over 64 MB is skipped instead. Deleted when the tests end."""
+    if os.name == "nt" and size > 64 * 1024 * 1024:
+        raise unittest.SkipTest(f"needs a {size / 1024 ** 3:.1f} GB stand-in file, which Windows would really write")
+    with open(path, "wb") as f:
+        f.write(head)
+        f.truncate(size)
+
+    def drop():
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+    atexit.register(drop)
+
+
 def write_gguf(path: Path, meta: dict, tensors: list[tuple[str, int]], pad_to: int = 0):
     """Tiny GGUF writer: metadata plus tensor infos whose offsets imply the given byte sizes."""
     out = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(meta))
@@ -61,9 +80,7 @@ def write_gguf(path: Path, meta: dict, tensors: list[tuple[str, int]], pad_to: i
         off += size
     align = 32
     out += b"\0" * ((-len(out)) % align)
-    with open(path, "wb") as f:
-        f.write(out)
-        f.truncate(len(out) + off)   # sparse file: sizes without real data
+    sized_file(path, len(out) + off, out)
 
 
 def moe_model(path: Path):

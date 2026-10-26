@@ -1,3 +1,4 @@
+import dataclasses
 import io
 import json
 import os
@@ -120,6 +121,7 @@ class StrataTest(unittest.TestCase):
         self.assertEqual(cfg["sampling"], {"temperature": 1.0})
         # Strata's two opt-in speed-ups (README, v0.1.44+)
         self.assertEqual(val("--adapt-async"), "1")
+        self.assertEqual(val("--vram-reserve-mib"), "1728")                 # room for the desktop: no paging
         self.assertEqual(cfg["env"], {"STRATA_PIN_BY_NEED": "1"})
         self.assertFalse(strata.tune_config(self.flash, self.root))            # already there: file left alone
         cfg["env"] = {"STRATA_PIN_BY_NEED": "0", "OTHER": "x"}                 # turned off by hand: kept
@@ -288,6 +290,21 @@ class StrataTest(unittest.TestCase):
         self.assertEqual(strata.config_path(q, self.root).name, "strata-qwen36-ud-q4_k_xl.json")
         self.assertEqual(sampling_for("qwen3.6-35b-a3b-ud-q4_k_xl")["temperature"], 0.6)   # ykarout's config too
 
+    def test_qwen36_download_gets_the_forks_finish_mark(self):
+        q = catalog.BY_KEY["qwen36-35b-strata"]
+        folder = self.root / "Qwen3.6-35B-A3B"
+        folder.mkdir(parents=True)
+        model = folder / q.files[0]
+        q = dataclasses.replace(q, sizes={**q.sizes, q.files[0]: 5})
+        model.write_bytes(b"1234")                            # still downloading: no mark
+        self.assertEqual(strata.mark_downloaded(q, model), [])
+        model.write_bytes(b"12345")
+        self.assertEqual(strata.mark_downloaded(q, model), [folder / (q.files[0] + ".done")])
+        # no SHA-256 in it: the fork's setup still checks the file once
+        self.assertNotIn("sha256", (folder / (q.files[0] + ".done")).read_text(encoding="utf-8"))
+        self.assertEqual(strata.mark_downloaded(q, model), [])   # a mark setup wrote is kept
+        self.assertEqual(strata.mark_downloaded(self.flash, self.model), [])   # the main setup needs none
+
     def test_qwen36_config_gets_the_forks_options_only(self):
         q = catalog.BY_KEY["qwen36-35b-strata"]
         self.root.mkdir(parents=True)
@@ -308,7 +325,14 @@ class StrataTest(unittest.TestCase):
         self.assertEqual(val("--expert-profile"),
                          str(Path("/models/Qwen3.6-35B-A3B") / "expert-profile-agent-qwen36-v2.prof"))
         self.assertEqual(cfg["env"], {"STRATA_Q8_PACKED": "0"})
+        self.assertNotIn("--vram-reserve-mib", args)                          # not an option of this engine
+        self.assertEqual(val("--expert-vram"), "4.1")                         # 256K: less room than at 64K
         self.assertFalse(strata.tune_config(q, self.root, Path("/models/Qwen3.6-35B-A3B")))   # already there
+        for ctx, gib in (("65536", "6.5"), ("32768", "6.5"), ("131072", "5.7")):
+            cfg_path.write_text(json.dumps({"args": ["--native", "x.gguf", "--max-context", ctx]}), encoding="utf-8")
+            self.assertTrue(strata.tune_config(q, self.root))
+            args = json.loads(cfg_path.read_text(encoding="utf-8"))["args"]
+            self.assertEqual(val("--expert-vram"), gib)
 
     def test_qwen36_engine_comes_from_this_repos_releases(self):
         ins = strata.Install("q36", self.root, "xyehya/Strata", strata.Q36.commit, "test", dict(strata.Q36.engine))

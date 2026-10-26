@@ -10,7 +10,7 @@ os.environ["LOCALAGENT_DATA"] = tempfile.mkdtemp()
 
 from localagent.agent import Agent, AgentUI  # noqa: E402
 from localagent.config import Settings  # noqa: E402
-from localagent.llm import extract_text_tool_calls, parse_args, ThinkSplitter  # noqa: E402
+from localagent.llm import ServerError, extract_text_tool_calls, parse_args, ThinkSplitter  # noqa: E402
 from localagent.permissions import Decision, Policy, is_dangerous  # noqa: E402
 from localagent.tools import ToolResult  # noqa: E402
 from tests.mockserver import MockServer, calls, text  # noqa: E402
@@ -173,6 +173,38 @@ class AgentLoopTest(Base):
         agent, ui = self.make([calls(("list_dir", {"path": "."}))] * 5, max_steps=3)
         agent.run("go")
         self.assertIn("Paused", ui.notices[-1])
+
+    def test_no_step_limit_by_default(self):
+        self.assertEqual(Settings().max_steps, 0)
+        agent, ui = self.make([calls(("list_dir", {"path": "."}))] * 160 + [text("all done")])
+        self.assertEqual(agent.run("go"), "all done")
+        self.assertFalse(any("Paused" in n for n in ui.notices))
+
+    def test_old_default_step_limit_is_moved_to_no_limit(self):
+        p = self.ws / "settings.json"
+        p.write_text(json.dumps({"max_steps": 150, "settings_version": 4}))
+        self.assertEqual(Settings.load(p).max_steps, 0)
+        p.write_text(json.dumps({"max_steps": 150, "settings_version": 5}))     # chosen after the move: kept
+        self.assertEqual(Settings.load(p).max_steps, 150)
+
+    def test_cut_off_reply_carries_on_by_itself(self):
+        agent, ui = self.make([{"text": "part one", "finish": "length"}, text(" and part two")])
+        self.assertEqual(agent.run("write"), " and part two")
+        self.assertIn("Carry on exactly where it stopped", self.srv.requests[1]["messages"][-1]["content"])
+        self.assertTrue(any("carrying on" in n for n in ui.notices))
+
+    def test_lost_reply_is_asked_again(self):
+        agent, ui = self.make([{"text": "half a", "die": True},
+                               {"error": "the engine stopped unexpectedly (exit code 3221226505); "
+                                         "the next request restarts it"},
+                               text("whole answer")])
+        self.assertEqual(agent.run("go"), "whole answer")
+        self.assertEqual(sum("Trying again" in n for n in ui.notices), 2)
+
+    def test_lost_replies_give_up_after_a_few_tries(self):
+        agent, _ = self.make([{"text": "x", "die": True}] * 5)
+        with self.assertRaises(ServerError):
+            agent.run("go")
 
 
 class ContextTest(Base):

@@ -188,6 +188,9 @@ PRESETS = [
                                 "--expert-prefetch": "2", "--expert-profile": "expert-profile-agent-qwen36-v2.prof",
                                 "--decode-swaps": "64", "--snapshots": "2", "--spec-min-p": "0.5",
                                 "--mtp-sampled": "q"},
+                # measured on Aidan's 5080 with four monitors on it: 6.5 GiB at 32K and 64K (7.5 paged); the free
+                # VRAM the engine reads falls 0.4 GiB per 32K of context (9.30 GiB at 64K, 6.89 at 256K)
+                "expert_vram": (6.5, 0.4),
                 "env": {"STRATA_Q8_PACKED": "0"}},
     ),
     # IST-DASLab's disaggregated quantization (odp.py): Unsloth's 1-bit 27B writes, the NVFP4 prefill blocks

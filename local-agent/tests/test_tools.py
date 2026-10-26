@@ -9,7 +9,8 @@ os.environ.setdefault("LOCALAGENT_DATA", tempfile.mkdtemp())
 
 from localagent.config import Settings  # noqa: E402
 from localagent.tools import REGISTRY, ToolContext, ToolError  # noqa: E402
-from localagent.tools.web import html_to_text, parse_ddg  # noqa: E402
+from localagent.tools import web  # noqa: E402
+from localagent.tools.web import html_to_text, parse_bing, parse_ddg, parse_ddg_lite, parse_mojeek  # noqa: E402
 
 
 def run(ctx, name, **args):
@@ -59,6 +60,8 @@ class FileToolsTest(unittest.TestCase):
         self.assertIn("offset=503", out)
         hits = run(self.ctx, "search_text", pattern=r"line 99\d$")
         self.assertIn("sub/big.txt:990: line 990", hits)
+        (self.ws / "sub" / "crlf.txt").write_bytes(b"line 1\r\nline 2\r\n")      # Windows line endings
+        self.assertIn("sub/crlf.txt:2: line 2", run(self.ctx, "search_text", pattern=r"^line 2$"))
         self.assertIn("sub/big.txt", run(self.ctx, "find_files", pattern="*.txt"))
         self.assertIn("big.txt", run(self.ctx, "list_dir", depth=2))
 
@@ -104,6 +107,50 @@ class WebParseTest(unittest.TestCase):
         self.assertEqual(r[0]["title"], "Example A")
         self.assertEqual(r[0]["snippet"], "Snippet one")
         self.assertEqual(r[1]["url"], "https://b.org")
+
+    def test_other_engines(self):
+        lite = ("<tr><td><a rel=\"nofollow\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fmods.example%2Fa&amp;rut=1\" "
+                "class='result-link'>Mod <b>A</b></a></td></tr><tr><td class='result-snippet'>A cool mod</td></tr>"
+                "<a rel=\"nofollow\" href=\"https://b.org\" class='result-link'>B</a>")
+        r = parse_ddg_lite(lite)
+        self.assertEqual([x["url"] for x in r], ["https://mods.example/a", "https://b.org"])
+        self.assertEqual((r[0]["title"], r[0]["snippet"]), ("Mod A", "A cool mod"))
+        import base64
+        u = "a1" + base64.urlsafe_b64encode(b"https://www.beamng.com/resources/x.1/").decode().rstrip("=")
+        bing = (f'<li class="b_algo" data-id=""><h2 class=""><a target="_blank" href="https://www.bing.com/ck/a?!&amp;&amp;p=x&amp;u={u}&amp;ntb=1">'
+                'BeamNG <strong>mods</strong></a></h2><div class="b_caption"><p class="b_lineclamp2">The best mods</p></div></li>'
+                '<li class="b_algo"><h2><a href="https://c.org/">C</a></h2></li>')
+        r = parse_bing(bing)
+        self.assertEqual([x["url"] for x in r], ["https://www.beamng.com/resources/x.1/", "https://c.org/"])
+        self.assertEqual((r[0]["title"], r[0]["snippet"]), ("BeamNG mods", "The best mods"))
+        moj = ('<li><a class="ob" href="https://d.org/"></a><h2><a class="title" href="https://d.org/">D page</a></h2>'
+               '<p class="s">About D</p></li><li><h2><a class="title" href="https://e.org/">E</a></h2></li>')
+        r = parse_mojeek(moj)
+        self.assertEqual([(x["url"], x["title"], x["snippet"]) for x in r],
+                         [("https://d.org/", "D page", "About D"), ("https://e.org/", "E", "")])
+
+    def test_search_falls_back_and_skips_a_blocked_engine(self):
+        class R:
+            def __init__(self, code, text):
+                self.status_code, self.text = code, text
+        asked = []
+
+        def get(url, timeout=20):
+            asked.append(url.split("?")[0])
+            if "duckduckgo" in url:
+                return R(202, "<html>anomaly</html>")            # DuckDuckGo's robot check
+            return R(200, '<li class="b_algo"><h2><a href="https://f.org/">F</a></h2></li>')
+        old = web._get
+        web._get, web._failed = get, {}
+        try:
+            ctx = ToolContext(settings=None, workspace=Path("."))
+            self.assertIn("https://f.org/", web.web_search(ctx, {"query": "beamng mods"}))
+            self.assertEqual(asked, ["https://html.duckduckgo.com/html/", "https://www.bing.com/search"])
+            asked.clear()
+            web.web_search(ctx, {"query": "more"})
+            self.assertEqual(asked, ["https://www.bing.com/search"])      # the blocked one waits its turn
+        finally:
+            web._get, web._failed = old, {}
 
 
 if __name__ == "__main__":

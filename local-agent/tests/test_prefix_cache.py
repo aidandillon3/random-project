@@ -500,7 +500,7 @@ class CompactionTest(Base):
         self.assert_cache_friendly("low")
 
     def test_compacting_with_a_transcript_summary(self):
-        self.assertEqual(self.run_compacting_chat(15000), "transcript summary")
+        self.assertEqual(self.run_compacting_chat(15300), "transcript summary")
         self.assert_cache_friendly("low")
 
 
