@@ -270,6 +270,7 @@ class Gpu:
     total_gb: float
     used_gb: float
     cc: float = 0.0     # CUDA compute capability (12.0 = RTX 50 series); 0 when the driver doesn't say
+    display: bool | None = None     # it shows the desktop (nvidia-smi display_active); None when it doesn't say
 
 
 def _smi(fields: str) -> str:
@@ -280,7 +281,8 @@ def _smi(fields: str) -> str:
 
 def list_gpus() -> list[Gpu]:
     """Every NVIDIA GPU nvidia-smi sees, in its order. [] when there's none (or no nvidia-smi)."""
-    for fields in ("index,uuid,name,memory.total,memory.used,compute_cap", "index,uuid,name,memory.total,memory.used"):
+    for fields in ("index,uuid,name,memory.total,memory.used,compute_cap,display_active",
+                   "index,uuid,name,memory.total,memory.used,compute_cap", "index,uuid,name,memory.total,memory.used"):
         try:
             out = _smi(fields)
             gpus = []
@@ -289,7 +291,8 @@ def list_gpus() -> list[Gpu]:
                 if len(v) < 5:
                     continue
                 cc = float(v[5]) if len(v) > 5 and re.fullmatch(r"\d+(\.\d+)?", v[5]) else 0.0
-                gpus.append(Gpu(int(v[0]), v[1], v[2], float(v[3]) / 1024, float(v[4]) / 1024, cc))
+                shows = {"enabled": True, "disabled": False}.get(v[6].lower()) if len(v) > 6 else None
+                gpus.append(Gpu(int(v[0]), v[1], v[2], float(v[3]) / 1024, float(v[4]) / 1024, cc, shows))
             if gpus:
                 return gpus
         except Exception:
@@ -320,6 +323,14 @@ def gpu_env(choice: str, gpus: list[Gpu]) -> dict[str, str]:
     if not use:
         return {}
     return {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": ",".join(str(g.index) for g in use)}
+
+
+def monitors_on(choice: str, gpus: list[Gpu]) -> bool:
+    """Whether the desktop is on a GPU the model uses, so it needs VRAM left free there. When no card says it shows
+    the desktop (an old driver, or monitors on the motherboard), it's taken that one does: the safe guess."""
+    if not any(g.display for g in gpus):
+        return True
+    return any(g.display for g in chosen_gpus(choice, gpus))
 
 
 def gpu_info(choice: str = "", gpus: list[Gpu] | None = None) -> tuple[str, float, float] | None:

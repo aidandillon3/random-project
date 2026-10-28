@@ -355,6 +355,23 @@ class StrataTest(unittest.TestCase):
             self.assertTrue(strata.tune_config(q, self.root))
             args = json.loads(cfg_path.read_text(encoding="utf-8"))["args"]
             self.assertEqual(val("--expert-vram"), gib)
+        self.assertTrue(strata.tune_config(q, self.root, monitors=False))    # the desktop on another card: more
+        args = json.loads(cfg_path.read_text(encoding="utf-8"))["args"]
+        self.assertEqual(val("--expert-vram"), "7.2")
+        self.assertEqual(args.count("--expert-vram"), 1)
+
+    def test_vram_reserve_follows_where_the_monitors_are(self):
+        self.root.mkdir(parents=True)
+        cfg_path = strata.config_path(self.flash, self.root)
+        cfg_path.write_text(json.dumps({"args": ["--serve", "--vram-reserve-mib", "1728"]}), encoding="utf-8")
+        strata.serve_args(self.flash, Settings(), self.root, monitors=False)
+        args = json.loads(cfg_path.read_text(encoding="utf-8"))["args"]
+        self.assertEqual(args[args.index("--vram-reserve-mib") + 1], "700")    # the engine's own, the rest for experts
+        self.assertEqual(args.count("--vram-reserve-mib"), 1)
+        self.assertFalse(strata.tune_config(self.flash, self.root, monitors=False))
+        self.assertTrue(strata.tune_config(self.flash, self.root, monitors=True))    # monitors back on it
+        args = json.loads(cfg_path.read_text(encoding="utf-8"))["args"]
+        self.assertEqual(args[args.index("--vram-reserve-mib") + 1], "1728")
 
     def test_qwen36_engine_comes_from_this_repos_releases(self):
         ins = strata.Install("q36", self.root, "xyehya/Strata", strata.Q36.commit, "test", dict(strata.Q36.engine))

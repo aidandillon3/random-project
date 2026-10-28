@@ -158,6 +158,22 @@ class GpuPickTest(unittest.TestCase):
         self.assertAlmostEqual(total, (16303 + 12288) / 1024)
         self.assertEqual(gguf.gpu_info("", gpus)[0], "NVIDIA GeForce RTX 5080")
 
+    def test_where_the_monitors_are(self):
+        def out(fields):
+            if "display_active" not in fields:
+                raise AssertionError("asked first")
+            return ("0, GPU-aaa, NVIDIA GeForce RTX 3080 Ti, 12288, 2900, 8.6, Enabled\n"
+                    "1, GPU-bbb, NVIDIA GeForce RTX 5080, 16303, 400, 12.0, Disabled\n")
+        self.smi(out)
+        gpus = gguf.list_gpus()
+        self.assertEqual([g.display for g in gpus], [True, False])
+        self.assertFalse(gguf.monitors_on("", gpus))            # the AI on the 5080, the desktop on the 3080 Ti
+        self.assertTrue(gguf.monitors_on("all", gpus))
+        self.assertTrue(gguf.monitors_on("GPU-aaa", gpus))
+        self.smi(lambda f: self.TWO)                            # the driver doesn't say: taken to be on it
+        self.assertTrue(gguf.monitors_on("", gguf.list_gpus()))
+        self.assertTrue(gguf.monitors_on("", []))
+
     def test_the_server_gets_the_gpus(self):
         d = Path(tempfile.mkdtemp())
         script = d / "env.py"

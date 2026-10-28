@@ -501,7 +501,8 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(self.wait_until(lambda: "Ready" in page.state.text(), 20), page.state.text())
         self.assertEqual(s.base_url, f"http://127.0.0.1:{port}/v1")
         self.assertEqual((root / "args.txt").read_text().split(),
-                         ["serve", "--config", str(root / "basalt_config.json"), "--model", str(model), "--port", str(port)])
+                         ["serve", "--config", str(root / "basalt_config.json"), "--model", str(model),
+                          "--port", str(port), "--vram-reserve-mib", "1728"])               # no GPU found: the desktop is taken to be on it
         page.stop()
         s.model_path = str(Path(tempfile.mkdtemp()) / "x.basalt")      # away from any build: it can't start
         page._changed()
@@ -779,6 +780,13 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("GPUs: ") for line in page.proc.lines))
         page.gpu_pick.setCurrentIndex(0)
         self.assertIn("next time", page.gpu_note.text())
+        self.assertTrue(page.monitors.isChecked())           # nvidia-smi didn't say where they are: the safe guess
+        page.monitors.setChecked(False)
+        self.assertEqual(s.monitors_on_ai_gpu, "no")
+        self.assertFalse(page._monitors())
+        page.gpu_pick.setCurrentIndex(2)                     # another GPU: found again
+        self.assertEqual(s.monitors_on_ai_gpu, "auto")
+        self.assertTrue(page.monitors.isChecked())
         page.stop()
         w.close()
 
@@ -796,6 +804,7 @@ class GuiTest(unittest.TestCase):
         page = w.server
         self.assertTrue(self.wait_until(lambda: page._first_scan_done, 10))
         self.assertTrue(page.gpu_row.isHidden())
+        self.assertTrue(page.monitors.isChecked())
         self.assertEqual(page.gpu.text(), "GPU: RTX 5080, 16.0 GB (3.0 GB in use right now)")
         w.close()
 

@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from . import basalt, catalog, chats, launcher, mcp, odp, plugins, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
-from .gguf import chosen_gpus, gpu_env, gpu_info, list_gpus, model_info, strongest
+from .gguf import chosen_gpus, gpu_env, gpu_info, list_gpus, model_info, monitors_on, strongest
 from .guide import GUIDE, sampling_for
 from .llm import LLMClient, ServerError
 from . import memory as memory_mod
@@ -1507,6 +1507,14 @@ class ServerPage(QWidget):
         row.addWidget(self.gpu_note, 1)
         self.gpu_row.setVisible(False)
         lay.addWidget(self.gpu_row)
+        # VRAM left free for the desktop on the AI's GPU (Strata and Basalt; llama.cpp fits around it by itself)
+        self.monitors = QCheckBox("My monitors are plugged into the AI's GPU (keeps 1.7 GB of its VRAM free for them)")
+        self.monitors.toggled.connect(self._monitors_toggled)
+        self.monitors_note = muted("")
+        mrow = QHBoxLayout()
+        mrow.addWidget(self.monitors)
+        mrow.addWidget(self.monitors_note, 1)
+        lay.addLayout(mrow)
 
         # ---- the mode: what most people need
         g = QGroupBox("Mode")
@@ -1822,6 +1830,26 @@ class ServerPage(QWidget):
         self.gpu_pick.blockSignals(False)
         self.gpu_row.setVisible(len(self.gpus) > 1)
 
+    def _monitors(self) -> bool:
+        """The desktop is on a GPU the model uses: the switch, or (until it's changed) what nvidia-smi says."""
+        m = self.s.monitors_on_ai_gpu
+        return m == "yes" if m in ("yes", "no") else monitors_on(self.s.gpus, self.gpus)
+
+    def _show_monitors(self):
+        self.monitors.blockSignals(True)
+        self.monitors.setChecked(self._monitors())
+        self.monitors.blockSignals(False)
+        self.monitors_note.setText("(found by itself)" if self.s.monitors_on_ai_gpu not in ("yes", "no")
+                                   and any(g.display is not None for g in self.gpus) else "")
+
+    def _monitors_toggled(self, on: bool):
+        self.s.monitors_on_ai_gpu = "yes" if on else "no"
+        self.s.save()
+        self._show_monitors()
+        if self.proc.running:
+            self.monitors_note.setText("Takes effect the next time the model starts.")
+        self._changed()
+
     def _gpu_ids(self) -> list[int] | None:
         """The picked GPUs as nvidia-smi numbers them, the main one first; None with one GPU (or none)."""
         if len(self.gpus) < 2:
@@ -1842,8 +1870,10 @@ class ServerPage(QWidget):
         if choice is None:
             return
         self.s.gpus = choice
+        self.s.monitors_on_ai_gpu = "auto"     # another GPU: where the monitors are is found again
         self.s.save()
         self._show_gpu()
+        self._show_monitors()
         self.gpu_note.setText("Takes effect the next time the model starts." if self.proc.running else "")
         self._changed()
 
@@ -1853,6 +1883,7 @@ class ServerPage(QWidget):
             self.gpus = out.get("gpus") or []
             self._fill_gpu_pick()
             self._show_gpu()
+            self._show_monitors()
             self._show_exe(out.get("exe"))
         self._located = out.get("located") or {}
         self._rechecked.clear()
@@ -2193,7 +2224,7 @@ class ServerPage(QWidget):
                 self.plan_label.setText(f"<b style='color:{WARN}'>No Basalt build found.</b> Keep the .basalt file in "
                                         f"the models folder of your Basalt checkout, next to its bin\\{basalt.EXE}.")
                 return
-            args = basalt.serve_args(Path(s.model_path), s, root)
+            args = basalt.serve_args(Path(s.model_path), s, root, self._monitors())
             self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
             self.plan_label.setText(
                 f"<b style='color:{OK}'>Runs on Basalt.</b> It places the model itself (experts in VRAM, RAM and, if "
@@ -2212,7 +2243,7 @@ class ServerPage(QWidget):
             model = Path(s.model_path)
             ids = self._gpu_ids()
             args = strata.setup_args(p, model, s, gpus=ids) if strata.needs_setup(p, model, s, gpus=ids) \
-                else strata.serve_args(p, s)
+                else strata.serve_args(p, s, monitors=self._monitors())
             self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
             ins = strata.install_of(p)
             first = not strata.installed(ins.root) or not strata.set_up_before(ins.root)
@@ -2388,7 +2419,7 @@ class ServerPage(QWidget):
                                 f"{model}\n\nKeep the .basalt file in the models folder of your Basalt checkout.")
             return
         try:
-            self.proc.start(basalt.serve_args(model, self.s, root), cwd=root)
+            self.proc.start(basalt.serve_args(model, self.s, root, self._monitors()), cwd=root)
         except OSError as e:
             QMessageBox.warning(self, "Model server", f"Couldn't start Basalt: {e}")
             return
@@ -2455,6 +2486,7 @@ class ServerPage(QWidget):
         stop = self._strata_stop = threading.Event()
         run = copy.copy(s)       # what this start uses, even if the settings change during a long setup
         ids = self._gpu_ids()
+        mon = self._monitors()
         self._run_port = run.port
 
         def say(msg, frac=None):
@@ -2488,7 +2520,7 @@ class ServerPage(QWidget):
                             "Start model to try again, it carries on where it stopped.")
                         return
                     strata.mark_setup_done(p, model, run, gpus=ids)
-                if self.proc.start(strata.serve_args(p, run), cwd=ins.root, clear=False, cancel=stop):
+                if self.proc.start(strata.serve_args(p, run, monitors=mon), cwd=ins.root, clear=False, cancel=stop):
                     say("Loading the model...")
             except strata.Stopped:
                 pass

@@ -25,11 +25,14 @@ def find_root(model: Path) -> Path | None:
     return None
 
 
-def serve_args(model: Path, settings, root: Path | None = None) -> list[str]:
+def serve_args(model: Path, settings, root: Path | None = None, monitors: bool = True) -> list[str]:
+    """monitors: the desktop is on the GPU, so 1728 MiB of its VRAM stays free for it (with less, Windows pages GPU
+    memory to RAM and it slows down); without, Basalt's own 700. Given here, it wins over the config file's."""
     root = root or find_root(model)
     if root is None:
         raise FileNotFoundError(f"no Basalt build (bin\\{EXE}) in a folder above {model}")
     args = [str(root / "bin" / EXE), "serve"]
     if (root / CONFIG).is_file():
         args += ["--config", str(root / CONFIG)]     # the engine settings; the file and port below win over it
-    return args + ["--model", str(model), "--port", str(int(settings.port))]
+    return args + ["--model", str(model), "--port", str(int(settings.port)),
+                   "--vram-reserve-mib", "1728" if monitors else "700"]

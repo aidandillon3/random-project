@@ -389,18 +389,26 @@ def mark_setup_done(preset, model: Path, settings, root: Path | None = None, gpu
 # --vram-reserve-mib 1728: VRAM the expert cache leaves free. With the desktop on the same card (Aidan's four
 # monitors take about 3 GB) the cache otherwise fills it to 0 MiB free, Windows pages GPU memory to system RAM and
 # decode falls (IQ3_XXS at 64K: about 50 tok/s, 85-117 with it). 1728 is what the engine's own warning asked for.
+# Without the desktop on the card, the engine's own 700 is enough.
 ENGINE_ARGS = {"--prompt-cache": "10", "--conversation-cache-mib": "4096", "--conversation-cache-min-tokens": "8192",
                "--adapt-async": "1", "--vram-reserve-mib": "1728"}
+NO_MONITORS_RESERVE = "700"
+# A fork's expert_vram (below) is set with the desktop on the card (about 3 GB); without it, this much more.
+NO_MONITORS_EXPERT_VRAM = 1.5
+# The options that follow the "monitors on the AI's GPU" switch: set again at each start, not kept as they were.
+MONITOR_FLAGS = ("--vram-reserve-mib", "--expert-vram")
 # Put into the config's "env" the same way. STRATA_PIN_BY_NEED: Windows lets a program lock only about half the RAM
 # for the graphics card; this locks the experts the card needs most first (#1905, v0.1.44+: +4.4% prompt reading).
 ENGINE_ENV = {"STRATA_PIN_BY_NEED": "1"}
 
 
-def tune_config(preset, root: Path | None = None, model_dir: Path | None = None) -> bool:
+def tune_config(preset, root: Path | None = None, model_dir: Path | None = None, monitors: bool = True) -> bool:
     """Add ENGINE_ARGS (with the mode's own values) to strata-<model>.json where it doesn't have them (it keeps
-    values set by hand). True when the file changed. A fork's mode (strata["install"]) takes only its own options:
-    the main path's are not options of its engine, which then refuses to start. An option without a value (None) is
-    a switch; a file name value (the expert profile) is the file in the model's folder."""
+    values set by hand, except MONITOR_FLAGS'). True when the file changed. A fork's mode (strata["install"]) takes
+    only its own options: the main path's are not options of its engine, which then refuses to start. An option
+    without a value (None) is a switch; a file name value (the expert profile) is the file in the model's folder.
+    monitors: the desktop is on the card the model uses, so MONITOR_FLAGS leave VRAM free for it (without, the
+    cache gets that VRAM)."""
     path = config_path(preset, root or install_of(preset).root)
     try:
         cfg = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -411,6 +419,25 @@ def tune_config(preset, root: Path | None = None, model_dir: Path | None = None)
         return False
     own = bool(preset.strata.get("install"))
     want = {**({} if own else ENGINE_ARGS), **preset.strata.get("engine_args", {})}
+    if not monitors and "--vram-reserve-mib" in want:
+        want["--vram-reserve-mib"] = NO_MONITORS_RESERVE
+    # a fork's VRAM budget for the experts (strata["expert_vram"]: GiB at 64K context, GiB less per 32K more): its
+    # engine fills the card to 0 free otherwise, with the same paging as above (Qwen3.6: 50-73 tok/s, 105-148)
+    ev = preset.strata.get("expert_vram")
+    if ev:
+        try:
+            ctx = int(args[args.index("--max-context") + 1])
+        except (ValueError, IndexError):
+            ctx = 65536
+        gib = max(ev[0] - ev[1] * max(ctx - 65536, 0) / 32768, 1.0) + (0 if monitors else NO_MONITORS_EXPERT_VRAM)
+        want["--expert-vram"] = f"{gib:.1f}"
+    args = list(args)
+    changed = False
+    for flag in MONITOR_FLAGS:          # already there with the other choice's value
+        if flag in want and flag in args and args.index(flag) + 1 < len(args) \
+                and args[args.index(flag) + 1] != want[flag]:
+            args[args.index(flag) + 1] = want[flag]
+            changed = True
     add = []
     for flag, value in want.items():
         if flag in args:
@@ -421,19 +448,10 @@ def tune_config(preset, root: Path | None = None, model_dir: Path | None = None)
         if model_dir is not None and flag == "--expert-profile":
             value = str(Path(model_dir) / value)
         add += [flag, value]
-    # a fork's VRAM budget for the experts (strata["expert_vram"]: GiB at 64K context, GiB less per 32K more): its
-    # engine fills the card to 0 free otherwise, with the same paging as above (Qwen3.6: 50-73 tok/s, 105-148)
-    ev = preset.strata.get("expert_vram")
-    if ev and "--expert-vram" not in args:
-        try:
-            ctx = int(args[args.index("--max-context") + 1])
-        except (ValueError, IndexError):
-            ctx = 65536
-        add += ["--expert-vram", f"{max(ev[0] - ev[1] * max(ctx - 65536, 0) / 32768, 1.0):.1f}"]
     env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
     add_env = {k: v for k, v in {**({} if own else ENGINE_ENV), **preset.strata.get("env", {})}.items()
                if k not in env}
-    if not add and not add_env:
+    if not add and not add_env and not changed:
         return False
     cfg["args"] = args + add
     if add_env:
@@ -447,12 +465,12 @@ def tune_config(preset, root: Path | None = None, model_dir: Path | None = None)
     return True
 
 
-def serve_args(preset, settings, root: Path | None = None) -> list[str]:
+def serve_args(preset, settings, root: Path | None = None, monitors: bool = True) -> list[str]:
     """What Strata's run-<model> script runs, minus opening the browser. --fit-max-tokens: a request whose prompt
     plus max_tokens is longer than the context gets a shorter answer instead of an error. Also makes sure the
     config has ENGINE_ARGS (setup rewrites them away)."""
     root = root or install_of(preset).root
     model = getattr(settings, "model_path", "")
-    tune_config(preset, root, Path(model).parent if model else None)
+    tune_config(preset, root, Path(model).parent if model else None, monitors)
     return [str(python(root)), str(root / "serve" / "server.py"), "--engine", "strata",
             "--config", str(config_path(preset, root)), "--port", str(settings.port), "--fit-max-tokens"]

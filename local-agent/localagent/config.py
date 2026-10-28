@@ -100,6 +100,7 @@ class Settings:
     extra_args: str = ""
     use_vision: bool = True
     gpus: str = ""                     # GPUs the model uses: "" = the strongest, "all", or GPU UUIDs (gguf.chosen_gpus)
+    monitors_on_ai_gpu: str = "auto"   # "auto" (gguf.monitors_on), "yes" or "no": VRAM kept free for the desktop
 
     extra: dict = field(default_factory=dict)
     settings_version: int = 5          # bumped when an old saved default needs moving on load
