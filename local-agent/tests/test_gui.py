@@ -506,6 +506,18 @@ class GuiTest(unittest.TestCase):
                           "--vram-reserve-mib", "1728",        # no GPU found: the desktop is taken to be on it
                           "--relaxed-drafting", "0.3"])
         page.stop()
+        self.assertEqual(s.basalt_models, [str(model)])                  # remembered for the model lists
+        other = Path(tempfile.mkdtemp()) / "Qwen3.8-27B-Q4_K_M.gguf"
+        moe_model(other)
+        s.model_path = str(other)                                        # another model picked...
+        page._scan()
+        self.assertTrue(self.wait_until(lambda: page.model_box.findData(str(other)) >= 0, 10))
+        self.assertGreaterEqual(page.model_box.findData(str(model)), 0)  # ...the Basalt one is still listed
+        w.chat._fill_model_menu()
+        menu = [a for a in w.chat.model_menu.actions() if a.text() == "Basalt"][0].menu()
+        [a for a in menu.actions() if a.text() == model.name][0].trigger()     # and one click away in the chat
+        self.assertTrue(self.wait_until(lambda: page.model_box.currentData() == str(model), 10))
+        self.assertEqual(s.model_path, str(model))
         s.model_path = str(Path(tempfile.mkdtemp()) / "x.basalt")      # away from any build: it can't start
         page._changed()
         self.assertIn("No Basalt build found", page.plan_label.text())
