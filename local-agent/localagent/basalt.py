@@ -27,7 +27,10 @@ def find_root(model: Path) -> Path | None:
 
 def serve_args(model: Path, settings, root: Path | None = None, monitors: bool = True) -> list[str]:
     """monitors: the desktop is on the GPU, so 1728 MiB of its VRAM stays free for it (with less, Windows pages GPU
-    memory to RAM and it slows down); without, Basalt's own 700. Given here, it wins over the config file's."""
+    memory to RAM and it slows down); without, Basalt's own 700. Given here, it wins over the config file's.
+    --relaxed-drafting 0.3: with the sampling the app uses (temperature 1.0), a guessed token the model gives 30% or
+    more is kept even when its own draw was another one. Basalt's docs (precision/features.md): IQ3_S at temperature
+    1.0 about +10% decode, no measurable loss on gsm8k or MMLU-Pro; tool calls and control tokens stay exact."""
     root = root or find_root(model)
     if root is None:
         raise FileNotFoundError(f"no Basalt build (bin\\{EXE}) in a folder above {model}")
@@ -35,4 +38,4 @@ def serve_args(model: Path, settings, root: Path | None = None, monitors: bool =
     if (root / CONFIG).is_file():
         args += ["--config", str(root / CONFIG)]     # the engine settings; the file and port below win over it
     return args + ["--model", str(model), "--port", str(int(settings.port)),
-                   "--vram-reserve-mib", "1728" if monitors else "700"]
+                   "--vram-reserve-mib", "1728" if monitors else "700", "--relaxed-drafting", "0.3"]
