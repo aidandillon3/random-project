@@ -263,6 +263,25 @@ class ContextTest(Base):
         self.assertTrue(all(m["tool_call_id"] in ids for m in wire if m["role"] == "tool"))
 
 
+    def test_compaction_shortens_older_steps_before_summarizing(self):
+        big = "y" * 6000
+        replies = [calls(("write_file", {"path": f"f{i}.txt", "content": big})) for i in range(14)] + [text("done")]
+        agent, ui = self.make(replies, n_ctx=40000, approval_mode="auto")
+        out = agent.run("write many files")
+        self.assertEqual(out, "done")
+        self.assertTrue(any("Shortened older steps" in n for n in ui.notices))
+        self.assertFalse(any("Summarized" in n for n in ui.notices))
+        self.assertNotEqual(agent.messages[0].get("_kind"), "summary")     # every step is still there
+        written = [m for m in agent.messages if m.get("tool_calls")]
+        self.assertEqual(len(written), 14)
+        old = json.loads(written[0]["tool_calls"][0]["function"]["arguments"])     # still valid JSON
+        self.assertEqual(old["path"], "f0.txt")
+        self.assertIn("more characters cut from this older step", old["content"])
+        recent = json.loads(written[-1]["tool_calls"][0]["function"]["arguments"])
+        self.assertEqual(recent["content"], big)        # the latest steps stay word for word
+        self.assertEqual((self.ws / "f0.txt").read_text(), big)
+
+
 class MemoryTest(Base):
     def test_matching_notes_are_attached_to_the_request(self):
         from localagent.memory import get_memory
