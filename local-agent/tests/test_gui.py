@@ -441,6 +441,42 @@ class GuiTest(unittest.TestCase):
         w.close()
 
     @unittest.skipIf(os.name == "nt", "the stand-in basalt is a shell script")
+    def test_leftover_server_on_the_port_is_offered_to_end_first(self):
+        import socket
+        from localagent import launcher
+        from localagent.config import Settings
+
+        held = socket.socket()
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        port = held.getsockname()[1]
+        s = Settings(base_url="http://127.0.0.1:9/v1", port=port, model_path=str(Path(tempfile.mkdtemp()) / "m.basalt"))
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        page = w.server
+        asked, warned, killed = [], [], []
+        orig = (self.gui.QMessageBox.question, self.gui.QMessageBox.warning, launcher.port_owners, launcher.kill_tree)
+        try:
+            self.gui.QMessageBox.warning = staticmethod(lambda *a, **k: warned.append(a[2]))
+            launcher.port_owners = lambda p: []          # held by something we can't name: say so, don't start
+            page.start()
+            self.assertIn(f"port {port}", warned[-1])
+            self.assertFalse(page.proc.running)
+            launcher.port_owners = lambda p: [4242]
+            self.gui.QMessageBox.question = staticmethod(lambda *a, **k: asked.append(a[2]) or self.gui.QMessageBox.No)
+            page.start()
+            self.assertIn("still running", asked[-1])
+            self.assertFalse(page.proc.running)
+            self.gui.QMessageBox.question = staticmethod(lambda *a, **k: self.gui.QMessageBox.Yes)
+            launcher.kill_tree = lambda pid: (killed.append(pid), held.close())
+            self.assertTrue(page._clear_port())
+            self.assertEqual(killed, [4242])
+        finally:
+            (self.gui.QMessageBox.question, self.gui.QMessageBox.warning, launcher.port_owners,
+             launcher.kill_tree) = orig
+            held.close()
+            w.close()
+
     def test_basalt_file_runs_on_its_own_build(self):
         from localagent.config import Settings
 
@@ -465,7 +501,9 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(self.wait_until(lambda: "Ready" in page.state.text(), 20), page.state.text())
         self.assertEqual(s.base_url, f"http://127.0.0.1:{port}/v1")
         self.assertEqual((root / "args.txt").read_text().split(),
-                         ["serve", "--config", str(root / "basalt_config.json"), "--model", str(model), "--port", str(port)])
+                         ["serve", "--config", str(root / "basalt_config.json"), "--model", str(model),
+                          "--port", str(port), "--vram-reserve-mib", "1728",        # no GPU found: desktop taken to be on it
+                          "--relaxed-drafting", "0.3"])
         page.stop()
         s.model_path = str(Path(tempfile.mkdtemp()) / "x.basalt")      # away from any build: it can't start
         page._changed()
@@ -680,9 +718,11 @@ class GuiTest(unittest.TestCase):
         model = d / "Qwen3.8-27B-Q4_K_M.gguf"
         moe_model(model)
         exe = serving_llama(d, help_delay=1.0)
-        orig_gpu = self.gui.gpu_info
-        self.gui.gpu_info = lambda: (_time.sleep(1.5), ("RTX 4070", 12.0, 1.0))[1]     # a slow nvidia-smi
-        self.addCleanup(setattr, self.gui, "gpu_info", orig_gpu)
+        from localagent.gguf import Gpu
+        orig_gpu = self.gui.list_gpus
+        rtx = Gpu(0, "GPU-1", "RTX 4070", 12.0, 1.0, 8.9)
+        self.gui.list_gpus = lambda: (_time.sleep(1.5), [rtx])[1]     # a slow nvidia-smi
+        self.addCleanup(setattr, self.gui, "list_gpus", orig_gpu)
         s = Settings(server_exe=str(exe), models_dir=str(d), model_path=str(model), base_url="http://127.0.0.1:9/v1",
                      port=free_port())
         s.extra["autostart_model"] = False
@@ -704,6 +744,69 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(self.wait_until(lambda: page.vram == 12.0, 10))      # the GPU still got read
         self.assertIn("RTX 4070", page.gpu.text())
         page.stop()
+        w.close()
+
+    def test_pick_the_gpu_with_two(self):
+        from localagent.config import Settings
+        from localagent.gguf import Gpu
+
+        d = Path(tempfile.mkdtemp())
+        model = d / "Qwen3.8-27B-Q4_K_M.gguf"
+        moe_model(model)
+        exe = serving_llama(d)
+        two = [Gpu(0, "GPU-aaa", "RTX 3080 Ti", 12.0, 3.0, 8.6), Gpu(1, "GPU-bbb", "RTX 5080", 16.0, 0.4, 12.0)]
+        orig_gpu = self.gui.list_gpus
+        self.gui.list_gpus = lambda: two
+        self.addCleanup(setattr, self.gui, "list_gpus", orig_gpu)
+        s = Settings(server_exe=str(exe), models_dir=str(d), model_path=str(model), base_url="http://127.0.0.1:9/v1",
+                     port=free_port())
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        page = w.server
+        self.assertTrue(self.wait_until(lambda: page._first_scan_done, 10))
+        self.assertFalse(page.gpu_row.isHidden())
+        items = [page.gpu_pick.itemText(i) for i in range(page.gpu_pick.count())]
+        self.assertEqual(items, ["RTX 5080 only", "RTX 3080 Ti only", "Both GPUs"])
+        self.assertEqual(page.gpu_pick.currentText(), "RTX 5080 only")             # the newest card by default
+        self.assertEqual(page.vram, 16.0)
+        page.gpu_pick.setCurrentIndex(2)
+        self.assertEqual(s.gpus, "all")
+        self.assertEqual(page.vram, 28.0)
+        self.assertIn("RTX 5080 + RTX 3080 Ti", page.gpu.text())
+        page.gpu_pick.setCurrentIndex(1)
+        self.assertEqual(s.gpus, "GPU-aaa")
+        page.start()
+        self.assertTrue(self.wait_until(lambda: page.proc.running, 15), page.state.text())
+        self.assertEqual(page.proc.env["CUDA_VISIBLE_DEVICES"], "0")
+        self.assertTrue(any(line.startswith("GPUs: ") for line in page.proc.lines))
+        page.gpu_pick.setCurrentIndex(0)
+        self.assertIn("next time", page.gpu_note.text())
+        self.assertTrue(page.monitors.isChecked())           # nvidia-smi didn't say where they are: the safe guess
+        page.monitors.setChecked(False)
+        self.assertEqual(s.monitors_on_ai_gpu, "no")
+        self.assertFalse(page._monitors())
+        page.gpu_pick.setCurrentIndex(2)                     # another GPU: found again
+        self.assertEqual(s.monitors_on_ai_gpu, "auto")
+        self.assertTrue(page.monitors.isChecked())
+        page.stop()
+        w.close()
+
+    def test_one_gpu_shows_no_picker(self):
+        from localagent.config import Settings
+        from localagent.gguf import Gpu
+
+        d = Path(tempfile.mkdtemp())
+        orig_gpu = self.gui.list_gpus
+        self.gui.list_gpus = lambda: [Gpu(0, "GPU-bbb", "RTX 5080", 16.0, 3.0, 12.0)]
+        self.addCleanup(setattr, self.gui, "list_gpus", orig_gpu)
+        s = Settings(models_dir=str(d), base_url="http://127.0.0.1:9/v1", port=free_port())
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        page = w.server
+        self.assertTrue(self.wait_until(lambda: page._first_scan_done, 10))
+        self.assertTrue(page.gpu_row.isHidden())
+        self.assertTrue(page.monitors.isChecked())
+        self.assertEqual(page.gpu.text(), "GPU: RTX 5080, 16.0 GB (3.0 GB in use right now)")
         w.close()
 
     def test_one_llama_download_at_a_time(self):

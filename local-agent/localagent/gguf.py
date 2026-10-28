@@ -262,16 +262,83 @@ def model_info(path: str | Path) -> ModelInfo:
 
 
 # ---------------------------------------------------------------------- GPU
-def gpu_info() -> tuple[str, float, float] | None:
-    """(name, total GB, used GB) of the first NVIDIA GPU, via nvidia-smi."""
-    try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,memory.used",
-                              "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10,
-                             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0).stdout
-        name, total, used = [x.strip() for x in out.splitlines()[0].split(",")]
-        return name, float(total) / 1024, float(used) / 1024
-    except Exception:
+@dataclass
+class Gpu:
+    index: int          # nvidia-smi's number (PCI bus order; CUDA uses it too with CUDA_DEVICE_ORDER=PCI_BUS_ID)
+    uuid: str
+    name: str
+    total_gb: float
+    used_gb: float
+    cc: float = 0.0     # CUDA compute capability (12.0 = RTX 50 series); 0 when the driver doesn't say
+    display: bool | None = None     # it shows the desktop (nvidia-smi display_active); None when it doesn't say
+
+
+def _smi(fields: str) -> str:
+    return subprocess.run(["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
+                          capture_output=True, text=True, timeout=10,
+                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0).stdout
+
+
+def list_gpus() -> list[Gpu]:
+    """Every NVIDIA GPU nvidia-smi sees, in its order. [] when there's none (or no nvidia-smi)."""
+    for fields in ("index,uuid,name,memory.total,memory.used,compute_cap,display_active",
+                   "index,uuid,name,memory.total,memory.used,compute_cap", "index,uuid,name,memory.total,memory.used"):
+        try:
+            out = _smi(fields)
+            gpus = []
+            for line in out.splitlines():
+                v = [x.strip() for x in line.split(",")]
+                if len(v) < 5:
+                    continue
+                cc = float(v[5]) if len(v) > 5 and re.fullmatch(r"\d+(\.\d+)?", v[5]) else 0.0
+                shows = {"enabled": True, "disabled": False}.get(v[6].lower()) if len(v) > 6 else None
+                gpus.append(Gpu(int(v[0]), v[1], v[2], float(v[3]) / 1024, float(v[4]) / 1024, cc, shows))
+            if gpus:
+                return gpus
+        except Exception:
+            continue
+    return []
+
+
+def strongest(gpus: list[Gpu]) -> list[Gpu]:
+    """Best first: the newest kind of card, then the most VRAM."""
+    return sorted(gpus, key=lambda g: (-g.cc, -g.total_gb, g.index))
+
+
+def chosen_gpus(choice: str, gpus: list[Gpu]) -> list[Gpu]:
+    """The GPUs a model uses, best first (the first one is CUDA's device 0, where the main work goes).
+    choice: "" = the strongest one only, "all" = every GPU, otherwise GPU UUIDs joined by commas. A choice
+    naming a GPU that isn't there any more falls back to the strongest one."""
+    if not gpus:
+        return []
+    if choice == "all":
+        return strongest(gpus)
+    picked = [g for g in gpus if g.uuid in {c.strip() for c in choice.split(",") if c.strip()}]
+    return strongest(picked) if picked else strongest(gpus)[:1]
+
+
+def gpu_env(choice: str, gpus: list[Gpu]) -> dict[str, str]:
+    """What a model server needs in its environment to see only the chosen GPUs, best one first."""
+    use = chosen_gpus(choice, gpus)
+    if not use:
+        return {}
+    return {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": ",".join(str(g.index) for g in use)}
+
+
+def monitors_on(choice: str, gpus: list[Gpu]) -> bool:
+    """Whether the desktop is on a GPU the model uses, so it needs VRAM left free there. When no card says it shows
+    the desktop (an old driver, or monitors on the motherboard), it's taken that one does: the safe guess."""
+    if not any(g.display for g in gpus):
+        return True
+    return any(g.display for g in chosen_gpus(choice, gpus))
+
+
+def gpu_info(choice: str = "", gpus: list[Gpu] | None = None) -> tuple[str, float, float] | None:
+    """(name, total GB, used GB) of the GPU(s) a model uses, via nvidia-smi. Several add up."""
+    use = chosen_gpus(choice, list_gpus() if gpus is None else gpus)
+    if not use:
         return None
+    return " + ".join(g.name for g in use), sum(g.total_gb for g in use), sum(g.used_gb for g in use)
 
 
 def driver_version() -> int | None:

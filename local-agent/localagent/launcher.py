@@ -327,6 +327,7 @@ class ServerProcess:
         self.proc: subprocess.Popen | None = None
         self.lines: collections.deque[str] = collections.deque(maxlen=3000)
         self._lock = threading.RLock()      # a start on a worker thread and stop() don't cross
+        self.env: dict[str, str] = {}       # added to what it starts (the GPUs to use: gpu_env)
 
     @property
     def running(self) -> bool:
@@ -345,7 +346,7 @@ class ServerProcess:
             self.lines.append("> " + " ".join(f'"{a}"' if " " in a else a for a in args))
             self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          stdin=subprocess.DEVNULL, cwd=str(cwd or Path(args[0]).parent),
-                                         creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
+                                         env=self._env(), creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
             threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
         return True
 
@@ -357,10 +358,16 @@ class ServerProcess:
                 return None
             self.lines.append("> " + " ".join(f'"{a}"' if " " in a else a for a in args))
             proc = self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                                stdin=subprocess.DEVNULL, cwd=str(cwd),
+                                                stdin=subprocess.DEVNULL, cwd=str(cwd), env=self._env(),
                                                 creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
         self._read(proc.stdout)
         return proc.wait()
+
+    def _env(self) -> dict[str, str] | None:
+        if not self.env:
+            return None
+        self.lines.append("GPUs: " + " ".join(f"{k}={v}" for k, v in self.env.items()))
+        return {**os.environ, **self.env}
 
     def _read(self, stream):
         """The output into lines. A download's progress line ("\r  file: 1.2 / 3 GB") rewrites itself with
@@ -419,6 +426,50 @@ class ServerProcess:
                 return True
         except requests.RequestException:
             return False
+
+
+def port_taken(port: int) -> bool:
+    """True when something on this PC already listens on the port (on Windows a new server can share
+    the port with a leftover one, and requests then keep reaching the old one)."""
+    import socket
+    with socket.socket() as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def port_owners(port: int) -> list[int]:
+    """The process ids listening on the port (Windows only: read from netstat; [] elsewhere)."""
+    if not WINDOWS:
+        return []
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=10,
+                             creationflags=subprocess.CREATE_NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return listeners(out, port)
+
+
+def listeners(netstat_out: str, port: int) -> list[int]:
+    """PIDs in `netstat -ano` output that listen on the port."""
+    pids = []
+    for line in netstat_out.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[0] == "TCP" and parts[3] == "LISTENING" \
+                and parts[1].rsplit(":", 1)[-1] == str(port) and parts[4].isdigit() and int(parts[4]) not in pids:
+            pids.append(int(parts[4]))
+    return pids
+
+
+def kill_tree(pid: int) -> None:
+    """End a process and everything it started (a server and its engine)."""
+    if WINDOWS:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    else:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------- downloading llama.cpp
@@ -532,8 +583,8 @@ def _swap_in(tmp: Path, target: Path):
     shutil.rmtree(old, ignore_errors=True)
 
 
-def describe_gpu() -> str:
-    g = gpu_info()
+def describe_gpu(choice: str = "") -> str:
+    g = gpu_info(choice)
     if not g:
         return "No NVIDIA GPU found by nvidia-smi (planning for 16 GB)."
     name, total, used = g
