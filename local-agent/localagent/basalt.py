@@ -37,5 +37,8 @@ def serve_args(model: Path, settings, root: Path | None = None, monitors: bool =
     args = [str(root / "bin" / EXE), "serve"]
     if (root / CONFIG).is_file():
         args += ["--config", str(root / CONFIG)]     # the engine settings; the file and port below win over it
+    # the context length picked in the app wins over the config file's max-context (its KV cache grows as a chat
+    # needs it above 32K, so a long one costs VRAM only when used)
     return args + ["--model", str(model), "--port", str(int(settings.port)),
+                   "--max-context", str(int(settings.ctx_size)),
                    "--vram-reserve-mib", "1728" if monitors else "700", "--relaxed-drafting", "0.3"]

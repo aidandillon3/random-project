@@ -2228,8 +2228,8 @@ class ServerPage(QWidget):
             self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
             self.plan_label.setText(
                 f"<b style='color:{OK}'>Runs on Basalt.</b> It places the model itself (experts in VRAM, RAM and, if "
-                f"they don't fit, the SSD). Its engine settings come from {basalt.CONFIG} in {root}; the port below "
-                "still applies, the other settings are llama.cpp's.")
+                f"they don't fit, the SSD). Its engine settings come from {basalt.CONFIG} in {root}; the context length "
+                "and port below still apply, the other settings are llama.cpp's.")
             return
         p = catalog.matching(s.model_path)
         on_strata = strata.active(s, p)

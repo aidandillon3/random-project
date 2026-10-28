@@ -502,7 +502,8 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(s.base_url, f"http://127.0.0.1:{port}/v1")
         self.assertEqual((root / "args.txt").read_text().split(),
                          ["serve", "--config", str(root / "basalt_config.json"), "--model", str(model),
-                          "--port", str(port), "--vram-reserve-mib", "1728",        # no GPU found: desktop taken to be on it
+                          "--port", str(port), "--max-context", str(s.ctx_size),
+                          "--vram-reserve-mib", "1728",        # no GPU found: the desktop is taken to be on it
                           "--relaxed-drafting", "0.3"])
         page.stop()
         s.model_path = str(Path(tempfile.mkdtemp()) / "x.basalt")      # away from any build: it can't start
