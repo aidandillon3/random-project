@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from . import basalt, catalog, chats, launcher, mcp, odp, plugins, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
-from .gguf import gpu_info, model_info
+from .gguf import chosen_gpus, gpu_env, gpu_info, list_gpus, model_info, strongest
 from .guide import GUIDE, sampling_for
 from .llm import LLMClient, ServerError
 from . import memory as memory_mod
@@ -1458,6 +1458,7 @@ class ServerPage(QWidget):
         self.exe = None
         self.launch = None
         self.vram = 16.0
+        self.gpus: list = []           # every NVIDIA GPU (gguf.Gpu), from the first folder scan
         self._was_ready = False
         self._phase = None             # what a Strata start is doing, set from its worker thread
         self._strata_job: threading.Thread | None = None
@@ -1494,6 +1495,18 @@ class ServerPage(QWidget):
                             "Settings > Connection instead."))
         self.gpu = muted("")
         lay.addWidget(self.gpu)
+        # which GPU(s) the model runs on: shown once a second NVIDIA card is found
+        self.gpu_row = QWidget()
+        row = QHBoxLayout(self.gpu_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel("Run the AI on:"))
+        self.gpu_pick = QComboBox()
+        self.gpu_pick.currentIndexChanged.connect(self._gpu_picked)
+        row.addWidget(self.gpu_pick)
+        self.gpu_note = muted("")
+        row.addWidget(self.gpu_note, 1)
+        self.gpu_row.setVisible(False)
+        lay.addWidget(self.gpu_row)
 
         # ---- the mode: what most people need
         g = QGroupBox("Mode")
@@ -1773,7 +1786,7 @@ class ServerPage(QWidget):
 
         def work():
             if first:
-                out["gpu"] = gpu_info()
+                out["gpus"] = list_gpus()
                 exe = launcher.find_server(s)
                 if exe:
                     launcher.server_help(exe)        # cached for the first plan
@@ -1794,15 +1807,52 @@ class ServerPage(QWidget):
 
         done()
 
+    def _fill_gpu_pick(self):
+        """One entry per GPU (the strongest first) and one for all of them, set to the saved choice."""
+        self.gpu_pick.blockSignals(True)
+        self.gpu_pick.clear()
+        for g in strongest(self.gpus):
+            self.gpu_pick.addItem(f"{g.name} only", g.uuid)
+        if len(self.gpus) > 1:
+            self.gpu_pick.addItem("Both GPUs" if len(self.gpus) == 2 else f"All {len(self.gpus)} GPUs", "all")
+        use = chosen_gpus(self.s.gpus, self.gpus)
+        want = "all" if self.s.gpus == "all" and len(self.gpus) > 1 else (use[0].uuid if use else None)
+        i = self.gpu_pick.findData(want)
+        self.gpu_pick.setCurrentIndex(max(i, 0))
+        self.gpu_pick.blockSignals(False)
+        self.gpu_row.setVisible(len(self.gpus) > 1)
+
+    def _gpu_ids(self) -> list[int] | None:
+        """The picked GPUs as nvidia-smi numbers them, the main one first; None with one GPU (or none)."""
+        if len(self.gpus) < 2:
+            return None
+        return [g.index for g in chosen_gpus(self.s.gpus, self.gpus)]
+
+    def _show_gpu(self):
+        g = gpu_info(self.s.gpus, self.gpus)
+        if g:
+            self.vram = g[1]
+            self.gpu.setText(f"{'GPUs' if ' + ' in g[0] else 'GPU'}: {g[0]}, {g[1]:.1f} GB "
+                             f"({g[2]:.1f} GB in use right now)")
+        else:
+            self.gpu.setText("No NVIDIA GPU found by nvidia-smi; planning for 16 GB.")
+
+    def _gpu_picked(self):
+        choice = self.gpu_pick.currentData()
+        if choice is None:
+            return
+        self.s.gpus = choice
+        self.s.save()
+        self._show_gpu()
+        self.gpu_note.setText("Takes effect the next time the model starts." if self.proc.running else "")
+        self._changed()
+
     def _apply_scan(self, out: dict, first: bool):
         if first:
             self._first_scan_done = True
-            g = out.get("gpu")
-            if g:
-                self.vram = g[1]
-                self.gpu.setText(f"GPU: {g[0]}, {g[1]:.1f} GB ({g[2]:.1f} GB in use right now)")
-            else:
-                self.gpu.setText("No NVIDIA GPU found by nvidia-smi; planning for 16 GB.")
+            self.gpus = out.get("gpus") or []
+            self._fill_gpu_pick()
+            self._show_gpu()
             self._show_exe(out.get("exe"))
         self._located = out.get("located") or {}
         self._rechecked.clear()
@@ -1839,7 +1889,7 @@ class ServerPage(QWidget):
                 or self.proc.running or s.model_path != self._last_model:
             return      # (a model the folder scan just picked on a first run isn't started unasked)
         if strata.active(s, p):
-            if strata.needs_setup(p, Path(s.model_path), s):
+            if strata.needs_setup(p, Path(s.model_path), s, gpus=self._gpu_ids()):
                 return              # the first Strata setup asks first; it isn't started unasked
         elif not self._exe_now():
             return
@@ -2160,11 +2210,13 @@ class ServerPage(QWidget):
             self.launch = None
             self._startable = True
             model = Path(s.model_path)
-            args = strata.setup_args(p, model, s) if strata.needs_setup(p, model, s) else strata.serve_args(p, s)
+            ids = self._gpu_ids()
+            args = strata.setup_args(p, model, s, gpus=ids) if strata.needs_setup(p, model, s, gpus=ids) \
+                else strata.serve_args(p, s)
             self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
             ins = strata.install_of(p)
             first = not strata.installed(ins.root) or not strata.set_up_before(ins.root)
-            again = not first and strata.needs_setup(p, model, s)
+            again = not first and strata.needs_setup(p, model, s, gpus=ids)
             self.plan_label.setText(
                 f"<b style='color:{OK}'>Runs on Strata.</b> It places the model itself: attention and the busiest "
                 + ("experts on the GPU, the rest in RAM (worked on by the CPU at the same time), and the model's own "
@@ -2254,6 +2306,8 @@ class ServerPage(QWidget):
         self._changed()
         if not self.proc.running and not self._clear_port():
             return
+        self.proc.env = gpu_env(self.s.gpus, self.gpus)
+        self.gpu_note.setText("")
         if basalt.is_model(self.s.model_path):
             self._start_basalt()
             return
@@ -2322,6 +2376,11 @@ class ServerPage(QWidget):
 
     def _start_basalt(self):
         self._cancel_strata()
+        use = chosen_gpus(self.s.gpus, self.gpus)
+        if use and 0 < use[0].cc < 12:
+            QMessageBox.warning(self, "Basalt", f"Basalt only runs on RTX 50-series cards, and the GPU picked under "
+                                f"\"Run the AI on\" is the {use[0].name}. Pick an RTX 50-series card there.")
+            return
         model = Path(self.s.model_path)
         root = basalt.find_root(model)
         if root is None:
@@ -2395,6 +2454,7 @@ class ServerPage(QWidget):
         self.state.setText(self._phase)
         stop = self._strata_stop = threading.Event()
         run = copy.copy(s)       # what this start uses, even if the settings change during a long setup
+        ids = self._gpu_ids()
         self._run_port = run.port
 
         def say(msg, frac=None):
@@ -2417,17 +2477,17 @@ class ServerPage(QWidget):
                     self.proc.lines.append(f"Strata engine for {ins.version} downloaded to {exe.parent}")
                 if stop.is_set():
                     return
-                if strata.needs_setup(p, model, run):
+                if strata.needs_setup(p, model, run, gpus=ids):
                     say("Running Strata's setup (the first time it downloads its engine and draft layer)...")
                     strata.mark_downloaded(p, model)
-                    code = self.proc.run_step(strata.setup_args(p, model, run), ins.root, cancel=stop)
+                    code = self.proc.run_step(strata.setup_args(p, model, run, gpus=ids), ins.root, cancel=stop)
                     if code is None or stop.is_set():
                         return
                     if code != 0 or not strata.config_path(p).is_file():
                         say(f"error: Strata's setup stopped (exit code {code}). The log below says why; press "
                             "Start model to try again, it carries on where it stopped.")
                         return
-                    strata.mark_setup_done(p, model, run)
+                    strata.mark_setup_done(p, model, run, gpus=ids)
                 if self.proc.start(strata.serve_args(p, run), cwd=ins.root, clear=False, cancel=stop):
                     say("Loading the model...")
             except strata.Stopped:

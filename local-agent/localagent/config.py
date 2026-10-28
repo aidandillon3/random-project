@@ -99,6 +99,7 @@ class Settings:
     port: int = 8080
     extra_args: str = ""
     use_vision: bool = True
+    gpus: str = ""                     # GPUs the model uses: "" = the strongest, "all", or GPU UUIDs (gguf.chosen_gpus)
 
     extra: dict = field(default_factory=dict)
     settings_version: int = 5          # bumped when an old saved default needs moving on load

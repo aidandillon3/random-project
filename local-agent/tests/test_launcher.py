@@ -113,6 +113,63 @@ def dense_model(path: Path, layer_gb=0.6, layers=40):
     write_gguf(path, meta, tensors)
 
 
+class GpuPickTest(unittest.TestCase):
+    TWO = ("0, GPU-aaa, NVIDIA GeForce RTX 3080 Ti, 12288, 2900, 8.6\n"
+           "1, GPU-bbb, NVIDIA GeForce RTX 5080, 16303, 400, 12.0\n")
+
+    def smi(self, out_by_fields):
+        orig = gguf._smi
+        self.addCleanup(setattr, gguf, "_smi", orig)
+        gguf._smi = lambda fields: out_by_fields(fields)
+
+    def test_reads_every_gpu(self):
+        self.smi(lambda f: self.TWO)
+        gpus = gguf.list_gpus()
+        self.assertEqual([(g.index, g.uuid, g.cc) for g in gpus], [(0, "GPU-aaa", 8.6), (1, "GPU-bbb", 12.0)])
+        self.assertAlmostEqual(gpus[1].total_gb, 16303 / 1024)
+
+    def test_an_old_driver_without_compute_cap(self):
+        def out(fields):
+            if "compute_cap" in fields:
+                raise OSError("Field \"compute_cap\" is not a valid field to query.")
+            return "0, GPU-aaa, NVIDIA GeForce RTX 3080 Ti, 12288, 2900\n"
+        self.smi(out)
+        self.assertEqual([(g.name, g.cc) for g in gguf.list_gpus()], [("NVIDIA GeForce RTX 3080 Ti", 0.0)])
+
+    def test_no_nvidia_smi(self):
+        def out(fields):
+            raise FileNotFoundError("nvidia-smi")
+        self.smi(out)
+        self.assertEqual(gguf.list_gpus(), [])
+        self.assertIsNone(gguf.gpu_info())
+        self.assertEqual(gguf.gpu_env("", []), {})
+
+    def test_the_choice(self):
+        self.smi(lambda f: self.TWO)
+        gpus = gguf.list_gpus()
+        # nothing picked: the newest card alone (the 5080, though nvidia-smi numbers it second)
+        self.assertEqual([g.index for g in gguf.chosen_gpus("", gpus)], [1])
+        self.assertEqual(gguf.gpu_env("", gpus), {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "1"})
+        self.assertEqual(gguf.gpu_env("GPU-aaa", gpus)["CUDA_VISIBLE_DEVICES"], "0")
+        self.assertEqual(gguf.gpu_env("all", gpus)["CUDA_VISIBLE_DEVICES"], "1,0")     # the main card first
+        self.assertEqual(gguf.gpu_env("GPU-gone", gpus)["CUDA_VISIBLE_DEVICES"], "1")  # a card taken out
+        name, total, used = gguf.gpu_info("all", gpus)
+        self.assertEqual(name, "NVIDIA GeForce RTX 5080 + NVIDIA GeForce RTX 3080 Ti")
+        self.assertAlmostEqual(total, (16303 + 12288) / 1024)
+        self.assertEqual(gguf.gpu_info("", gpus)[0], "NVIDIA GeForce RTX 5080")
+
+    def test_the_server_gets_the_gpus(self):
+        d = Path(tempfile.mkdtemp())
+        script = d / "env.py"
+        script.write_text("import os\n"
+                          "print('seen', os.environ.get('CUDA_VISIBLE_DEVICES'), os.environ.get('PATH') is not None)\n")
+        proc = launcher.ServerProcess()
+        proc.env = {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "1"}
+        self.assertEqual(proc.run_step([sys.executable, str(script)], d), 0)
+        self.assertIn("seen 1 True", list(proc.lines))           # added to the environment, not instead of it
+        self.assertIn("GPUs: CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1", list(proc.lines))
+
+
 class GGUFTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())

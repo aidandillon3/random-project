@@ -148,6 +148,28 @@ class StrataTest(unittest.TestCase):
         s.ctx_size = 131072
         self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))
 
+    def test_the_picked_gpu_goes_to_setup(self):
+        s = Settings(ctx_size=65536, use_vision=True)
+        self.assertNotIn("--gpu", strata.setup_args(self.flash, self.model, s, self.root))   # one GPU: setup picks
+        a = strata.setup_args(self.flash, self.model, s, self.root, gpus=[1])
+        self.assertEqual(a[a.index("--gpu") + 1], "1")
+        a = strata.setup_args(self.flash, self.model, s, self.root, gpus=[1, 0])
+        self.assertEqual(a[a.index("--gpus") + 1], "1,0")
+        self.assertNotIn("--gpu", a)
+
+    def test_setup_runs_again_for_another_gpu(self):
+        s = Settings(ctx_size=65536, use_vision=True)
+        self.root.mkdir(parents=True)
+        strata.config_path(self.flash, self.root).write_text("{}")
+        strata.python(self.root).parent.mkdir(parents=True)
+        strata.python(self.root).write_text("")
+        strata.mark_setup_done(self.flash, self.model, s, self.root)             # set up with one GPU in the PC
+        self.assertFalse(strata.needs_setup(self.flash, self.model, s, self.root))
+        self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root, gpus=[1]))   # a second card since
+        strata.mark_setup_done(self.flash, self.model, s, self.root, gpus=[1])
+        self.assertFalse(strata.needs_setup(self.flash, self.model, s, self.root, gpus=[1]))
+        self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root, gpus=[1, 0]))  # both picked
+
     def test_setup_runs_again_when_its_files_are_gone(self):
         s = Settings(ctx_size=65536, use_vision=True)
         self.root.mkdir(parents=True)

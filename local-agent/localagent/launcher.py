@@ -327,6 +327,7 @@ class ServerProcess:
         self.proc: subprocess.Popen | None = None
         self.lines: collections.deque[str] = collections.deque(maxlen=3000)
         self._lock = threading.RLock()      # a start on a worker thread and stop() don't cross
+        self.env: dict[str, str] = {}       # added to what it starts (the GPUs to use: gpu_env)
 
     @property
     def running(self) -> bool:
@@ -345,7 +346,7 @@ class ServerProcess:
             self.lines.append("> " + " ".join(f'"{a}"' if " " in a else a for a in args))
             self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          stdin=subprocess.DEVNULL, cwd=str(cwd or Path(args[0]).parent),
-                                         creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
+                                         env=self._env(), creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
             threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
         return True
 
@@ -357,10 +358,16 @@ class ServerProcess:
                 return None
             self.lines.append("> " + " ".join(f'"{a}"' if " " in a else a for a in args))
             proc = self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                                stdin=subprocess.DEVNULL, cwd=str(cwd),
+                                                stdin=subprocess.DEVNULL, cwd=str(cwd), env=self._env(),
                                                 creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
         self._read(proc.stdout)
         return proc.wait()
+
+    def _env(self) -> dict[str, str] | None:
+        if not self.env:
+            return None
+        self.lines.append("GPUs: " + " ".join(f"{k}={v}" for k, v in self.env.items()))
+        return {**os.environ, **self.env}
 
     def _read(self, stream):
         """The output into lines. A download's progress line ("\r  file: 1.2 / 3 GB") rewrites itself with
@@ -576,8 +583,8 @@ def _swap_in(tmp: Path, target: Path):
     shutil.rmtree(old, ignore_errors=True)
 
 
-def describe_gpu() -> str:
-    g = gpu_info()
+def describe_gpu(choice: str = "") -> str:
+    g = gpu_info(choice)
     if not g:
         return "No NVIDIA GPU found by nvidia-smi (planning for 16 GB)."
     name, total, used = g

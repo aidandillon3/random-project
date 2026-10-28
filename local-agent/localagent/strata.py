@@ -276,11 +276,17 @@ def data_dir(model: Path) -> Path:
     return model.parent.parent / "Strata-data"
 
 
-def wanted(preset, model: Path, settings) -> dict:
+def wanted(preset, model: Path, settings, gpus: list[int] | None = None) -> dict:
     """What setup is run with; when it changes, setup runs again (the port is given at each start). A new Strata
-    version too: its setup fetches the engine that goes with it."""
-    return {"family": preset.strata["family"], "model": preset.strata["model"], "gguf_dir": str(model.parent),
-            "context": int(settings.ctx_size), "vision": bool(settings.use_vision), "strata": install_of(preset).commit}
+    version too: its setup fetches the engine that goes with it. gpus: on a PC with two or more NVIDIA cards, the
+    ones picked under "Run the AI on" (nvidia-smi's numbers, the main one first). Strata's setup saves its card in
+    the config and the engine runs there whatever the environment says, so a new pick sets it up again (and so
+    does a second card put in since: nvidia-smi's numbers can move)."""
+    w = {"family": preset.strata["family"], "model": preset.strata["model"], "gguf_dir": str(model.parent),
+         "context": int(settings.ctx_size), "vision": bool(settings.use_vision), "strata": install_of(preset).commit}
+    if gpus:
+        w["gpus"] = list(gpus)
+    return w
 
 
 def _stamps(root: Path) -> dict:
@@ -312,20 +318,21 @@ def _files_gone(config: Path) -> bool:
     return bool(tok) and not (Path(tok) / "vocab.json").is_file()
 
 
-def needs_setup(preset, model: Path, settings, root: Path | None = None) -> bool:
+def needs_setup(preset, model: Path, settings, root: Path | None = None, gpus: list[int] | None = None) -> bool:
     root = root or install_of(preset).root
     if not (config_path(preset, root).is_file() and python(root).is_file()):
         return True
     if _files_gone(config_path(preset, root)):
         return True
-    w = wanted(preset, model, settings)
+    w = wanted(preset, model, settings, gpus)
     return _stamps(root).get(f"{w['family']}:{w['model']}") != w
 
 
-def setup_args(preset, model: Path, settings, root: Path | None = None) -> list[str]:
-    """Strata's own installer, without questions. It uses the model files where they are (--gguf-dir)."""
+def setup_args(preset, model: Path, settings, root: Path | None = None, gpus: list[int] | None = None) -> list[str]:
+    """Strata's own installer, without questions. It uses the model files where they are (--gguf-dir). With
+    gpus, the card(s) to use (--gpu N, or --gpus for a model shared across several); without, setup picks."""
     root = root or install_of(preset).root
-    w = wanted(preset, model, settings)
+    w = wanted(preset, model, settings, gpus)
     if not WINDOWS:
         launch = ["sh", str(root / "setup.sh")]
     elif python(root).is_file():
@@ -339,7 +346,13 @@ def setup_args(preset, model: Path, settings, root: Path | None = None) -> list[
     return launch + ["--yes", "--no-start", "--no-browser", "--family", w["family"], "--model", w["model"],
                      "--gguf-dir", w["gguf_dir"], "--data-dir", str(data_dir(model)),
                      "--context", str(w["context"]), "--vision", "gpu" if w["vision"] else "no",
-                     "--port", str(settings.port)]
+                     "--port", str(settings.port)] + _gpu_args(gpus)
+
+
+def _gpu_args(gpus: list[int] | None) -> list[str]:
+    if not gpus:
+        return []
+    return ["--gpu", str(gpus[0])] if len(gpus) == 1 else ["--gpus", ",".join(str(i) for i in gpus)]
 
 
 def mark_downloaded(preset, model: Path) -> list[Path]:
@@ -359,9 +372,9 @@ def mark_downloaded(preset, model: Path) -> list[Path]:
     return marked
 
 
-def mark_setup_done(preset, model: Path, settings, root: Path | None = None) -> None:
+def mark_setup_done(preset, model: Path, settings, root: Path | None = None, gpus: list[int] | None = None) -> None:
     root = root or install_of(preset).root
-    w = wanted(preset, model, settings)
+    w = wanted(preset, model, settings, gpus)
     stamps = {**_stamps(root), f"{w['family']}:{w['model']}": w}
     (root / STAMP).write_text(json.dumps(stamps), encoding="utf-8")
 

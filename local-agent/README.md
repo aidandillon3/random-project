@@ -368,6 +368,7 @@ Qwen3.8-27B includes vision wasn't confirmed. Any model with tool calling works 
 | N-gram speculation | Reuses text already in the chat; fast when editing code | Speed-up option |
 | Prompt caching | The server remembers the conversation so each step only reads what's new; the app avoids rewriting old messages so the cache keeps working | Always on |
 | Quant choice | Q4_K_M is the sweet spot; IQ4_XS ~10% smaller; below Q3 gets dumb | Shown per model |
+| GPU choice | With two or more NVIDIA cards, the model runs on the one you pick (or all of them); the others stay free for your monitors and games | **Run the AI on** on the Model server page (newest card by default) |
 
 Smarter answers: set **Thinking** in the message box to High for hard tasks, Off or Low for quick
 jobs. Changing it mid-chat makes the next reply re-read the chat once, so pick it before you

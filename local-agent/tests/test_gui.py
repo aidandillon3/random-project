@@ -716,9 +716,11 @@ class GuiTest(unittest.TestCase):
         model = d / "Qwen3.8-27B-Q4_K_M.gguf"
         moe_model(model)
         exe = serving_llama(d, help_delay=1.0)
-        orig_gpu = self.gui.gpu_info
-        self.gui.gpu_info = lambda: (_time.sleep(1.5), ("RTX 4070", 12.0, 1.0))[1]     # a slow nvidia-smi
-        self.addCleanup(setattr, self.gui, "gpu_info", orig_gpu)
+        from localagent.gguf import Gpu
+        orig_gpu = self.gui.list_gpus
+        rtx = Gpu(0, "GPU-1", "RTX 4070", 12.0, 1.0, 8.9)
+        self.gui.list_gpus = lambda: (_time.sleep(1.5), [rtx])[1]     # a slow nvidia-smi
+        self.addCleanup(setattr, self.gui, "list_gpus", orig_gpu)
         s = Settings(server_exe=str(exe), models_dir=str(d), model_path=str(model), base_url="http://127.0.0.1:9/v1",
                      port=free_port())
         s.extra["autostart_model"] = False
@@ -740,6 +742,61 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(self.wait_until(lambda: page.vram == 12.0, 10))      # the GPU still got read
         self.assertIn("RTX 4070", page.gpu.text())
         page.stop()
+        w.close()
+
+    def test_pick_the_gpu_with_two(self):
+        from localagent.config import Settings
+        from localagent.gguf import Gpu
+
+        d = Path(tempfile.mkdtemp())
+        model = d / "Qwen3.8-27B-Q4_K_M.gguf"
+        moe_model(model)
+        exe = serving_llama(d)
+        two = [Gpu(0, "GPU-aaa", "RTX 3080 Ti", 12.0, 3.0, 8.6), Gpu(1, "GPU-bbb", "RTX 5080", 16.0, 0.4, 12.0)]
+        orig_gpu = self.gui.list_gpus
+        self.gui.list_gpus = lambda: two
+        self.addCleanup(setattr, self.gui, "list_gpus", orig_gpu)
+        s = Settings(server_exe=str(exe), models_dir=str(d), model_path=str(model), base_url="http://127.0.0.1:9/v1",
+                     port=free_port())
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        page = w.server
+        self.assertTrue(self.wait_until(lambda: page._first_scan_done, 10))
+        self.assertFalse(page.gpu_row.isHidden())
+        items = [page.gpu_pick.itemText(i) for i in range(page.gpu_pick.count())]
+        self.assertEqual(items, ["RTX 5080 only", "RTX 3080 Ti only", "Both GPUs"])
+        self.assertEqual(page.gpu_pick.currentText(), "RTX 5080 only")             # the newest card by default
+        self.assertEqual(page.vram, 16.0)
+        page.gpu_pick.setCurrentIndex(2)
+        self.assertEqual(s.gpus, "all")
+        self.assertEqual(page.vram, 28.0)
+        self.assertIn("RTX 5080 + RTX 3080 Ti", page.gpu.text())
+        page.gpu_pick.setCurrentIndex(1)
+        self.assertEqual(s.gpus, "GPU-aaa")
+        page.start()
+        self.assertTrue(self.wait_until(lambda: page.proc.running, 15), page.state.text())
+        self.assertEqual(page.proc.env["CUDA_VISIBLE_DEVICES"], "0")
+        self.assertTrue(any(line.startswith("GPUs: ") for line in page.proc.lines))
+        page.gpu_pick.setCurrentIndex(0)
+        self.assertIn("next time", page.gpu_note.text())
+        page.stop()
+        w.close()
+
+    def test_one_gpu_shows_no_picker(self):
+        from localagent.config import Settings
+        from localagent.gguf import Gpu
+
+        d = Path(tempfile.mkdtemp())
+        orig_gpu = self.gui.list_gpus
+        self.gui.list_gpus = lambda: [Gpu(0, "GPU-bbb", "RTX 5080", 16.0, 3.0, 12.0)]
+        self.addCleanup(setattr, self.gui, "list_gpus", orig_gpu)
+        s = Settings(models_dir=str(d), base_url="http://127.0.0.1:9/v1", port=free_port())
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        page = w.server
+        self.assertTrue(self.wait_until(lambda: page._first_scan_done, 10))
+        self.assertTrue(page.gpu_row.isHidden())
+        self.assertEqual(page.gpu.text(), "GPU: RTX 5080, 16.0 GB (3.0 GB in use right now)")
         w.close()
 
     def test_one_llama_download_at_a_time(self):
