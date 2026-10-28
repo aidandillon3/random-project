@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import itertools
 import json
 import re
@@ -749,12 +750,17 @@ class Agent:
             return False
         # Most of a long coding chat is what older steps carry word for word but no longer need. Shortening
         # that first keeps every step (what was done, to which file) instead of a summary of them.
+        # Not enough: the messages go back as they were, so a summary made inside the conversation still
+        # reuses what the server has read.
         steps = [i for i, m in enumerate(self.messages) if m["role"] == "assistant"]
-        older = self.messages[:steps[-LIGHT_KEEP]] if len(steps) > LIGHT_KEEP else []
-        if self._lighten(older) and self.estimate_total() <= limit * LIGHT_ENOUGH:
-            self.ui.notice("Shortened older steps (file contents already written, old thinking, long results) "
-                           "to free up context.")
-            return True
+        if len(steps) > LIGHT_KEEP:
+            before, known = self.messages, self._known
+            self.messages = copy.deepcopy(before[:steps[-LIGHT_KEEP]]) + before[steps[-LIGHT_KEEP]:]
+            if self._lighten(self.messages[:steps[-LIGHT_KEEP]]) and self.estimate_total() <= limit * LIGHT_ENOUGH:
+                self.ui.notice("Shortened older steps (file contents already written, old thinking, long results) "
+                               "to free up context.")
+                return True
+            self.messages, self._known = before, known
         self.ui.status("Summarizing older messages to free up space...")
         try:
             summary = self._summarize(head, limit)
