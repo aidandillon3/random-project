@@ -504,7 +504,7 @@ class GuiTest(unittest.TestCase):
                          ["serve", "--config", str(root / "basalt_config.json"), "--model", str(model),
                           "--port", str(port), "--max-context", str(s.ctx_size),
                           "--vram-reserve-mib", "1728",        # no GPU found: the desktop is taken to be on it
-                          "--relaxed-drafting", "0.3"])
+                          "--relaxed-drafting", "0.3", "--fit-max-tokens"])
         page.stop()
         self.assertEqual(s.basalt_models, [str(model)])                  # remembered for the model lists
         other = Path(tempfile.mkdtemp()) / "Qwen3.8-27B-Q4_K_M.gguf"
