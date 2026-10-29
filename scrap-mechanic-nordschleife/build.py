@@ -30,12 +30,14 @@ import track
 ROAD_WIDTH = 20.0      # metres (Scrap Mechanic cars are ~3x real size)
 PIECE_SIZE = 32.0      # Blank Road (Matte) mesh is 32 x 32 m at scale 1 (collision .obj)
 PIECE_THICK = 0.5      # ... and 0.5 m thick
-THICK_SCALE = 0.5      # mesh is 0.5 m thick at scale 1 (local z 0..0.5), so the slab is 0.25 m
-ROAD_SINK = 0.15       # slab bottom sits this far below the road profile, top 0.10 above
-TILE_STEP = 0.05       # metres each piece's front end sits above the next piece (roof tiles)
-START_AHEAD = 5        # pieces between the spawn point (T13) and the start/finish line
-STEP = 8.0             # metres of centre line per road piece
-GROUND_UNDER = 0.05    # ground sits this far below the road profile (inside the slab)
+THICK_SCALE = 0.2      # mesh is 0.5 m thick at scale 1 (local z 0..0.5), so the slab is 0.10 m;
+                       # thin, so the lip where one piece rests on the next stays small
+ROAD_SINK = 0.08       # slab bottom sits this far below the road profile, top 0.02 above
+TILE_STEP = 0.03       # metres each piece's front end sits above the next piece (roof tiles)
+START_AHEAD = 10       # pieces between the spawn point (T13) and the start/finish line
+STEP = 4.0             # metres of centre line per road piece (short pieces lean across each
+                       # other less in bends on hills, so the steps stay small)
+GROUND_UNDER = 0.06    # ground sits this far below the road profile (inside the slab)
 FLAT_EDGE = ROAD_WIDTH / 2 + 2.0   # ground is flat at road height out to here ...
 BLEND_EDGE = 45.0                  # ... and back to the real hillside by here
 PROFILE_SMOOTH = 60.0  # metres either side used to smooth the road's height profile
