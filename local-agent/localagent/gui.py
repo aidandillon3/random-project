@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import basalt, catalog, chats, launcher, mcp, odp, plugins, strata
+from . import basalt, catalog, chats, eyes, launcher, mcp, odp, plugins, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import chosen_gpus, gpu_env, gpu_info, list_gpus, model_info, monitors_on, strongest
@@ -3068,6 +3068,24 @@ class SettingsPage(QWidget):
         self.watch_secs = self._spin(s.watch_max_seconds, 10, 3600)
         self.watch_secs.setSuffix(" s")
         f.addRow("Longest watch mode run:", self.watch_secs)
+        self.watch_model = self._combo([("chat", "The chat's model"),
+                                        ("eyes", f"Qwen3.5 4B on its own GPU (faster looks; {eyes.DOWNLOAD_GB:.1f} GB "
+                                                 "download)")], s.watch_model)
+        self.watch_model.setToolTip("A small vision model just for watch mode, on the GPU the chat's model doesn't use "
+                                    "(with a 5080 and a 3080 Ti: the 3080 Ti, about 5 GB of its memory). It starts "
+                                    "the first time watch mode runs and stops when this app closes.")
+        self.watch_model.currentIndexChanged.connect(self._watch_model_state)
+        f.addRow("Watch mode looks with:", self.watch_model)
+        row = QHBoxLayout()
+        self.eyes_btn = QPushButton("Get it ready")
+        self.eyes_btn.setToolTip("Downloads it if it isn't on this PC yet (it resumes if stopped), then starts it.")
+        self.eyes_btn.clicked.connect(self._eyes_ready)
+        self.eyes_info = muted("")
+        row.addWidget(self.eyes_btn)
+        row.addWidget(self.eyes_info, 1)
+        f.addRow(row)
+        self._eyes_job: dict | None = None
+        self._watch_model_state()
         row = QHBoxLayout()
         b = QPushButton("Run the computer use test...")
         b.setToolTip("Small timed tasks it does with your mouse and keyboard on the screen picked above, to see "
@@ -3225,6 +3243,58 @@ class SettingsPage(QWidget):
         self.adv.setVisible(on)
         self.adv_btn.setText(("▾" if on else "▸") + self.adv_btn.text()[1:])
 
+    def _watch_model_state(self):
+        on = self.watch_model.currentData() == "eyes"
+        self.eyes_btn.setVisible(on)
+        self.eyes_info.setVisible(on)
+        if not on or self._eyes_job is not None:
+            return
+
+        def done(got, _err):
+            if self._eyes_job is not None or got is None:
+                return
+            if eyes.EYES.proc.running:
+                self.eyes_info.setText(f"Running on the {eyes.EYES.gpu_name or 'GPU'}.")
+            elif got[2]:
+                self.eyes_info.setText("Not on this PC yet: press Get it ready to download it.")
+            else:
+                self.eyes_info.setText("Downloaded. It starts the first time watch mode runs (or press Get it ready).")
+
+        in_background(lambda: eyes.files(self.s), done)
+
+    def _eyes_ready(self):
+        st = self._eyes_job
+        if st is not None:          # the button stops a running download
+            st["stop"].set()
+            return
+        self._save()
+        st = self._eyes_job = {"msg": "Looking for it...", "stop": threading.Event(), "finished": False, "error": None}
+        s = self.s
+
+        def work():
+            try:
+                _, _, missing = eyes.files(s)
+                if missing:
+                    catalog.download(eyes.PRESET, eyes.download_folder(s), lambda m, f: st.update(msg=m), st["stop"])
+                eyes.EYES.client(s, lambda m: st.update(msg=m), st["stop"])
+                st["msg"] = f"Running on the {eyes.EYES.gpu_name or 'GPU'}: watch mode will look with it."
+            except Exception as e:  # noqa: BLE001 - shown next to the button
+                st["error"] = str(e)
+            st["finished"] = True
+
+        threading.Thread(target=work, daemon=True, name="watch-model").start()
+        self.eyes_btn.setText("Stop")
+
+        def tick():
+            self.eyes_info.setText(st["error"] or st["msg"])
+            if not st["finished"]:
+                QTimer.singleShot(300, tick)
+                return
+            self._eyes_job = None
+            self.eyes_btn.setText("Get it ready")
+
+        tick()
+
     def _combo(self, items, current):
         c = QComboBox()
         for k, label in items:
@@ -3379,6 +3449,7 @@ class SettingsPage(QWidget):
         s.browser_tools = self.browser_tools.isChecked()
         s.watch_tool, s.watch_size = self.watch.isChecked(), self.watch_size.currentData()
         s.watch_frames, s.watch_max_seconds = int(self.watch_frames.currentData()), self.watch_secs.value()
+        s.watch_model = self.watch_model.currentData()
         s.context_limit, s.keep_images = self.ctx_limit.value(), self.keep_images.value()
         s.max_images = max(self.max_images.value(), s.keep_images)
         s.max_steps, s.max_tool_output = self.max_steps.value(), self.max_out.value()
@@ -3842,6 +3913,7 @@ class MainWindow(QMainWindow):
         grid = QCheckBox("Also run it with click positions on a 0-1000 grid, to compare")
         nowatch = QCheckBox("Also run it with watch mode off, to compare")
         watchsmall = QCheckBox("Also run it with small watch mode screenshots (faster looks, less sharp), to compare")
+        own = QCheckBox("Also run it with watch mode's own model (Qwen3.5 4B on the other GPU), to compare")
         holder = QWidget()
         v = QVBoxLayout(holder)
         v.setContentsMargins(0, 0, 0, 0)
@@ -3851,6 +3923,7 @@ class MainWindow(QMainWindow):
         v.addWidget(grid)
         v.addWidget(nowatch)
         v.addWidget(watchsmall)
+        v.addWidget(own)
         box.layout().addWidget(holder, box.layout().rowCount(), 0, 1, box.layout().columnCount())
         start = box.addButton("Start", QMessageBox.AcceptRole)
         box.addButton(QMessageBox.Cancel)
@@ -3860,7 +3933,8 @@ class MainWindow(QMainWindow):
         variants = ["as set"] + (["helpers off"] if compare.isChecked() else []) + \
             (["thinking low"] if think.isChecked() else []) + (["big screenshots"] if small.isChecked() else []) + \
             (["0-1000 grid"] if grid.isChecked() else []) + (["watch mode off"] if nowatch.isChecked() else []) + \
-            (["small watch screenshots"] if watchsmall.isChecked() else [])
+            (["small watch screenshots"] if watchsmall.isChecked() else []) + \
+            (["watch mode's own model"] if own.isChecked() else [])
         win = cubench.make_window(int(self.settings.monitor or 1))
         self._bench_window = win
         self.showMinimized()
@@ -3984,6 +4058,7 @@ class MainWindow(QMainWindow):
         self.chat.stop.set()
         _stop_background(self.chat.agent)
         mcp.manager().stop()
+        eyes.EYES.stop()        # watch mode's own model, when this app started it
         super().closeEvent(e)
 
 

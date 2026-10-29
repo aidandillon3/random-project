@@ -60,6 +60,7 @@ VARIANTS = {
     "0-1000 grid": {"coord_mode": "normalized"},
     "watch mode off": {"watch_tool": False},
     "small watch screenshots": {"watch_size": "small"},
+    "watch mode's own model": {"watch_model": "eyes"},
 }
 
 
@@ -676,7 +677,7 @@ def run(settings, window, variants=("as set",), tasks=None, timeout: float = 150
     out = {"when": time.strftime("%Y-%m-%d %H:%M:%S"), "model": "", "timeout": timeout,
            "settings": {k: getattr(settings, k, None) for k in ("thinking", "screen_max_side", "monitor", "coord_mode",
                                                                    "screen_marks", "browser_tools", "text_tools", "watch_tool",
-                                                                   "watch_size", "watch_frames",
+                                                                   "watch_size", "watch_frames", "watch_model",
                                                                    "screenshot_after_action", "model")},
            "variants": []}
     rng = random.Random()
@@ -800,13 +801,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Computer use test")
     ap.add_argument("--compare", default="", help="also run with: helpers (off), thinking (low), marks (always), "
                                                   "big (screenshots 1344 wide), grid (0-1000 coordinates), "
-                                                  "watch (watch mode off), watchsmall (small watch mode screenshots)")
+                                                  "watch (watch mode off), watchsmall (small watch mode screenshots), "
+                                                  "eyes (watch mode's own model)")
     ap.add_argument("--tasks", default="", help="only these tasks: " + ",".join(t.name for t in TASKS))
     ap.add_argument("--timeout", type=float, default=150)
     a = ap.parse_args(argv)
     names = {"helpers": "helpers off", "thinking": "thinking low", "marks": "marks always",
              "big": "big screenshots", "grid": "0-1000 grid", "watch": "watch mode off",
-             "watchsmall": "small watch screenshots"}
+             "watchsmall": "small watch screenshots", "eyes": "watch mode's own model"}
     variants = ["as set"] + [names[c] for c in a.compare.split(",") if c in names]
     app = QApplication.instance() or QApplication(sys.argv)
     settings = Settings.load()

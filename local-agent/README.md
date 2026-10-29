@@ -275,7 +275,14 @@ in a side-view game (a miss says how many pixels off it was), hit a target that 
 seconds, and fill in a web form. Each task checks itself and has 150 seconds. It can also run
 everything again with the new helpers off, with thinking on Low, with bigger screenshots, with
 click positions on a 0-1000 grid, with watch mode off, or with small watch mode screenshots, to compare.
-Watch mode's own log (each look's reading, answer and action times) is `data/watch/latest.json`. The summary shows what worked and how long the model and the tools
+Watch mode's own log (each look's reading, answer and action times) is `data/watch/latest.json`.
+
+**Watch mode's own model.** Settings > Computer use > *Watch mode looks with* can give watch mode a
+small vision model of its own: Qwen3.5 4B (Q6_K, 4.2 GB download), run by llama.cpp on the GPU the
+chat's model doesn't use (beside a 5080, a 3080 Ti; about 5 GB of its memory). *Get it ready*
+downloads and starts it; otherwise it starts the first time watch mode runs, and it stops when the
+app closes. It points on a 0-1000 grid, as Qwen's vision models do. When it can't run, watch mode
+uses the chat's model and says why. The summary shows what worked and how long the model and the tools
 took; every step (thinking, calls, timings, tokens) is saved in `data/bench/` to find what's slow.
 Don't touch the mouse while it runs; push it into a screen corner to stop.
 

@@ -869,6 +869,30 @@ class GuiTest(unittest.TestCase):
         self.assertFalse(self.gui._window_on_monitor(w, 2))
         w.close()
 
+    def test_watch_modes_own_model_is_picked_and_got_ready_in_settings(self):
+        from unittest import mock
+
+        from localagent import eyes
+        from localagent.config import Settings
+
+        s = Settings(models_dir=tempfile.mkdtemp())
+        w = self.gui.MainWindow(s)
+        page = w.settings_page
+        self.assertFalse(page.eyes_btn.isVisibleTo(page))
+        page.watch_model.setCurrentIndex(page.watch_model.findData("eyes"))
+        self.assertEqual(s.watch_model, "eyes")
+        self.assertTrue(page.eyes_btn.isVisibleTo(page))
+        self.assertTrue(self.wait_until(lambda: "Not on this PC yet" in page.eyes_info.text(), 5))
+        got = []
+        with mock.patch.object(eyes, "files", lambda st: (None, None, ["x"])), \
+                mock.patch.object(self.gui.catalog, "download", lambda *a, **k: got.append(a[1])), \
+                mock.patch.object(eyes.EYES, "client", lambda *a, **k: None):
+            page.eyes_btn.click()
+            self.assertTrue(self.wait_until(lambda: page._eyes_job is None, 5))
+        self.assertEqual(got, [Path(s.models_dir) / "Qwen3.5-4B"])
+        self.assertIn("watch mode will look with it", page.eyes_info.text())
+        w.close()
+
     def test_one_llama_download_at_a_time(self):
         import threading
 
