@@ -3780,11 +3780,13 @@ class MainWindow(QMainWindow):
                     "running.")
         compare = QCheckBox("Also run it with the new helpers off (text clicking, marks, browser), to compare")
         think = QCheckBox("Also run it with thinking on Low, to compare")
+        small = QCheckBox("Also run it with smaller screenshots (960 wide: quicker for the model to read), to compare")
         holder = QWidget()
         v = QVBoxLayout(holder)
         v.setContentsMargins(0, 0, 0, 0)
         v.addWidget(compare)
         v.addWidget(think)
+        v.addWidget(small)
         box.layout().addWidget(holder, box.layout().rowCount(), 0, 1, box.layout().columnCount())
         start = box.addButton("Start", QMessageBox.AcceptRole)
         box.addButton(QMessageBox.Cancel)
@@ -3792,7 +3794,7 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is not start:
             return
         variants = ["as set"] + (["helpers off"] if compare.isChecked() else []) + \
-            (["thinking low"] if think.isChecked() else [])
+            (["thinking low"] if think.isChecked() else []) + (["small screenshots"] if small.isChecked() else [])
         win = cubench.make_window(int(self.settings.monitor or 1))
         self._bench_window = win
         self.showMinimized()

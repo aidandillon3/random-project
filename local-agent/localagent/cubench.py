@@ -54,6 +54,7 @@ VARIANTS = {
     "helpers off": {"text_tools": False, "browser_tools": False, "screen_marks": False},
     "thinking low": {"thinking": "low"},
     "marks always": {"screen_marks": True},
+    "small screenshots": {"screen_max_side": 960},
 }
 
 
@@ -248,10 +249,8 @@ def make_window(monitor: int):
             w.show()
             return x, y
 
-        def done(self, note=""):
-            if not self.state["done"].is_set():
-                self.state["note"] = note
-                self.state["done"].set()
+        def done(self):
+            self.state["done"].set()      # the note of a wrong try before it stays
 
         def wrong(self, note):
             self.state["wrong"] += 1
@@ -548,8 +547,9 @@ def run(settings, window, variants=("as set",), tasks=None, timeout: float = 150
             for ti, task in enumerate(tasks):
                 if window.stopped.is_set():
                     break
-                label = f"{TITLE} · {vname} · task {ti + 1} of {len(tasks)}: {task.label} · " \
-                        "don't touch the mouse; push it into a screen corner (or press Stop) to end the test"
+                # nothing in it for the model to act on: the task's own name hinted at how to do it, and
+                # "don't touch the mouse" (meant for the person) made it wonder whether it may click
+                label = f"{TITLE} · {vname} · {ti + 1} of {len(tasks)}"
                 window.call(lambda: window.show_status(label))
                 window.call(lambda: window.setup(task, rng, server.url))
                 time.sleep(0.6)       # drawn and in front
@@ -655,11 +655,13 @@ def main(argv=None):
     from .config import Settings
 
     ap = argparse.ArgumentParser(description="Computer use test")
-    ap.add_argument("--compare", default="", help="also run with: helpers (off), thinking (low), marks (always)")
+    ap.add_argument("--compare", default="", help="also run with: helpers (off), thinking (low), marks (always), "
+                                                  "small (screenshots 960 wide)")
     ap.add_argument("--tasks", default="", help="only these tasks: " + ",".join(t.name for t in TASKS))
     ap.add_argument("--timeout", type=float, default=150)
     a = ap.parse_args(argv)
-    names = {"helpers": "helpers off", "thinking": "thinking low", "marks": "marks always"}
+    names = {"helpers": "helpers off", "thinking": "thinking low", "marks": "marks always",
+             "small": "small screenshots"}
     variants = ["as set"] + [names[c] for c in a.compare.split(",") if c in names]
     app = QApplication.instance() or QApplication(sys.argv)
     settings = Settings.load()

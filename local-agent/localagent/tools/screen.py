@@ -686,6 +686,29 @@ def type_text(ctx: ToolContext, a: dict):
     if a["text"] is None:
         raise ToolError("text is empty.")
     text = str(a["text"])
+    caps = _caps_lock_on()
+    if caps:      # Caps Lock on turns typed letters upside down (hello -> HELLO, Hi -> hI): off while typing
+        _press(ctx, g, ["capslock"], 0)
+    try:
+        _type(g, text)
+    finally:
+        if caps:
+            _press(ctx, g, ["capslock"], 0)
+    if a.get("enter"):
+        g.press("enter")
+    return after_action(ctx, f"Typed {len(text)} characters.")
+
+
+def _caps_lock_on() -> bool:
+    if not WINDOWS:
+        return False
+    try:
+        return bool(ctypes.windll.user32.GetKeyState(0x14) & 1)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _type(g, text: str):
     if text.isascii():
         g.write(text, interval=0.004)
     else:  # pyautogui only types ASCII, so paste anything else
@@ -701,9 +724,6 @@ def type_text(ctx: ToolContext, a: dict):
         time.sleep(0.15)
         if old is not None:
             pyperclip.copy(old)
-    if a.get("enter"):
-        g.press("enter")
-    return after_action(ctx, f"Typed {len(text)} characters.")
 
 
 KEY_ALIASES = {"control": "ctrl", "escape": "esc", "return": "enter", "windows": "win", "super": "win",
@@ -860,9 +880,17 @@ def _uia_window(title: str | None = None):
     if title:
         want = title.lower()
         wins = [w for w in desk.windows() if want in (w.window_text() or "").lower()]
-        if not wins:
-            raise ToolError(f"No window title contains '{title}'.")
-        return wins[0]
+        if wins:
+            return wins[0]
+        try:     # accessibility doesn't list some windows (frameless, always on top) that Windows itself does
+            import pygetwindow as gw
+
+            hits = [w for w in gw.getAllWindows() if want in (w.title or "").lower()]
+            if hits:
+                return desk.window(handle=hits[0]._hWnd).wrapper_object()
+        except Exception:  # noqa: BLE001 - said below
+            pass
+        raise ToolError(f"No window title contains '{title}'.")
     hwnd = ctypes.windll.user32.GetForegroundWindow()
     return desk.window(handle=hwnd).wrapper_object()
 

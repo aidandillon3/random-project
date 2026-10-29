@@ -191,6 +191,13 @@ class ComputerUseTest(unittest.TestCase):
         self.assertEqual(self.log, [("keydown", "w"), ("keydown", "shift"), ("keyup", "shift"), ("keyup", "w")])
         self.assertIn("held 10s", REGISTRY["press_keys"].describe({"keys": "w", "hold_seconds": 10}))
 
+    def test_caps_lock_is_off_while_it_types(self):
+        ctx = self.ctx(screenshot_after_action=False)
+        with mock.patch("localagent.tools.screen._caps_lock_on", lambda: True):
+            REGISTRY["type_text"].func(ctx, {"text": "Glowy Ball"})
+        self.assertEqual(self.log, [("keydown", "capslock"), ("keyup", "capslock"), ("write", "Glowy Ball"),
+                                    ("keydown", "capslock"), ("keyup", "capslock")])
+
     def test_camera_turn_is_a_relative_move_in_small_steps(self):
         ctx = self.ctx(screenshot_after_action=False)
         out = REGISTRY["move_mouse_by"].func(ctx, {"dx": 300, "dy": -45})

@@ -59,6 +59,7 @@ class TasksTest(unittest.TestCase):
         self.assertEqual((st["wrong"], st["done"].is_set()), (1, False))
         buttons[want].click()
         self.assertTrue(st["done"].is_set())
+        self.assertEqual(st["note"], f"clicked {other}")      # the wrong try is still said
 
     def test_small_dot(self):
         task, st = self.setup("small")
@@ -151,6 +152,9 @@ class RunTest(unittest.TestCase):
         win = cubench.make_window(1)
         win.show()
         FakeAgent.window = win
+        self.status_seen = []
+        real = win.show_status
+        win.show_status = lambda s: (self.status_seen.append(s), real(s))
         box = {}
         th = threading.Thread(target=lambda: box.update(cubench.run(Settings(), win, agent_factory=FakeAgent, **kw)))
         th.start()
@@ -173,6 +177,7 @@ class RunTest(unittest.TestCase):
         saved = json.loads(Path(out["path"]).read_text())
         self.assertEqual(saved["variants"][1]["overrides"]["browser_tools"], False)
         self.assertIn("as set: 3 of 3 done", out["text"])
+        self.assertNotIn("Fill in", self.status_seen[-1])      # the window says nothing that hints how
         self.assertIn("✓ Fill in and send a web form", out["text"])
 
     def test_out_of_time(self):
