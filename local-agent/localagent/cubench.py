@@ -523,6 +523,7 @@ def make_window(monitor: int):
 
                 def mousePressEvent(self, e):
                     st["down"] = (time.time(), e.position())
+                    st.setdefault("first", time.time())
 
                 def mouseReleaseEvent(self, e):
                     if st["down"] is None:
@@ -530,6 +531,10 @@ def make_window(monitor: int):
                     t0, pt = st["down"]
                     st["down"] = None
                     held = time.time() - t0
+                    # every press and release, for finding what cut holds short (0.1 s holds, 2026-10-29)
+                    log = st.setdefault("log", [])
+                    log.append(f"{t0 - st['first']:.1f}+{held:.2f}")
+                    win.state["presses"] = " ".join(log[-12:])
                     if trunk(*trees[0]).adjusted(-2, 0, 2, 0).contains(pt):
                         win.done() if held >= 0.8 else win.wrong(f"on the trunk but held only {held:.1f} s")
                         return
@@ -731,6 +736,7 @@ def _one(settings, over: dict, window, task: Task, timeout: float, agent_factory
         out["model"] = getattr(getattr(agent, "client", None), "model", "") or ""
     turns, tools = rec.turns, rec.tools
     return dict(task=task.name, label=task.label, prompt=prompt, ok=ok, wrong=state["wrong"], note=state["note"],
+                presses=state.get("presses", ""),
                 seconds=round(finished - start, 1), steps=len(turns),
                 model_seconds=round(sum(t["seconds"] for t in turns), 1),
                 tool_seconds=round(sum(t["seconds"] for t in tools), 1),
@@ -765,6 +771,8 @@ def summary_text(out: dict) -> str:
             mark = "✓" if r["ok"] else "✗"
             why = "" if r["ok"] else (" (out of time)" if r["timed_out"] else f" ({r['error']})" if r["error"] else "")
             extra = f", {r['wrong']} wrong: {r['note']}" if r["wrong"] else ""
+            if r.get("presses") and not r["ok"]:
+                extra += f" (presses at s+held: {r['presses']})"
             lines.append(f"  {mark} {r['label']}: {r['seconds']} s, {r['steps']} steps{extra}{why}")
     return "\n".join(lines)
 

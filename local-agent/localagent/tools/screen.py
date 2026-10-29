@@ -489,16 +489,20 @@ def _button(g, b: str, up: bool):
         (g.mouseUp if up else g.mouseDown)(button=b)
 
 
-def _wait_held(ctx: ToolContext, g, seconds: float):
-    """Keep what is pressed down for a while; the corner and Stop still end it."""
-    end = time.time() + seconds
+def _wait_held(ctx: ToolContext, g, seconds: float, still_down=None) -> float | None:
+    """Keep what is pressed down for a while; the corner and Stop still end it. still_down: asked as it
+    waits; the seconds after which it first said no (something else let go), else None."""
+    start = time.time()
+    end, let_go = start + seconds, None
     while True:
         check = getattr(g, "failSafeCheck", None)
         if check:
             check()
+        if still_down and let_go is None and time.time() - start > 0.03 and not still_down():
+            let_go = time.time() - start
         left = end - time.time()
         if left <= 0 or ctx.stop.is_set():
-            return
+            return let_go
         time.sleep(min(0.05, left))
 
 
@@ -516,15 +520,29 @@ def _press(ctx: ToolContext, g, keys: list[str], hold: float):
         time.sleep(0.03)
 
 
-def _click_here(ctx: ToolContext, g, b: str, clicks: int, hold: float):
+def _click_here(ctx: ToolContext, g, b: str, clicks: int, hold: float) -> str:
+    """Click (held for `hold` seconds). A note when Windows said the button was up before the hold ended:
+    the program then saw a short click, not a held one (the computer use test's tree saw 0.1 s holds)."""
+    note = ""
     for i in range(clicks):
         if i:
             time.sleep(0.08)
         _button(g, b, False)
         try:
-            _wait_held(ctx, g, max(0.05, hold))
+            let_go = _wait_held(ctx, g, max(0.05, hold), (lambda: _is_down(b)) if hold >= 0.3 and WINDOWS else None)
         finally:
             _button(g, b, True)
+        if let_go is not None:
+            note = (f" But Windows says the button was let go after {let_go:.1f} s of the {hold:g} s hold, so it "
+                    "may have counted as a short click.")
+    return note
+
+
+def _is_down(b: str) -> bool:
+    try:
+        return winput.is_down(b)
+    except Exception:  # noqa: BLE001 - can't tell: say nothing
+        return True
 
 
 def _move_to(g, px: int, py: int, seconds: float = 0.05):
@@ -576,7 +594,7 @@ def click(ctx: ToolContext, a: dict):
     hold = _seconds(a)
     _move_to(g, px, py)
     note = _to_front(px, py)
-    _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), hold)
+    note += _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), hold)
     return after_action(ctx, f"Clicked at {_where(a)}" + (f", held {hold:g}s" if hold else "") + "." + note)
 
 
@@ -644,7 +662,7 @@ def click_text(ctx: ToolContext, a: dict):
     hold = _seconds(a)
     _move_to(g, px, py)
     note = _to_front(px, py)
-    _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), hold)
+    note += _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), hold)
     ctx.screen["monitor"] = mon.number
     more = f" ({len(same)} matches; this was number {nth}, top to bottom.)" if len(same) > 1 else ""
     said = f"'{ln.text}'" + (f" (for '{want}')" if ocr._norm(ln.text) != ocr._norm(want) else "")

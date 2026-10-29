@@ -94,6 +94,15 @@ def button(name: str, up: bool) -> None:
     _send(INPUT(type=INPUT_MOUSE, u=_U(mi=MOUSEINPUT(dwFlags=up_flag if up else down_flag))))
 
 
+def is_down(name: str) -> bool:
+    """Whether Windows has the mouse button down right now (what a game reading it sees)."""
+    user32 = ctypes.windll.user32
+    vk = {"left": 0x01, "right": 0x02, "middle": 0x04}.get(name or "left", 0x01)
+    if vk in (0x01, 0x02) and user32.GetSystemMetrics(23):     # buttons swapped: the state is by physical button
+        vk ^= 0x03
+    return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+
+
 def move_by(dx: int, dy: int) -> None:
     _send(INPUT(type=INPUT_MOUSE, u=_U(mi=MOUSEINPUT(dx=int(dx), dy=int(dy), dwFlags=MOVE))))
 

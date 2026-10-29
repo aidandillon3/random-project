@@ -320,6 +320,25 @@ class ComputerUseTest(unittest.TestCase):
         self.assertIn("'Rainbow Six' was brought to the front first", out.text)
         self.assertIn("Unknown key", str(e.exception))
 
+    def test_a_hold_that_something_else_lets_go_is_reported(self):
+        from localagent.tools import screen, winput
+
+        ctx = self.ctx(screenshot_after_action=False)
+        with mock.patch.object(screen, "WINDOWS", True), \
+                mock.patch.object(winput, "button", lambda b, up: None), \
+                mock.patch.object(winput, "move_to", lambda x, y, s=0: None), \
+                mock.patch.object(winput, "window_at", lambda x, y: (1, 1, "")), \
+                mock.patch.object(winput, "is_down", lambda b: False):
+            out = REGISTRY["click"].func(ctx, {"x": 500, "y": 500, "hold_seconds": 0.4})
+        self.assertIn("Windows says the button was let go after 0.0 s of the 0.4 s hold", out.text)
+        with mock.patch.object(screen, "WINDOWS", True), \
+                mock.patch.object(winput, "button", lambda b, up: None), \
+                mock.patch.object(winput, "move_to", lambda x, y, s=0: None), \
+                mock.patch.object(winput, "window_at", lambda x, y: (1, 1, "")), \
+                mock.patch.object(winput, "is_down", lambda b: True):
+            out = REGISTRY["click"].func(ctx, {"x": 500, "y": 500, "hold_seconds": 0.4})
+        self.assertNotIn("let go", out.text)
+
 
 if __name__ == "__main__":
     unittest.main()
