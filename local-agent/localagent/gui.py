@@ -1494,42 +1494,71 @@ class ChatPage(QWidget):
                                      "Computer use is off: it won't click or type any more.")))
 
     def _computer_ready(self) -> bool:
-        """The screen add-ons are installed, or the user had them installed now."""
+        """The screen add-ons are installed, or the user had them installed now. The extras (text
+        reading, the browser) are offered too, once; without them it still works, with fewer tools."""
         import importlib.util
+
+        from .tools import browser, ocr
 
         need = ["mss", "pyautogui", "pyperclip"] + (["pywinauto"] if sys.platform == "win32" else [])
         missing = [n for n in need if importlib.util.find_spec(n) is None]
-        if not missing:
+        extras = []
+        if sys.platform == "win32" and ocr.missing():
+            extras += ocr.PACKAGES
+        if browser.missing():
+            extras += browser.PACKAGES
+        if not missing and (not extras or self.s.extra.get("computer_extras_declined")):
             return True
-        ask = QMessageBox.question(
-            self, "Computer use",
-            "Computer use needs a few add-ons that aren't installed yet: " + ", ".join(missing)
-            + ". Install them now? (about 20 MB; then press Computer use again)")
-        if ask != QMessageBox.Yes:
-            return False
+        if missing:
+            ask = QMessageBox.question(
+                self, "Computer use",
+                "Computer use needs a few add-ons that aren't installed yet: " + ", ".join(missing)
+                + (". It can also install the add-ons for reading text on the screen and for driving a browser"
+                   if extras else "") + ". Install them now? (about 20-60 MB; then press Computer use again)")
+            if ask != QMessageBox.Yes:
+                return False
+        else:
+            ask = QMessageBox.question(
+                self, "Computer use",
+                "Two add-ons make Computer use much more reliable: reading the words on the screen (so it can click "
+                "a button by its label, also in games) and a browser it drives directly for websites. Install them "
+                "now? (about 60 MB, in the background; they're used from your next new chat)")
+            if ask != QMessageBox.Yes:
+                self.s.extra["computer_extras_declined"] = True
+                self.s.save()
+                return True
         self.computer_btn.setEnabled(False)
         self.computer_btn.setText("Installing...")
+        later = not missing       # only extras: Computer use turns on now, they arrive meanwhile
 
         def work():
             try:
-                r = subprocess.run([sys.executable, "-m", "pip", "install", *missing], capture_output=True,
-                                   text=True, timeout=600,
+                r = subprocess.run([sys.executable, "-m", "pip", "install", *missing, *extras], capture_output=True,
+                                   text=True, timeout=900,
                                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
                 ok, msg = r.returncode == 0, (r.stderr or r.stdout)[-600:]
+                if not ok and missing and extras:     # an extra that won't install mustn't block the rest
+                    r = subprocess.run([sys.executable, "-m", "pip", "install", *missing], capture_output=True,
+                                       text=True, timeout=600,
+                                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+                    ok, msg = r.returncode == 0, ("The extras didn't install: " + msg + "\n\n" +
+                                                  (r.stderr or r.stdout)[-300:])
             except Exception as e:  # noqa: BLE001 - shown to the user
                 ok, msg = False, str(e)
-            QTimer.singleShot(0, self, lambda: self._computer_installed(ok, msg))
+            QTimer.singleShot(0, self, lambda: self._computer_installed(ok, msg, later))
 
         threading.Thread(target=work, daemon=True).start()
-        return False
+        return later
 
-    def _computer_installed(self, ok: bool, msg: str):
+    def _computer_installed(self, ok: bool, msg: str, later: bool = False):
         import importlib
 
         importlib.invalidate_caches()
         self.computer_btn.setEnabled(True)
         self.computer_btn.setText("Computer use")
-        if ok:
+        if ok and later:
+            self._add(muted("ℹ️ Text reading and the browser are installed: they're there from your next new chat."))
+        elif ok:
             self.computer_btn.setChecked(True)
         else:
             QMessageBox.warning(self, "Computer use", "Installing the add-ons failed:\n\n" + msg)
@@ -2972,9 +3001,25 @@ class SettingsPage(QWidget):
         self.grid.setChecked(s.grid_overlay)
         self.minimize = QCheckBox("Minimize this window while it uses the screen this window is on")
         self.minimize.setChecked(s.extra.get("minimize_during_control", True))
-        for w in (self.after, self.grid, self.minimize):
+        self.text_tools = QCheckBox("Let it click words it reads on the screen, and number things on screenshots "
+                                    "(Windows' own text reading)")
+        self.text_tools.setChecked(s.text_tools)
+        self.marks = QCheckBox("Number the buttons and words on every screenshot (else only when it asks; a "
+                               "little slower)")
+        self.marks.setChecked(s.screen_marks)
+        self.browser_tools = QCheckBox("Let it use a browser of its own for websites (Edge, with its own profile)")
+        self.browser_tools.setChecked(s.browser_tools)
+        for w in (self.after, self.grid, self.minimize, self.text_tools, self.marks, self.browser_tools):
             w.toggled.connect(self._save)
             f.addRow(w)
+        row = QHBoxLayout()
+        b = QPushButton("Run the computer use test...")
+        b.setToolTip("Small timed tasks it does with your mouse and keyboard on the screen picked above, to see "
+                     "what works and what's slow. Results go to the data\\bench folder.")
+        b.clicked.connect(self.win.run_computer_test)
+        row.addWidget(b)
+        row.addStretch(1)
+        f.addRow(row)
         lay.addWidget(g)
 
         g = QGroupBox("GitHub")
@@ -3274,6 +3319,8 @@ class SettingsPage(QWidget):
         s.coord_mode = self.coords.currentData()
         s.screenshot_after_action, s.grid_overlay = self.after.isChecked(), self.grid.isChecked()
         s.extra["minimize_during_control"] = self.minimize.isChecked()
+        s.text_tools, s.screen_marks = self.text_tools.isChecked(), self.marks.isChecked()
+        s.browser_tools = self.browser_tools.isChecked()
         s.context_limit, s.keep_images = self.ctx_limit.value(), self.keep_images.value()
         s.max_images = max(self.max_images.value(), s.keep_images)
         s.max_steps, s.max_tool_output = self.max_steps.value(), self.max_out.value()
@@ -3712,6 +3759,75 @@ class MainWindow(QMainWindow):
         mcp.manager().start_background(cwd=self.settings.workspace_path())
         if self.settings.index_files:
             memory_mod.start_indexer(self.settings)
+
+    def run_computer_test(self):
+        """Settings > Computer use > Run the computer use test: the tasks in cubench.py, with this
+        window minimized, then the results."""
+        from . import cubench
+
+        if self.chat.busy():
+            QMessageBox.information(self, "Computer use test", "Wait for the current task to finish (or press "
+                                    "Stop) first.")
+            return
+        if not self.chat._computer_ready():
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Computer use test")
+        box.setText("The model does 8 small tasks with your mouse and keyboard, in a window that fills screen "
+                    f"{self.settings.monitor}: buttons, a tiny dot, typing, a game-style menu, a slider, a drag, a "
+                    "held key and a web form. Each task has 150 seconds.\n\nDon't touch the mouse or keyboard "
+                    "meanwhile. To stop: push the mouse into a screen corner.\n\nThe model server has to be "
+                    "running.")
+        compare = QCheckBox("Also run it with the new helpers off (text clicking, marks, browser), to compare")
+        think = QCheckBox("Also run it with thinking on Low, to compare")
+        holder = QWidget()
+        v = QVBoxLayout(holder)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(compare)
+        v.addWidget(think)
+        box.layout().addWidget(holder, box.layout().rowCount(), 0, 1, box.layout().columnCount())
+        start = box.addButton("Start", QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() is not start:
+            return
+        variants = ["as set"] + (["helpers off"] if compare.isChecked() else []) + \
+            (["thinking low"] if think.isChecked() else [])
+        win = cubench.make_window(int(self.settings.monitor or 1))
+        self._bench_window = win
+        self.showMinimized()
+        win.showFullScreen()
+
+        def work():
+            try:
+                out = cubench.run(self.settings, win, variants)
+            except Exception as e:  # noqa: BLE001 - shown below
+                out = {"text": f"The test stopped with an error: {e}"}
+            QTimer.singleShot(0, self, lambda: self._computer_test_done(out))
+
+        threading.Thread(target=work, daemon=True, name="computer-test").start()
+
+    def _computer_test_done(self, out: dict):
+        win = getattr(self, "_bench_window", None)
+        if win is not None:
+            win.close()
+            win.deleteLater()
+            self._bench_window = None
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        box = QMessageBox(self)
+        box.setWindowTitle("Computer use test")
+        box.setText(out.get("text", ""))
+        if out.get("path"):
+            box.setInformativeText(f"Every step is in {out['path']}")
+            folder = box.addButton("Open the folder", QMessageBox.ActionRole)
+        else:
+            folder = None
+        box.addButton(QMessageBox.Ok)
+        box.exec()
+        if folder is not None and box.clickedButton() is folder:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(out["path"]).parent)))
 
     def show_settings(self, section: str = ""):
         self.nav.setCurrentRow(2)

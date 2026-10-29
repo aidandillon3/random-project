@@ -158,8 +158,16 @@ def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mod
     names = {t.name for t in tools}
     screen = NO_SCREEN
     if "screenshot" in names:
-        ui = ("In a Windows app, ui_elements + click_element hit buttons more reliably than coordinates. "
-              if "ui_elements" in names else "")
+        ui = ""
+        if "click_text" in names:
+            ui += ("To click something with words on it (a button, menu, link, tab), click_text with those words "
+                   "is fastest and doesn't miss. ")
+        if getattr(settings, "text_tools", True):
+            ui += (("For anything else, " if ui else "To aim more easily, ") +
+                   "screenshot with marks=true numbers what's on screen: click with mark=N. ")
+        if "browser_open" in names:
+            ui += ("For websites use the browser tools (browser_open, browser_click, browser_type): they read the "
+                   "page as text, no screenshots needed. ")
         games = SCREEN_GAMES if "move_mouse_by" in names else ""
         screen = textwrap.fill(SCREEN.format(ui=ui, coords=coords + " " if coords else "", games=games), 98,
                                initial_indent="- ", subsequent_indent="  ") + "\n"

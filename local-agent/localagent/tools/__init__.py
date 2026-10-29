@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import code, files, github, misc, screen, shell, unity, web  # noqa: F401  (registers tools)
+from . import browser, code, files, github, misc, ocr, screen, shell, unity, web  # noqa: F401  (registers tools)
 from .base import CONTROL, EDIT, PUBLISH, REGISTRY, RISK_LABELS, RUN, SAFE, Tool, ToolContext, ToolError, ToolResult
 
 # Every tool's definition goes with every request and costs prompt tokens, so two big groups are
@@ -67,6 +67,12 @@ def enabled_tools(settings, depth: int = 0, workspace=None, full=()) -> list[Too
         tools = [t for t in tools if t.group != "unity" or t.name in UNITY_ALWAYS]
     if "github" in groups and "github" not in full and not github_signed_in(settings):
         tools = [t for t in tools if t.group != "github" or t.name in LOCAL_GIT]
+    if "control" in groups:
+        # left out when they can't work (an add-on missing), so their definitions cost no tokens
+        if ocr.missing() or not getattr(settings, "text_tools", True):
+            tools = [t for t in tools if t.name != "click_text"]
+        if browser.missing() or not getattr(settings, "browser_tools", True):
+            tools = [t for t in tools if not t.name.startswith("browser_")]
     if depth > 0:  # helpers work quietly: no questions to the user
         tools = [t for t in tools if t.name != "ask_user"]
     return tools

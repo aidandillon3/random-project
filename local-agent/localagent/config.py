@@ -86,6 +86,9 @@ class Settings:
     coord_mode: str = "auto"           # auto | pixels | normalized (0-1000)
     grid_overlay: bool = False
     screenshot_after_action: bool = True
+    screen_marks: bool = False         # number the things to click on every screenshot (else only when asked)
+    browser_tools: bool = True         # with Computer use: a browser it drives directly (tools/browser.py)
+    text_tools: bool = True            # with Computer use: click_text and numbered marks (tools/ocr.py)
     shell: str = "auto"                # auto | powershell | cmd | bash
 
     # the window

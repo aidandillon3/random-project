@@ -248,11 +248,31 @@ turn it off; that takes effect from its next click. While it's on:
 - **Which screen**: the arrow on the button (or Settings > Computer use) picks the screen it looks
   at first; it can look at the others too. This window minimizes while it uses the screen it's on,
   and comes back when it's done.
+- **Clicking by words**: `click_text` reads the screen with Windows' own text recognition and
+  clicks the words it's told ("SELL ALL", "File"), also in games, where Windows accessibility sees
+  nothing. `screenshot` with marks numbers the buttons and short text on the picture, so it can
+  click "mark 7" instead of aiming.
+- **Its own browser**: for websites it drives Edge (or Chrome) directly, in a profile of its own in
+  `data/browser-profile` (your own browser and its logins are left alone). Pages come back as
+  text with numbered links, buttons and fields, so it needs no screenshots there.
 - Settings > Computer use also has the click coordinates (automatic: a 0-1000 grid for Qwen
-  models), a screenshot after every action, and a coordinate grid for weaker models.
+  models), a screenshot after every action, a coordinate grid for weaker models, marks on every
+  screenshot, and switches for text clicking and the browser.
 
 The first time you turn it on it offers to install what it needs (mss, pyautogui, pyperclip,
-pywinauto; about 20 MB). Running `setup.bat` again does the same.
+pywinauto; about 20 MB) and the text reading and browser add-ons (winrt, playwright; about 60 MB).
+Running `setup.bat` again does the same.
+
+### The computer use test
+
+Settings > Computer use > **Run the computer use test** (or `computer-use-test.bat`) has the
+model do 8 small tasks with your real mouse and keyboard, in a window that fills its screen:
+click a button by its words, click a tiny dot, type into a box, press a button in a painted
+game-style menu, set a slider, drag a box, hold a key, and fill in a web form. Each task checks
+itself and has 150 seconds. It can also run everything again with the new helpers off, or with
+thinking on Low, to compare. The summary shows what worked and how long the model and the tools
+took; every step (thinking, calls, timings, tokens) is saved in `data/bench/` to find what's slow.
+Don't touch the mouse while it runs; push it into a screen corner to stop.
 
 Used an older version with its own virtual computer? Delete the `data/vdesktop` folder (the
 Ubuntu download, about 390 MB). If you got as far as setting it up, first run
