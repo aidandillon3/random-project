@@ -117,7 +117,8 @@ SCREEN = ("Computer use is on: screenshot shows the user's screen, and click, ty
           "after each action look at the screenshot it returns before the next step. For something small, zoom in "
           "on it and click with in_zoom=true and its position in the zoomed view. When the next few actions are sure "
           "(a click, typing, then Enter), make them together in one reply: only the last one sends back a "
-          "screenshot, which saves time. {coords}{games}The user can "
+          "screenshot, which saves time. Say an action worked only when the newest screenshot shows it did; "
+          "if nothing changed, zoom in and check where things really are before trying again. {coords}{games}The user can "
           "stop you by moving the mouse into a screen corner.")
 
 SCREEN_GAMES = ("In games: press_keys with hold_seconds walks (\"w\" for 2 s), move_mouse_by turns the camera "

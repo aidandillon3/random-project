@@ -234,6 +234,14 @@ class ComputerUseTest(unittest.TestCase):
         REGISTRY["click"].func(ctx, {"x": 320, "y": 176})
         self.assertEqual(self.log[0], ("move", 960, 540))      # the middle of the 1920x1080 screen
 
+    def test_follow_up_screenshots_say_their_size_too(self):
+        # e.g. the app restarted mid-chat at another size: the first follow-up shot explains it again
+        ctx = ToolContext(settings=Settings(computer_use=True), workspace=Path("."))
+        first = REGISTRY["press_keys"].func(ctx, {"keys": "w"}).text
+        self.assertIn("real pixels", first)
+        self.assertIn("1344x768", first)
+        self.assertIn("Screen 1, image 1344x768.", REGISTRY["press_keys"].func(ctx, {"keys": "w"}).text)
+
     def test_screenshot_notes_get_short_after_the_first(self):
         ctx = ToolContext(settings=Settings(computer_use=True), workspace=Path("."))
         first = REGISTRY["screenshot"].func(ctx, {}).text

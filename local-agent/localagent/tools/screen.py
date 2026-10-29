@@ -232,7 +232,8 @@ def _geometry_note(ctx: ToolContext) -> str:
         return f"Screen {s['monitor']}, image {s['img_w']}x{s['img_h']}."
     s["explained"] = key
     note = (f"Screen {s['monitor']}: {s['width']}x{s['height']} real pixels, image shown at "
-            f"{s['img_w']}x{s['img_h']}. {coord_help(ctx)}")
+            f"{s['img_w']}x{s['img_h']}; positions read off an earlier screenshot of another size don't apply. "
+            f"{coord_help(ctx)}")
     mons = monitors()
     if len(mons) > 1:
         note += f" Screens: {monitors_text(mons)}; screenshot(monitor=N) looks at another one."
@@ -249,7 +250,8 @@ def after_action(ctx: ToolContext, text: str) -> ToolResult:
         png = _shot(ctx, ctx.screen.get("monitor"))   # the screen the model is working on
     except Exception as e:  # never fail the action because the follow-up shot failed
         return ToolResult(f"{text}\n(could not take a follow-up screenshot: {e})")
-    return ToolResult(f"{text}\nScreenshot after the action is attached.", images=[png])
+    # with its size note: after a restart or a size change the model must not go on with the old size
+    return ToolResult(f"{text}\nScreenshot after the action is attached. {_geometry_note(ctx)}", images=[png])
 
 
 @tool("screenshot", """
