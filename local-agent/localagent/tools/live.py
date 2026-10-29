@@ -62,7 +62,8 @@ GAMES = ("In games your own character is the one the camera follows, usually nea
          "keys a short while (0.3-1 s) and look again. In first-person games aim with turn and use click without a "
          "position: a position moves the mouse, which turns the camera. Breaking or mining something takes the button "
          "held until it breaks, often several seconds, without moving or jumping meanwhile (that starts it over): if "
-         "it didn't break, hold longer. In water, hold space (\"key space hold 2\") to swim up. Esc opens a game's "
+         "it didn't break, you are probably too far away (things you can reach fill a good part of the screen; in "
+         "Minecraft a thin outline shows on the block in reach), so walk closer first, then hold longer. In water, hold space (\"key space hold 2\") to swim up. Esc opens a game's "
          "pause menu: press it only to close a menu you see open. When the same actions didn't change anything, do "
          "something else. ")
 
