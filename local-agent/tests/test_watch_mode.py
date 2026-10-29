@@ -182,6 +182,15 @@ class WatchModeTest(unittest.TestCase):
         self.assertIn("clicks happen at the crosshair", srv.requests[1]["messages"][-1]["content"][-1]["text"])
         self.assertNotIn("Positions in this goal", srv.requests[1]["messages"][-1]["content"][0]["text"])
 
+    def test_going_round_in_circles_hands_back_to_the_chat(self):
+        agent, ui, srv = self.agent([calls(("watch_mode", {"goal": "mine a log"}))] + [text("key space")] * 6
+                                    + [text("Ok.")])
+        agent.run("go")
+        result = dict(ui.results)["watch_mode"]
+        self.assertIn("It looked stuck, so it handed back to you", result.text)
+        self.assertFalse(result.ok)
+        self.assertEqual(len(srv.requests), 1 + live.STUCK_LOOKS + 1)
+
     def test_bad_lines_are_reported_and_replies_without_actions_end_it(self):
         agent, ui, srv = self.agent([
             calls(("watch_mode", {"goal": "do it"})),

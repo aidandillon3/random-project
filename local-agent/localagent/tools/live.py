@@ -26,6 +26,7 @@ from .base import CONTROL, ToolContext, ToolError, ToolResult, tool
 MAX_ACTIONS = 6          # action lines run from one reply
 REPLY_TOKENS = 160       # a reply is a few short lines
 NO_ACTIONS_LIMIT = 3     # replies in a row without an action line before it gives up
+STUCK_LOOKS = 4          # looks in a row with the same reply, or with the screen unchanged, before the chat rethinks
 FRAME_GAP = 0.5          # seconds between the frames of one look when it is shown more than one
 HISTORY = 4              # earlier looks it is told about, as text
 # Strata reads a prompt in 1024-token pieces, and with this model a short prompt's start can't be kept from the last
@@ -50,7 +51,7 @@ type TEXT            type text into what has focus
 scroll N             scroll down N notches (negative: up)
 wait S               do nothing for S seconds (only when something needs time: the next screenshot comes anyway)
 done WHAT            the goal is reached: say what on the screen shows it
-stop WHY             you can't go on: say why
+stop WHY             you're stuck or don't know what to do next: say why, and the chat thinks it over
 
 {coords} Each look says where the mouse pointer is (it isn't drawn). At most {most} actions per reply; when unsure, give one and look. Things keep moving while you answer, so aim at \
 where they are in the newest screenshot. {games}Say done only when the newest screenshot shows the goal \
@@ -301,6 +302,7 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
     log: list[dict] = []
     did_all: list[str] = []
     end, ended_by, empty, last_png = "", "time", 0, b""
+    still, same, last_reply = 0, 0, None
     capture_after, ctx.capture_after = ctx.capture_after, False     # its own looks instead of after-action shots
     try:
         if frames:
@@ -388,8 +390,19 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
                 screen._settle(monitor, least=0.05, most=0.3)
             before = last_png
             last_png = _frame(ctx, squares)
-            if did and _changed(before, last_png) < STILL:
+            unchanged = bool(did) and _changed(before, last_png) < STILL
+            if unchanged:
                 did.append("the screen looks the same as before it")
+            still = still + 1 if unchanged else 0
+            said = " ".join(reply.lower().split())
+            same = same + 1 if said == last_reply else 1
+            last_reply = said
+            if still >= STUCK_LOOKS or same >= STUCK_LOOKS:
+                # going round in circles: back to the chat, which can think about it and start again
+                ended_by = "stuck"
+                end = (f"the screen didn't change for {still} looks in a row" if still >= STUCK_LOOKS else
+                       f"it gave the same reply {same} times in a row ({reply[:80]!r})")
+                break
             history.append(_history_line(reply, did))
             older = _older(ctx, frames, per_look)
             text = _look_text(ctx, seconds - (time.time() - start), len(older))
@@ -411,7 +424,9 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
            f"{sum(x['model_s'] for x in log) / steps:.1f} s, actions {sum(x['act_s'] for x in log) / steps:.1f} s)."
            if steps else "")
     how = {"done": f"It says the goal is reached: {end}", "stop": f"It stopped: {end}",
-           "time": f"Time ran out ({seconds:g} s).", "no actions": f"It gave no actions three times: {end}"}
+           "time": f"Time ran out ({seconds:g} s).", "no actions": f"It gave no actions three times: {end}",
+           "stuck": f"It looked stuck, so it handed back to you: {end}. Look at the screenshot, work out what went "
+                    "wrong, and start watch mode again with a goal that says what to do differently."}
     text = f"Watch mode ended. {how.get(ended_by, ended_by.capitalize() + '.')}{avg}{note}"
     if did_all:
         text += "\nWhat it did (latest last): " + "; ".join(did_all[-40:])
