@@ -171,11 +171,13 @@ class StrataTest(unittest.TestCase):
         self.root.mkdir(parents=True)
         cfg_path = strata.config_path(self.flash, self.root)
         args = lambda: json.loads(cfg_path.read_text(encoding="utf-8"))["args"]  # noqa: E731
+        env = lambda: json.loads(cfg_path.read_text(encoding="utf-8")).get("env", {})  # noqa: E731
         cfg_path.write_text(json.dumps({"args": ["--serve", "--resident-experts"]}), encoding="utf-8")   # setup's
         s = Settings(strata_low_ram=True, strata_ram_gib=32)
         strata.serve_args(self.flash, s, self.root)
         self.assertEqual(args()[args().index("--resident-budget-gib") + 1], "32")
         self.assertNotIn("--resident-experts", args())                 # the budget is its own variant
+        self.assertEqual(env().get("STRATA_FILE_RELEASE"), "1")        # file pages read past the cap given back
         s.strata_ram_gib = 28
         strata.serve_args(self.flash, s, self.root)
         self.assertEqual(args().count("--resident-budget-gib"), 1)
@@ -184,6 +186,8 @@ class StrataTest(unittest.TestCase):
         strata.serve_args(self.flash, s, self.root)
         self.assertNotIn("--resident-budget-gib", args())
         self.assertIn("--resident-experts", args())
+        self.assertNotIn("STRATA_FILE_RELEASE", env())
+        self.assertEqual(env().get("STRATA_PIN_BY_NEED"), "1")
         cfg_path.write_text(json.dumps({"args": ["--serve"]}), encoding="utf-8")       # normal mode: no cap to add
         strata.serve_args(self.flash, Settings(strata_low_ram=False, strata_ram_gib=32), self.root)
         self.assertNotIn("--resident-budget-gib", args())
