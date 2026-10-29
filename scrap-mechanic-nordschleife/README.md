@@ -22,3 +22,12 @@ The full loop at 1:1 touches 99 Large tiles in a 25 x 20 tile area.
 
 The .tileson files carry the road but flat ground (their terrain encoding is unknown), so
 re-saving a tile in the Tile Editor would flatten it.
+
+## Custom Game (the way to play it)
+
+The World Builder only makes worlds up to 22 x 22 cells, so the full lap ships as a
+Custom Game mod: `python build.py --mod --template ... --out out` writes
+`out/Mods/Nordschleife` (scripts from `mod/`, 500 tiles, a world file covering just the
+tile area, spawn at T13). Copy it to `User_<steamid>/Mods/` and add the road asset from
+the "Sugar Rush Matte Road" mod into `Nordschleife/Terrain` (Database/AssetSets/MatteRoad.json,
+assetsets.assetdb, Mesh, Textures, Collision), so the game needs no other mod.

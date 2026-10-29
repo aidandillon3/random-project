@@ -95,6 +95,8 @@ def main():
     ap.add_argument("--out", default="out")
     ap.add_argument("--world-cells", type=int, default=128, help="world size in 64 m cells")
     ap.add_argument("--name", default="Nordschleife")
+    ap.add_argument("--mod", action="store_true",
+                    help="write a Custom Game mod (Mods/Nordschleife) instead of World Builder tiles + world")
     args = ap.parse_args()
 
     tdir = args.template
@@ -165,7 +167,11 @@ def main():
                           "scale": list(scale)}
         tiles.setdefault((tx, ty), {}).setdefault((cx, cy), []).append((a, j))
 
-    tiles_out = os.path.join(args.out, "Tiles")
+    if args.mod:
+        mod_dir = os.path.join(args.out, "Mods", args.name)
+        tiles_out = os.path.join(mod_dir, "Terrain", "Tiles")
+    else:
+        tiles_out = os.path.join(args.out, "Tiles")
     os.makedirs(tiles_out, exist_ok=True)
     made = {}
     for ty in range(th):
@@ -173,7 +179,7 @@ def main():
             cells = tiles.get((tx, ty), {})
             name = f"{args.name} {tx:02d}-{ty:02d}"
             local_id, tile_uuid = uuid.uuid4(), uuid.uuid4()
-            folder = os.path.join(tiles_out, str(local_id))
+            folder = tiles_out if args.mod else os.path.join(tiles_out, str(local_id))
             os.makedirs(folder, exist_ok=True)
 
             mips = {}
@@ -186,6 +192,9 @@ def main():
             t.rebuild({k: [a for a, _ in v] for k, v in cells.items()}, ASSET_LIST, mips)
             t.set_uuid(tile_uuid)
             t.save(os.path.join(folder, name + ".tile"))
+            if args.mod:
+                made[(tx, ty)] = (None, name)
+                continue
             t.save(os.path.join(folder, name + ".tile.export"))
 
             ts = copy.deepcopy(tileson_tpl)
@@ -206,7 +215,11 @@ def main():
             made[(tx, ty)] = (str(local_id), name)
     print(f"{len(made)} tiles, {sum(len(c) for t in tiles.values() for c in t.values())} road pieces")
 
-    write_world(args, made, tw, th)
+    if args.mod:
+        spawn = track.project([track.start_of(args.osm, "T13")], origin)[0]
+        write_mod(args, mod_dir, made, tw, th, ((spawn[0] - gx), (spawn[1] - gy)))
+    else:
+        write_world(args, made, tw, th)
     overview(pts, gx, gy, tw, th, ground, os.path.join(args.out, "overview.png"))
 
 
@@ -282,6 +295,44 @@ def overview(pts, gx, gy, tw, th, ground, path):
         d.line([(0, j * TILE_SIZE * s), (im.width, j * TILE_SIZE * s)], fill=(0, 0, 0))
     d.line([((x - gx) * s, im.height - (y - gy) * s) for x, y in pts + [pts[0]]], fill=(250, 250, 250), width=3)
     im.save(path)
+
+
+MOD_LOCAL_ID = "25693dc9-936b-49b4-9226-4f3a25dd1a5e"
+MOD_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mod")
+
+
+def write_mod(args, mod_dir, made, tw, th, spawn_local):
+    """Custom Game mod: our scripts, the tiles (already written), a world file that only
+    covers the tile area, and the spawn point. The road asset itself (mesh, textures,
+    asset set) is copied in on the PC from the "Sugar Rush Matte Road" mod."""
+    import shutil
+    shutil.copytree(MOD_SOURCE, mod_dir, dirs_exist_ok=True)
+    x0 = -(tw * TILE_CELLS) // 2
+    y0 = -(th * TILE_CELLS) // 2
+    cell_data = []
+    for cy in range(th * TILE_CELLS):
+        for cx in range(tw * TILE_CELLS):
+            _, name = made[(cx // TILE_CELLS, cy // TILE_CELLS)]
+            cell_data.append({"offsetX": cx % TILE_CELLS, "offsetY": cy % TILE_CELLS,
+                              "path": f"$CONTENT_DATA/Terrain/Tiles/{name}.tile",
+                              "rotation": 0, "x": x0 + cx, "y": y0 + cy})
+    os.makedirs(os.path.join(mod_dir, "Terrain", "Worlds"), exist_ok=True)
+    with open(os.path.join(mod_dir, "Terrain", "Worlds", args.name + ".world"), "w", encoding="utf-8") as f:
+        json.dump({"cellData": cell_data, "version": 1}, f)
+    sx = x0 * smtile.CELL_SIZE + spawn_local[0]
+    sy = y0 * smtile.CELL_SIZE + spawn_local[1]
+    with open(os.path.join(mod_dir, "Scripts", "spawn.lua"), "w", encoding="utf-8") as f:
+        f.write("-- Written by build.py: where new players appear (T13, start of the lap)\n"
+                "-- and the cells the world covers.\n"
+                f"NORDS_SPAWN = {{ x = {sx:.1f}, y = {sy:.1f} }}\n"
+                f"NORDS_BOUNDS = {{ xMin = {x0}, xMax = {x0 + tw * TILE_CELLS - 1}, "
+                f"yMin = {y0}, yMax = {y0 + th * TILE_CELLS - 1} }}\n")
+    with open(os.path.join(mod_dir, "description.json"), "w", encoding="utf-8") as f:
+        json.dump({"allow_add_mods": True, "custom_icons": False,
+                   "description": "Nurburgring Nordschleife at real size with real hills, 20 m wide road.",
+                   "localId": MOD_LOCAL_ID, "name": args.name, "type": "Custom Game", "version": 0},
+                  f, indent="\t")
+    print(f"mod {mod_dir}: {len(made)} tiles, spawn {sx:.0f}, {sy:.0f}")
 
 
 def write_world(args, made, tw, th):

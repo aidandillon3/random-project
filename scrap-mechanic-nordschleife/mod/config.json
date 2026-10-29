@@ -1,0 +1,5 @@
+{
+	"baseGameContent": "Creative",
+	"gameScript": { "class": "NordsGame", "file": "$CONTENT_DATA/Scripts/Game.lua" },
+	"playerScript": { "class": "CreativePlayer", "file": "$GAME_DATA/Scripts/game/CreativePlayer.lua" }
+}

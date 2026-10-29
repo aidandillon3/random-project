@@ -114,3 +114,11 @@ def unproject(x, y, origin):
     lat0, lon0 = origin
     k = math.cos(math.radians(lat0))
     return lat0 + math.degrees(y / EARTH_R), lon0 + math.degrees(x / (EARTH_R * k))
+
+
+def start_of(path, name):
+    """(lat, lon) of the first node of the way with this name, e.g. "T13"."""
+    for w in load_ways(path):
+        if w["tags"].get("name") == name:
+            return w["geom"][0]
+    raise KeyError(name)
