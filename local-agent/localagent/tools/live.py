@@ -38,7 +38,7 @@ turn DX DY           move the mouse by an amount: turns the camera in games (try
 key KEYS             press a key or shortcut: "key space", "key ctrl+s"; "key w hold 1.5" holds it down
 type TEXT            type text into what has focus
 scroll N             scroll down N notches (negative: up)
-wait S               do nothing for S seconds
+wait S               do nothing for S seconds (only when something needs time: the next screenshot comes anyway)
 done WHAT            the goal is reached: say what on the screen shows it
 stop WHY             you can't go on: say why
 

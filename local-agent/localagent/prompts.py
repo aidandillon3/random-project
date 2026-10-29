@@ -118,7 +118,8 @@ SCREEN = ("Computer use is on: screenshot shows the user's screen, and click, ty
           "on it and click with in_zoom=true and its position in the zoomed view. When the next few actions are sure "
           "(a click, typing, then Enter), make them together in one reply: only the last one sends back a "
           "screenshot, which saves time. Say an action worked only when the newest screenshot shows it did; "
-          "if nothing changed, zoom in and check where things really are before trying again. The magenta ring is where "
+          "if nothing changed, zoom in and check where things really are before trying again. To set a slider, click its "
+          "handle, then move it with the arrow keys while watching its value. The magenta ring is where "
           "the mouse really is: when it isn't on what you aimed at, move by the gap you see between them and look "
           "again. {coords}{games}The user can "
           "stop you by moving the mouse into a screen corner.")
