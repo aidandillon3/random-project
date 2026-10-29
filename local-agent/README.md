@@ -252,6 +252,7 @@ follow whichever model is running.
 | Mode | Download | How it runs | Pick it for |
 |---|---|---|---|
 | **Swift 1.5 Qwen3.8 27B** (IQ3_XXS, MTP) | 11 GB | Fully on the GPU, MTP speed-up, 48K context | Everyday work, fastest |
+| **Swift 1.5 Qwen3.8 27B** (IQ3_S, MTP) | 12.8 GB | Same, about half the drift from the full model, ~15% slower; needs a GPU with no monitors on it | Everyday work on a free 16 GB card |
 | **Swift 1.5 Qwen3.8 Flash Next IQ2_XS** | 69 GB (+6 GB for Strata) | 125B MoE, 6B active, on Strata: busiest experts on the GPU, the rest in RAM, its 28 GB n-gram table read from the SSD as needed, 64K context | Hardest tasks |
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_XXS** | 77 GB | The same model at 3 bits: 43 GB of experts in RAM, about 20% slower than IQ2_XS | Hardest tasks, better answers |
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_S** | 85 GB | The same model at 3.5 bits: 50 GB of experts in RAM, about a third slower than IQ2_XS | Best answers, with little else open |

@@ -114,6 +114,22 @@ PRESETS = [
                "mmproj-Qwen3.8-27B-Q8_0.gguf": 629247008},
         launch={"ctx_size": 49152, "kv_type": "q8_0", "speedup": "mtp", "placement": "auto", "use_vision": True},
     ),
+    Preset(
+        key="swift-27b-iq3s",
+        title="Swift 1.5 Qwen3.8 27B IQ3_S (smarter, needs a free 16 GB GPU)",
+        family=FAMILY_27B, variant="IQ3_S (smarter, needs a free 16 GB GPU)",
+        blurb="The same dense 27B at IQ3_S with MTP layers: about half the drift from the full model of IQ3_XXS "
+              "(KLD 0.051 vs 0.098 by its makers' tests) and about 15% slower. Its 12.1 GB plus the vision file "
+              "fill most of a 16 GB card, so it suits a GPU that drives no monitors; with less free VRAM llama.cpp "
+              "moves some layers to RAM, which is much slower. Shares the folder and vision file with IQ3_XXS.",
+        repo="ukisai/Swift-1.5-Qwen3.8-27B-GSQ-RCO-GGUF",
+        files=["Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"],
+        mmproj=("ggml-org/Qwen3.8-27B-GGUF", "mmproj-Qwen3.8-27B-Q8_0.gguf"),
+        folder="Swift-1.5-Qwen3.8-27B",
+        sizes={"Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf": 12120016896,
+               "mmproj-Qwen3.8-27B-Q8_0.gguf": 629247008},
+        launch={"ctx_size": 49152, "kv_type": "q8_0", "speedup": "mtp", "placement": "auto", "use_vision": True},
+    ),
     _flash_next(
         "swift-flash-next", "IQ2_XS", "smart, uses RAM",
         "125B MoE with 6B active per token, IQ2_XS. The experts sit in RAM and the 28 GB "

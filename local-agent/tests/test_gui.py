@@ -341,7 +341,7 @@ class GuiTest(unittest.TestCase):
         page.family_box.setCurrentIndex(page.family_box.findData("Qwen3.8 27B"))
         self.assertEqual(page.preset_box.currentData(), "swift-27b")                         # its first quant
         self.assertEqual([page.quant_box.itemData(i) for i in range(page.quant_box.count())],
-                         ["swift-27b", "qwen27b-1bit-odp"])
+                         ["swift-27b", "swift-27b-iq3s", "qwen27b-1bit-odp"])
         page.family_box.setCurrentIndex(page.family_box.findData(""))
         self.assertEqual(page.preset_box.currentData(), "")
         self.assertTrue(page.quant_box.isHidden())
