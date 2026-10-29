@@ -100,6 +100,7 @@ class Settings:
     extra_args: str = ""
     use_vision: bool = True
     gpus: str = ""                     # GPUs the model uses: "" = the strongest, "all", or GPU UUIDs (gguf.chosen_gpus)
+    basalt_models: list = field(default_factory=list)    # .basalt files used before: kept in the model lists
     monitors_on_ai_gpu: str = "auto"   # "auto" (gguf.monitors_on), "yes" or "no": VRAM kept free for the desktop
 
     extra: dict = field(default_factory=dict)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import itertools
 import json
 import re
@@ -30,6 +31,10 @@ MAX_AUTO_RETRIES = 3        # a lost or cut-off reply is retried this many times
 CARRY_ON = ("(automatic) Your last reply was cut off by a length limit. Carry on exactly where it stopped; "
             "don't repeat what you already wrote.")
 SUMMARY_TOKENS = 3072        # room a summary made inside the conversation may take
+LIGHT_ARG = 600              # older steps: a tool call argument longer than this keeps only its start
+LIGHT_RESULT = 3000          # older steps: a tool result longer than this keeps only its start and end
+LIGHT_ENOUGH = 0.5           # compacting skips the summary when shortening older steps gets this low
+LIGHT_KEEP = 6               # the latest steps kept word for word when older steps are shortened
 NO_VISION = "[image not shown: this model can't see images]"
 STOPPED = "Not run: stopped by the user."
 CUT_OFF = ("Not run: this call was cut off. The reply reached its length limit before the call was complete. "
@@ -743,6 +748,19 @@ class Agent:
         head, tail = self.messages[:split], self.messages[split:]
         if len(head) < 2:
             return False
+        # Most of a long coding chat is what older steps carry word for word but no longer need. Shortening
+        # that first keeps every step (what was done, to which file) instead of a summary of them.
+        # Not enough: the messages go back as they were, so a summary made inside the conversation still
+        # reuses what the server has read.
+        steps = [i for i, m in enumerate(self.messages) if m["role"] == "assistant"]
+        if len(steps) > LIGHT_KEEP:
+            before, known = self.messages, self._known
+            self.messages = copy.deepcopy(before[:steps[-LIGHT_KEEP]]) + before[steps[-LIGHT_KEEP]:]
+            if self._lighten(self.messages[:steps[-LIGHT_KEEP]]) and self.estimate_total() <= limit * LIGHT_ENOUGH:
+                self.ui.notice("Shortened older steps (file contents already written, old thinking, long results) "
+                               "to free up context.")
+                return True
+            self.messages, self._known = before, known
         self.ui.status("Summarizing older messages to free up space...")
         try:
             summary = self._summarize(head, limit)
@@ -771,6 +789,31 @@ class Agent:
         self._known = (0, 0)
         self.ui.notice(f"Summarized {len(head)} older messages to free up context.")
         return True
+
+    def _lighten(self, msgs: list[dict]) -> bool:
+        """Shorten older steps in place: the long arguments of their tool calls (mostly contents of files
+        already written: the files on disk have them), their thinking, and long tool results. Returns
+        whether anything changed."""
+        changed = False
+        for m in msgs:
+            if m["role"] == "assistant":
+                if m.get("reasoning_content"):
+                    m["reasoning_content"] = ""
+                    changed = True
+                for c in m.get("tool_calls") or []:
+                    f = c.get("function") or {}
+                    short = _shorten_args(f.get("arguments") or "")
+                    if short is not None:
+                        f["arguments"] = short
+                        changed = True
+            elif m["role"] == "tool" and isinstance(m.get("content"), str) and len(m["content"]) > LIGHT_RESULT:
+                t = m["content"]
+                m["content"] = (t[:LIGHT_RESULT * 2 // 3] + f"\n[... {len(t) - LIGHT_RESULT * 5 // 6} characters "
+                                "cut from this older result to save space ...]\n" + t[-LIGHT_RESULT // 6:])
+                changed = True
+        if changed:
+            self._known = (0, 0)      # the server's count was for the longer messages
+        return changed
 
     def _summarize(self, head: list[dict], limit: int) -> str:
         """A summary of the conversation, made the cheapest way there's room for. Best: one more
@@ -863,6 +906,25 @@ class Agent:
     def save(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.to_json(), ensure_ascii=False), encoding="utf-8")
+
+
+def _shorten_args(args: str) -> str | None:
+    """Tool call arguments with each long text cut to its start, still valid JSON; None when there's
+    nothing to cut (or they aren't a JSON object)."""
+    if len(args) <= LIGHT_ARG:
+        return None
+    try:
+        data = json.loads(args)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    cut = False
+    for k, v in data.items():
+        if isinstance(v, str) and len(v) > LIGHT_ARG:
+            data[k] = v[:LIGHT_ARG // 3] + f"[... {len(v) - LIGHT_ARG // 3} more characters cut from this older step]"
+            cut = True
+    return json.dumps(data, ensure_ascii=False) if cut else None
 
 
 def _json_list(text: str) -> list:

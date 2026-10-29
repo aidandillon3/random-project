@@ -30,12 +30,18 @@ def serve_args(model: Path, settings, root: Path | None = None, monitors: bool =
     memory to RAM and it slows down); without, Basalt's own 700. Given here, it wins over the config file's.
     --relaxed-drafting 0.3: with the sampling the app uses (temperature 1.0), a guessed token the model gives 30% or
     more is kept even when its own draw was another one. Basalt's docs (precision/features.md): IQ3_S at temperature
-    1.0 about +10% decode, no measurable loss on gsm8k or MMLU-Pro; tool calls and control tokens stay exact."""
+    1.0 about +10% decode, no measurable loss on gsm8k or MMLU-Pro; tool calls and control tokens stay exact.
+    --fit-max-tokens: a request whose prompt plus max_tokens is longer than the context gets a shorter answer instead
+    of an error (the app's token count of a long chat can be a few dozen short of Basalt's)."""
     root = root or find_root(model)
     if root is None:
         raise FileNotFoundError(f"no Basalt build (bin\\{EXE}) in a folder above {model}")
     args = [str(root / "bin" / EXE), "serve"]
     if (root / CONFIG).is_file():
         args += ["--config", str(root / CONFIG)]     # the engine settings; the file and port below win over it
+    # the context length picked in the app wins over the config file's max-context (its KV cache grows as a chat
+    # needs it above 32K, so a long one costs VRAM only when used)
     return args + ["--model", str(model), "--port", str(int(settings.port)),
-                   "--vram-reserve-mib", "1728" if monitors else "700", "--relaxed-drafting", "0.3"]
+                   "--max-context", str(int(settings.ctx_size)),
+                   "--vram-reserve-mib", "1728" if monitors else "700", "--relaxed-drafting", "0.3",
+                   "--fit-max-tokens"]

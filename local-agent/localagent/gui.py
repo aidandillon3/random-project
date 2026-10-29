@@ -1092,6 +1092,14 @@ class ChatPage(QWidget):
                 a = sub.addAction(p.variant, lambda k=p.key: srv.switch_to(k))
                 a.setCheckable(True)
                 a.setChecked(p is current)
+        if self.s.basalt_models:
+            sub = m.addMenu("Basalt")
+            sub.menuAction().setCheckable(True)
+            sub.menuAction().setChecked(self.s.model_path in self.s.basalt_models)
+            for b in self.s.basalt_models:
+                a = sub.addAction(Path(b).name, lambda b=b: srv.use_model(b))
+                a.setCheckable(True)
+                a.setChecked(b == self.s.model_path)
         m.addSeparator()
         if srv.proc.running or srv._phase is not None:
             m.addAction("Stop the model", srv.stop)
@@ -1753,6 +1761,21 @@ class ServerPage(QWidget):
         else:
             self.start()
 
+    def use_model(self, path: str):
+        """From the chat: use this model file (a Basalt one picked before)."""
+        self.win.nav.setCurrentRow(1)
+        self.s.model_path = path
+        self.s.mmproj_path = ""
+        self.s.save()
+        self._scan()
+
+    def _remember_basalt(self, path: str):
+        """A .basalt file sits in the Basalt checkout, outside the models folders the scan reads: it stays in the
+        model lists (here and in the chat's model menu) once used, so it's picked again without browsing for it."""
+        if path not in self.s.basalt_models:
+            self.s.basalt_models = [path] + self.s.basalt_models
+            self.s.save()
+
     def switch_to(self, key: str):
         """From the chat: pick a ready-made mode and use it (downloading what's missing)."""
         self.win.nav.setCurrentRow(1)
@@ -1891,6 +1914,7 @@ class ServerPage(QWidget):
         saved = Path(self.s.model_path) if self.s.model_path else None
         if saved and saved not in models:
             models.insert(0, saved)      # kept even when its drive is unplugged: never swap it for another
+        models += [p for p in map(Path, self.s.basalt_models) if p not in models]    # outside the models folders
         self.model_box.blockSignals(True)
         self.model_box.clear()
         if saved is None and models:
@@ -2177,6 +2201,7 @@ class ServerPage(QWidget):
                 self.s.mmproj_path = ""
                 self.s.save()
             if basalt.is_model(path):        # one file with its own vision part: no GGUF header to read
+                self._remember_basalt(path)
                 root = basalt.find_root(Path(path))
                 self.info_label.setText(f"Basalt model file, run by the Basalt build in {root}." if root else
                                         f"Basalt model file, but no Basalt build (bin\\{basalt.EXE}) was found in a "
@@ -2228,8 +2253,8 @@ class ServerPage(QWidget):
             self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
             self.plan_label.setText(
                 f"<b style='color:{OK}'>Runs on Basalt.</b> It places the model itself (experts in VRAM, RAM and, if "
-                f"they don't fit, the SSD). Its engine settings come from {basalt.CONFIG} in {root}; the port below "
-                "still applies, the other settings are llama.cpp's.")
+                f"they don't fit, the SSD). Its engine settings come from {basalt.CONFIG} in {root}; the context length "
+                "and port below still apply, the other settings are llama.cpp's.")
             return
         p = catalog.matching(s.model_path)
         on_strata = strata.active(s, p)
