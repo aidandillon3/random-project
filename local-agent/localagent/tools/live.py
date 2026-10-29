@@ -43,7 +43,8 @@ Actions, one per line:
 click X Y            left click; add "right", "double", or "hold 0.5" (seconds held down)
 click                click where the mouse already is (first-person games: where the crosshair is); "click hold 3"
 move X Y             move the mouse pointer there
-turn DX DY           move the mouse by an amount: turns the camera in games (try 100-300)
+turn DX DY           move the mouse by an amount: turns the camera in games (try 100-300); DX > 0 turns right,
+                     DX < 0 left, DY > 0 looks down, DY < 0 looks up
 key KEYS             press a key or shortcut: "key space", "key ctrl+s"; "key w hold 1.5" holds it down
 type TEXT            type text into what has focus
 scroll N             scroll down N notches (negative: up)
@@ -59,8 +60,10 @@ reached."""
 GAMES = ("In games your own character is the one the camera follows, usually near the middle; hold movement "
          "keys a short while (0.3-1 s) and look again. In first-person games aim with turn and use click without a "
          "position: a position moves the mouse, which turns the camera. Breaking or mining something takes the button "
-         "held until it breaks, often several seconds: if it didn't break, hold longer. Esc opens a game's pause menu: "
-         "press it only to close a menu you see open. ")
+         "held until it breaks, often several seconds, without moving or jumping meanwhile (that starts it over): if "
+         "it didn't break, hold longer. In water, hold space (\"key space hold 2\") to swim up. Esc opens a game's "
+         "pause menu: press it only to close a menu you see open. When the same actions didn't change anything, do "
+         "something else. ")
 
 ALIASES = {"press": "key", "pressed": "key", "keys": "key", "hold": "key", "mouse": "move", "look": "turn",
            "write": "type", "sleep": "wait", "finish": "done", "finished": "done", "fail": "stop", "quit": "stop",
@@ -105,6 +108,28 @@ def _hold(rest: str) -> float:
     return float(m.group(1)) if m else 0.0
 
 
+def _let_go(note) -> str:
+    m = re.search(r"let go after (" + _NUM + r") s", str(note or ""))
+    return f" but it was let go after {m.group(1)}s" if m else ""
+
+
+def _changed(before: bytes, after: bytes) -> float:
+    """How much the screen changed between two looks: the mean brightness difference of small grey copies,
+    0-255 (a still screen is ~0-1; moving the camera is tens)."""
+    import io
+
+    from PIL import Image, ImageChops, ImageStat
+
+    try:
+        a, b = (Image.open(io.BytesIO(x)).convert("L").resize((96, 54)) for x in (before, after))
+        return ImageStat.Stat(ImageChops.difference(a, b)).mean[0]
+    except Exception:  # noqa: BLE001 - no note then
+        return 99.0
+
+
+STILL = 1.5         # under this the screen counts as unchanged
+
+
 def run_action(ctx: ToolContext, action: str, rest: str) -> str:
     """Do one action line with the screen tools (without their screenshot after); what happened, short.
     Raises ToolError for a line it can't do."""
@@ -114,11 +139,11 @@ def run_action(ctx: ToolContext, action: str, rest: str) -> str:
         clicks, hold = 2 if "double" in low else 1, _hold(low)
         held = f" (held {hold:g}s)" if hold else ""
         if not re.findall(_NUM, re.sub(_HOLD, "", low)):      # no position: where the mouse is
-            screen._click_here(ctx, screen._gui(), button, clicks, hold)
-            return f"clicked here{' ' + button if button != 'left' else ''}{held}"
+            note = screen._click_here(ctx, screen._gui(), button, clicks, hold)
+            return f"clicked here{' ' + button if button != 'left' else ''}{held}{_let_go(note)}"
         x, y = _numbers(re.sub(_HOLD, "", low), 2, "click")
-        screen.click(ctx, {"x": x, "y": y, "button": button, "clicks": clicks, "hold_seconds": hold})
-        return f"clicked {x:g} {y:g}{held}"
+        r = screen.click(ctx, {"x": x, "y": y, "button": button, "clicks": clicks, "hold_seconds": hold})
+        return f"clicked {x:g} {y:g}{held}{_let_go(getattr(r, 'text', r))}"
     if action == "move":
         x, y = _numbers(rest, 2, "move")
         screen.move_mouse(ctx, {"x": x, "y": y})
@@ -354,8 +379,11 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
                 break
             if did:
                 screen._settle(monitor, least=0.05, most=0.3)
-            history.append(_history_line(reply, did))
+            before = last_png
             last_png = _frame(ctx, squares)
+            if did and _changed(before, last_png) < STILL:
+                did.append("the screen looks the same as before it")
+            history.append(_history_line(reply, did))
             older = _older(ctx, frames, per_look)
             text = _look_text(ctx, seconds - (time.time() - start), len(older))
             if not actions:

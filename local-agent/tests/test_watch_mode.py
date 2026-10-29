@@ -80,7 +80,9 @@ class WatchModeTest(unittest.TestCase):
             self.assertEqual(len(r["messages"]), 2)                     # sent fresh each look
             self.assertEqual(sum(images(m) for m in r["messages"]), 1)  # only the newest picture
         # earlier looks come as text; the short wait at the end was left out
-        self.assertIn("- clicked 500 500; pressed w (held 0.2s)\n", watch[1]["messages"][-1]["content"][0]["text"] + "\n")
+        # (the fake screen never changes, which it is told)
+        self.assertIn("- clicked 500 500; pressed w (held 0.2s); the screen looks the same as before it\n",
+                      watch[1]["messages"][-1]["content"][0]["text"] + "\n")
         self.assertIn("- moved to 250 250", watch[2]["messages"][-1]["content"][0]["text"])
         self.assertTrue(watch[2]["messages"][-1]["content"][0]["text"].startswith("Goal: hit the target"))
         name, result = ui.results[-1]
@@ -90,7 +92,7 @@ class WatchModeTest(unittest.TestCase):
         self.assertEqual(len(result.images), 1)                           # its last look goes to the chat
         self.assertEqual(srv.requests[-1]["chat_template_kwargs"]["enable_thinking"], True)   # the chat as set
         saved = json.loads((DATA_DIR / "watch" / "latest.json").read_text(encoding="utf-8"))
-        self.assertEqual([len(x["did"]) for x in saved["looks"]], [2, 2, 0])
+        self.assertEqual([len(x["did"]) for x in saved["looks"]], [3, 3, 0])    # + "the screen looks the same"
         self.assertTrue(agent.ctx.capture_after)
 
     def test_a_goal_from_a_bigger_screenshot_is_rescaled_and_the_chat_gets_its_own_size_back(self):
@@ -152,6 +154,21 @@ class WatchModeTest(unittest.TestCase):
         self.assertEqual(self.log[0], ("move", 3200, 720))          # 500 500 on the grid: the middle of screen 2
         self.assertIn("It looked with its own model (Qwen3.5 4B)", dict(ui.results)["watch_mode"].text)
         self.assertNotIn("coords_for_now", agent.ctx.screen)
+
+    def test_a_screen_that_didnt_change_is_told_apart_from_one_that_did(self):
+        import io
+
+        from PIL import Image
+
+        def png(colour):
+            out = io.BytesIO()
+            Image.new("RGB", (960, 512), colour).save(out, "PNG")
+            return out.getvalue()
+
+        self.assertLess(live._changed(png((10, 120, 10)), png((10, 120, 10))), live.STILL)
+        self.assertGreater(live._changed(png((10, 120, 10)), png((90, 60, 200))), live.STILL)
+        self.assertEqual(live._let_go("Clicked. But Windows says the button was let go after 0.4 s of the 3 s hold"),
+                         " but it was let go after 0.4s")
 
     def test_bad_lines_are_reported_and_replies_without_actions_end_it(self):
         agent, ui, srv = self.agent([
