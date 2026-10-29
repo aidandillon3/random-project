@@ -29,8 +29,11 @@ import track
 
 ROAD_WIDTH = 20.0      # metres (Scrap Mechanic cars are ~3x real size)
 PIECE_SIZE = 32.0      # Blank Road (Matte) mesh is 32 x 32 m at scale 1 (collision .obj)
+PIECE_THICK = 0.5      # ... and 0.5 m thick
 THICK_SCALE = 0.5      # mesh is 0.5 m thick at scale 1 (local z 0..0.5), so the slab is 0.25 m
 ROAD_SINK = 0.15       # slab bottom sits this far below the road profile, top 0.10 above
+TILE_STEP = 0.05       # metres each piece's front end sits above the next piece (roof tiles)
+START_AHEAD = 5        # pieces between the spawn point (T13) and the start/finish line
 STEP = 8.0             # metres of centre line per road piece
 GROUND_UNDER = 0.05    # ground sits this far below the road profile (inside the slab)
 FLAT_EDGE = ROAD_WIDTH / 2 + 2.0   # ground is flat at road height out to here ...
@@ -73,22 +76,70 @@ def smooth_closed(values, half_window):
 
 
 def road_pieces(pts, zs):
-    """(x, y, z, yaw, pitch, length) per segment of a closed, evenly resampled centre line."""
+    """(x, y, z, yaw, pitch, length) per segment of a closed, evenly resampled centre line,
+    in driving direction.
+
+    The pieces are laid like roof tiles: where two pieces overlap, the one you drive off
+    sits on top of the one you drive onto, so a car only ever drops a few centimetres onto
+    the next piece and never meets an edge. Each piece is tilted up slightly so its rear
+    end is under the previous piece and its front end over the next one."""
+    from scipy.spatial.transform import Rotation
     n = len(pts)
+    seg = [math.dist(pts[i], pts[(i + 1) % n]) for i in range(n)]
+    heading = [math.atan2(pts[(i + 1) % n][1] - pts[i][1], pts[(i + 1) % n][0] - pts[i][0]) for i in range(n)]
+    grade = [(zs[(i + 1) % n] - zs[i]) / max(seg[i], 1e-3) for i in range(n)]
+    # ext[i]: how far pieces i and i+1 reach past the point where they meet, so the outside
+    # of a bend has no gap.
+    ext = []
     for i in range(n):
-        a, b, c = pts[i], pts[(i + 1) % n], pts[(i + 2) % n]
-        seg = math.dist(a, b)
-        if seg < 1e-3:
-            continue
-        yaw = math.atan2(b[1] - a[1], b[0] - a[0])
-        turn = math.atan2(c[1] - b[1], c[0] - b[0]) - yaw
-        turn = (turn + math.pi) % (2 * math.pi) - math.pi
-        # Lengthen each piece so the outside of a bend has no gap between pieces.
-        overlap = ROAD_WIDTH / 2 * math.tan(min(abs(turn), 1.2) / 2) + 0.3
-        za, zb = zs[i], zs[(i + 1) % n]
-        pitch = math.atan2(zb - za, seg)
-        yield ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (za + zb) / 2, yaw, pitch,
-               seg / math.cos(pitch) + 2 * overlap)
+        turn = (heading[(i + 1) % n] - heading[i] + math.pi) % (2 * math.pi) - math.pi
+        ext.append(ROAD_WIDTH / 2 * math.tan(min(abs(turn), 1.2) / 2) + 0.5)
+    top = PIECE_THICK * THICK_SCALE
+
+    def lay(sep):
+        out = []
+        for i in range(n):
+            a, b = pts[i], pts[(i + 1) % n]
+            back, front = ext[i - 1], ext[i]
+            length = seg[i] + back + front
+            shift = (front - back) / 2  # centre moves forward by this much along the road
+            c, s_ = math.cos(heading[i]), math.sin(heading[i])
+            x = (a[0] + b[0]) / 2 + c * shift
+            y = (a[1] + b[1]) / 2 + s_ * shift
+            z = (zs[i] + zs[(i + 1) % n]) / 2 + grade[i] * shift
+            rear_drop, front_lift = sep[i - 1] / 2, sep[i] / 2
+            z += (front_lift - rear_drop) / 2
+            pitch = math.atan(grade[i]) + math.atan((front_lift + rear_drop) / length)
+            out.append((x, y, z, heading[i], pitch, length / math.cos(math.atan(grade[i]))))
+        return out
+
+    def rise(p, q):
+        """How far the rear edge of piece q pokes above the top of piece p (worst of its
+        two corners and middle). On a grade in a bend the two pieces lean across each other,
+        so one corner of q comes up through p unless the step is big enough."""
+        mp = Rotation.from_quat(road_rotation(p[3], p[4])).as_matrix()
+        mq = Rotation.from_quat(road_rotation(q[3], q[4])).as_matrix()
+        op, oq = np.array(p[:3]), np.array(q[:3])
+        worst = -1e9
+        for w in (-ROAD_WIDTH / 2, 0.0, ROAD_WIDTH / 2):
+            e = oq + mq @ np.array([-q[5] / 2, w, top])
+            worst = max(worst, (mp.T @ (e - op))[2] - top)
+        return worst
+
+    # Start with a small step everywhere, then raise it wherever a rear edge still shows.
+    sep = [TILE_STEP] * n
+    for _ in range(6):
+        pieces = lay(sep)
+        worst = 0.0
+        for i in range(n):
+            r = rise(pieces[i], pieces[(i + 1) % n])
+            if r > -TILE_STEP / 2:
+                sep[i] += r + TILE_STEP
+                worst = max(worst, r)
+        if worst == 0.0:
+            break
+    road_pieces.steps = sep
+    return pieces
 
 
 def main():
@@ -125,6 +176,15 @@ def main():
     pts = track.resample(track.smooth(track.resample(pts + [pts[0]], 4.0), passes=3), STEP)
     if math.dist(pts[0], pts[-1]) < STEP / 2:
         pts = pts[:-1]
+    # Race direction (clockwise: T13 -> Hatzenbach -> Flugplatz ...) and start the list at T13.
+    t13 = track.project([track.start_of(args.osm, "T13")], origin)[0]
+    hatz = track.project([track.start_of(args.osm, "Hatzenbach")], origin)[0]
+    i13 = min(range(len(pts)), key=lambda i: math.dist(pts[i], t13))
+    ihz = min(range(len(pts)), key=lambda i: math.dist(pts[i], hatz))
+    if (ihz - i13) % len(pts) > len(pts) // 2:
+        pts = pts[::-1]
+        i13 = len(pts) - 1 - i13
+    pts = pts[i13:] + pts[:i13]
     print(f"centre line {track.length(pts + [pts[0]]) / 1000:.2f} km, {len(pts)} road pieces")
 
     # Tile grid: the lap's bounding box plus a margin, centred in whole tiles.
@@ -156,23 +216,34 @@ def main():
 
     # Road pieces into tiles/cells.
     tiles = {}  # (tx, ty) -> {(cx, cy): [(Asset, tileson dict)]}
-    for x, y, z, yaw, pitch, length in road_pieces(pts, zs):
+
+    def place(x, y, z, rot, scale, colors=None):
         lx, ly = x - gx, y - gy
         tx, ty = math.floor(lx / TILE_SIZE), math.floor(ly / TILE_SIZE)
         px, py = lx - tx * TILE_SIZE, ly - ty * TILE_SIZE
         cx, cy = int(px // smtile.CELL_SIZE), int(py // smtile.CELL_SIZE)
-        scale = (length / PIECE_SIZE, ROAD_WIDTH / PIECE_SIZE, THICK_SCALE)
-        z -= ROAD_SINK
         a = copy.deepcopy(road)
         a.pos = (px - cx * smtile.CELL_SIZE, py - cy * smtile.CELL_SIZE, z)
-        a.rot = road_rotation(yaw, pitch)
+        a.rot = rot
         a.scale = scale
         j = copy.deepcopy(road_json)
+        if colors:
+            a.colors = [(k, v) for k, v in colors.items()]
+            j["colorMap"] = {k: "#%02X%02X%02XFF" % (v & 255, (v >> 8) & 255, (v >> 16) & 255)
+                             for k, v in colors.items()}
         j["guid"] = str(uuid.uuid4())
-        j["transform"] = {"position": [px, py, z],
-                          "rotation": editor_angles(a.rot),
-                          "scale": list(scale)}
+        j["transform"] = {"position": [px, py, z], "rotation": editor_angles(rot), "scale": list(scale)}
         tiles.setdefault((tx, ty), {}).setdefault((cx, cy), []).append((a, j))
+
+    pieces = list(road_pieces(pts, zs))
+    steps = sorted(road_pieces.steps)
+    print(f"steps between pieces: median {steps[len(steps) // 2] * 100:.0f} cm, "
+          f"95% under {steps[int(len(steps) * .95)] * 100:.0f} cm, max {steps[-1] * 100:.0f} cm")
+    for x, y, z, yaw, pitch, length in pieces:
+        place(x, y, z - ROAD_SINK, road_rotation(yaw, pitch),
+              (length / PIECE_SIZE, ROAD_WIDTH / PIECE_SIZE, THICK_SCALE))
+    start_line(place, pieces[START_AHEAD])
+    spawn_yaw = pieces[0][3]
 
     if args.mod:
         mod_dir = os.path.join(args.out, "Mods", args.name)
@@ -226,10 +297,29 @@ def main():
 
     if args.mod:
         spawn = track.project([track.start_of(args.osm, "T13")], origin)[0]
-        write_mod(args, mod_dir, made, tw, th, ((spawn[0] - gx), (spawn[1] - gy)))
+        write_mod(args, mod_dir, made, tw, th, ((spawn[0] - gx), (spawn[1] - gy)), spawn_yaw)
     else:
         write_world(args, made, tw, th)
     overview(pts, gx, gy, tw, th, ground, os.path.join(args.out, "overview.png"))
+
+
+def start_line(place, piece):
+    """Chequered start/finish line across the road: 2 rows of 2 m squares, lying on top of
+    the road piece (5 mm proud of its surface)."""
+    from scipy.spatial.transform import Rotation
+    x, y, z, yaw, pitch, length = piece
+    rot = road_rotation(yaw, pitch)
+    m = Rotation.from_quat(rot).as_matrix()
+    origin = np.array([x, y, z - ROAD_SINK])
+    top = PIECE_THICK * THICK_SCALE
+    sq, t = 2.0, 0.02
+    for row in range(2):
+        for col in range(int(ROAD_WIDTH / sq)):
+            local = np.array([(row - 0.5) * sq, (col + 0.5) * sq - ROAD_WIDTH / 2, top + 0.005 - t])
+            p = origin + m @ local
+            white = (row + col) % 2 == 0
+            place(p[0], p[1], p[2], rot, (sq / PIECE_SIZE, sq / PIECE_SIZE, t / PIECE_THICK),
+                  {"Road2": 0xFFFFFFFF if white else 0xFF141414})
 
 
 def dem_grid(d, vx, vy, origin):
@@ -310,7 +400,7 @@ MOD_LOCAL_ID = "25693dc9-936b-49b4-9226-4f3a25dd1a5e"
 MOD_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mod")
 
 
-def write_mod(args, mod_dir, made, tw, th, spawn_local):
+def write_mod(args, mod_dir, made, tw, th, spawn_local, spawn_heading):
     """Custom Game mod: our scripts, the tiles (already written), a world file that only
     covers the tile area, and the spawn point. The road asset itself (mesh, textures,
     asset set) is copied in on the PC from the "Sugar Rush Matte Road" mod."""
@@ -333,7 +423,7 @@ def write_mod(args, mod_dir, made, tw, th, spawn_local):
     with open(os.path.join(mod_dir, "Scripts", "spawn.lua"), "w", encoding="utf-8") as f:
         f.write("-- Written by build.py: where new players appear (T13, start of the lap)\n"
                 "-- and the cells the world covers.\n"
-                f"NORDS_SPAWN = {{ x = {sx:.1f}, y = {sy:.1f} }}\n"
+                f"NORDS_SPAWN = {{ x = {sx:.1f}, y = {sy:.1f}, yaw = {spawn_heading - math.pi / 2:.4f} }}\n"
                 f"NORDS_BOUNDS = {{ xMin = {x0}, xMax = {x0 + tw * TILE_CELLS - 1}, "
                 f"yMin = {y0}, yMax = {y0 + th * TILE_CELLS - 1} }}\n")
     with open(os.path.join(mod_dir, "description.json"), "w", encoding="utf-8") as f:
