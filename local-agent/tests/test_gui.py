@@ -779,8 +779,7 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(self.wait_until(lambda: page._first_scan_done, 10))
         self.assertFalse(page.gpu_row.isHidden())
         items = [page.gpu_pick.itemText(i) for i in range(page.gpu_pick.count())]
-        self.assertEqual(items, ["RTX 5080 only", "RTX 3080 Ti only", "Both GPUs",
-                                 "RTX 5080, with the RTX 3080 Ti holding experts (Strata)"])
+        self.assertEqual(items, ["RTX 5080 only", "RTX 3080 Ti only", "Both GPUs"])
         self.assertEqual(page.gpu_pick.currentText(), "RTX 5080 only")             # the newest card by default
         self.assertEqual(page.vram, 16.0)
         page.gpu_pick.setCurrentIndex(2)
@@ -789,12 +788,9 @@ class GuiTest(unittest.TestCase):
         self.assertIn("RTX 5080 + RTX 3080 Ti", page.gpu.text())
         page.gpu_pick.setCurrentIndex(1)
         self.assertEqual(s.gpus, "GPU-aaa")
-        page.gpu_pick.setCurrentIndex(3)
-        self.assertEqual((s.gpus, page.vram), ("peer", 16.0))           # planned for the card that runs it
-        self.assertIn("holds experts", page.gpu.text())
         page.start()
         self.assertTrue(self.wait_until(lambda: page.proc.running, 15), page.state.text())
-        self.assertEqual(page.proc.env["CUDA_VISIBLE_DEVICES"], "1")    # llama.cpp has no expert tier: the 5080 alone
+        self.assertEqual(page.proc.env["CUDA_VISIBLE_DEVICES"], "0")
         self.assertTrue(any(line.startswith("GPUs: ") for line in page.proc.lines))
         page.gpu_pick.setCurrentIndex(0)
         self.assertIn("next time", page.gpu_note.text())
