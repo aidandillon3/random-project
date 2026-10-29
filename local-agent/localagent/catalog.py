@@ -262,6 +262,27 @@ PRESETS = [
         "it is the most a 64 GB PC with 16 GB of VRAM can take: close other programs while it runs.",
         {"Ornith-1.5-122B.Q3_K_L.gguf": 64661782528}, subdir="Q3_K_L", repo="prithivMLmods/Ornith-1.5-122B-MTP-GGUF",
         speedup="mtp"),
+    # GLM-5.3-Flash (Z.ai, 2026; Unsloth's GGUFs): 320B MoE, 18B active. At 102 GB it is bigger than this PC's
+    # RAM + VRAM, so llama.cpp maps the file and Windows reads the experts it lacks from the SSD as they're needed
+    Preset(
+        key="glm53-flash-iq2xxs", title="GLM-5.3-Flash UD-IQ2_XXS (SSD streaming, very slow)",
+        blurb="Z.ai's GLM-5.3-Flash: a 320B MoE (18B active) that Unsloth's page puts near the best closed models "
+              "on coding and agent tests. At 102 GB it doesn't fit in RAM + VRAM, so llama.cpp leaves the file "
+              "on the drive and reads missing experts from the SSD each token: expect a few tokens a second at "
+              "best, and slow prompt reading. It always thinks, so use the Low thinking level. Not measured on "
+              "this PC. Sees images.",
+        repo="unsloth/GLM-5.3-Flash-GGUF", subdir="UD-IQ2_XXS", folder="GLM-5.3-Flash",
+        files=[f"GLM-5.3-Flash-UD-IQ2_XXS-0000{i}-of-00004.gguf" for i in range(1, 5)],
+        mmproj=("unsloth/GLM-5.3-Flash-GGUF", "mmproj-F16.gguf"),
+        sizes={"GLM-5.3-Flash-UD-IQ2_XXS-00001-of-00004.gguf": 9429888,
+               "GLM-5.3-Flash-UD-IQ2_XXS-00002-of-00004.gguf": 49896298080,
+               "GLM-5.3-Flash-UD-IQ2_XXS-00003-of-00004.gguf": 49248507840,
+               "GLM-5.3-Flash-UD-IQ2_XXS-00004-of-00004.gguf": 2690716000,
+               "mmproj-F16.gguf": 1128047296},
+        family="GLM-5.3-Flash", variant="UD-IQ2_XXS (SSD streaming)",
+        # no draft speed-up: checking guesses reads more experts per step, and here every expert read may hit the SSD
+        launch={"ctx_size": 32768, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": True},
+    ),
 ]
 BY_KEY = {p.key: p for p in PRESETS}
 

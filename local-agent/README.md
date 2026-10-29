@@ -308,6 +308,7 @@ follow whichever model is running.
 | **Qwen3.8 Flash Next Coder IQ1_M** | 59 GB | The original Flash Next with half its experts removed, the rest stored like IQ3_S: 23 GB of experts in RAM | Coding, with Unity or a game open |
 | **Qwen3.6 35B-A3B UD-Q4_K_XL** (Strata fork) | 23 GB | Qwen's smaller MoE (3B active) on a Strata fork tuned for it, most experts on the GPU, 262K context, no vision | Fast tool and test loops; about twice Flash Next's speed, weaker on hard tasks |
 | **Ornith 1.5 122B** (UD-IQ3_XXS, UD-Q3_K_XL, UD-Q2_K_XL, Q3_K_L + MTP) | 45-66 GB | A coding and agent fine-tune of a 122B MoE, on llama.cpp with its experts in RAM | Trying the newest coding model; slower than Flash Next on Strata |
+| **GLM-5.3-Flash UD-IQ2_XXS** (SSD streaming) | 103 GB | Z.ai's 320B MoE (18B active), bigger than RAM + VRAM: llama.cpp maps the file and reads missing experts from the SSD, a few tokens a second at best | Trying a much bigger model on a short question, with patience |
 | **Qwen3.8 27B 1-bit + NVFP4 prefill** (experimental) | 20 GB | A 1-bit 27B on the GPU writes; a 4-bit copy of its layers, streamed from the SSD, reads your prompt. No vision, no MTP | Trying the 1-bit research trick |
 
 Flash Next IQ2_XS needs about 40 GB of RAM + VRAM plus space on a fast SSD. It runs on
