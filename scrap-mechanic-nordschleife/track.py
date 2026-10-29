@@ -107,3 +107,10 @@ def smooth(pts, passes=2, closed=True):
             new.append(((a[0] + 2 * b[0] + c[0]) / 4, (a[1] + 2 * b[1] + c[1]) / 4))
         pts = new
     return pts
+
+
+def unproject(x, y, origin):
+    """Inverse of project(): local metres back to (lat, lon)."""
+    lat0, lon0 = origin
+    k = math.cos(math.radians(lat0))
+    return lat0 + math.degrees(y / EARTH_R), lon0 + math.degrees(x / (EARTH_R * k))

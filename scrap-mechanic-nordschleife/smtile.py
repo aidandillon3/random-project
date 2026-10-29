@@ -11,6 +11,7 @@ import struct
 import uuid as uuidlib
 
 import lz4.block
+import numpy as np
 
 MAGIC = 0x454C4954  # "TILE"
 HEADER = struct.Struct("<II16sQIIIIiii")  # magic + TileHeaderBaseInfo
@@ -18,6 +19,22 @@ CELL_SIZE = 64.0
 
 # int32 slots inside a cell header (byte offset / 4)
 ASSET_COUNT, ASSET_INDEX, ASSET_CSIZE, ASSET_SIZE = 0x54 // 4, 0x64 // 4, 0x74 // 4, 0x84 // 4
+
+
+def pack_mips(heights, template_mips):
+    """Terrain blocks for one 64 m cell. heights: (33, 33) array, [row y][column x], metres,
+    one vertex every 2 m. Mip m keeps every 2**m-th vertex ((32 >> m) + 1 per side) with
+    white vertex colour; the ground material part is copied from the template's blocks."""
+    out = []
+    for m in range(6):
+        n = (32 >> m) + 1
+        hv = np.asarray(heights, dtype=np.float32)[::1 << m, ::1 << m]
+        assert hv.shape == (n, n)
+        rec = np.zeros((n * n, 2), dtype=np.uint32)
+        rec[:, 0] = hv.reshape(-1).view(np.uint32)
+        rec[:, 1] = 0xFFFFFFFF
+        out.append(rec.tobytes() + bytes(template_mips[m][n * n * 8:]))
+    return out
 
 
 class Asset:
@@ -137,9 +154,10 @@ class Tile:
         self._set_cell_int(x, y, ASSET_CSIZE + lst, len(comp))
         self._set_cell_int(x, y, ASSET_SIZE + lst, len(raw))
 
-    def rebuild(self, cell_assets, lst=1):
+    def rebuild(self, cell_assets, lst=1, cell_mips=None):
         """Rewrite the data section in the editor's order (per cell: 6 mips, clutter,
-        asset list) with new assets. cell_assets maps (x, y) -> [Asset]. Only plain
+        asset list) with new assets. cell_assets maps (x, y) -> [Asset]; cell_mips, if
+        given, maps (x, y) -> 6 uncompressed mip blocks (see pack_mips). Only plain
         terrain tiles (no prefabs, blueprints, nodes, ...) are supported."""
         out = bytearray(self.data[:self.cell_offset + self.width * self.height * self.cell_size])
         start = len(out)
@@ -148,8 +166,13 @@ class Tile:
                 h = self.cell_ints(x, y)
                 if any(h[37:97]):
                     raise ValueError(f"template cell {x},{y} has objects other than assets")
+                mips = (cell_mips or {}).get((x, y))
                 for m in range(6):
-                    blob = self.data[h[m]:h[m] + h[6 + m]]
+                    if mips:
+                        blob = lz4.block.compress(mips[m], store_size=False, mode="high_compression")
+                        h[6 + m], h[12 + m] = len(blob), len(mips[m])
+                    else:
+                        blob = self.data[h[m]:h[m] + h[6 + m]]
                     h[m] = len(out)
                     out += blob
                 blob = self.data[h[18]:h[18] + h[19]]
@@ -168,6 +191,10 @@ class Tile:
         self.val1, self.val2 = start, len(out) - start
         struct.pack_into("<ii", out, 48, self.val1, self.val2)
         self.data = out
+
+    def mip_raw(self, x, y, m):
+        h = self.cell_ints(x, y)
+        return lz4.block.decompress(bytes(self.data[h[m]:h[m] + h[6 + m]]), uncompressed_size=h[12 + m])
 
     def set_uuid(self, new_uuid=None):
         u = new_uuid or uuidlib.uuid4()
