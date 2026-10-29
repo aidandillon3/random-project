@@ -3773,20 +3773,22 @@ class MainWindow(QMainWindow):
             return
         box = QMessageBox(self)
         box.setWindowTitle("Computer use test")
-        box.setText("The model does 8 small tasks with your mouse and keyboard, in a window that fills screen "
+        box.setText("The model does 9 small tasks with your mouse and keyboard, in a window that fills screen "
                     f"{self.settings.monitor}: buttons, a tiny dot, typing, a game-style menu, a slider, a drag, a "
-                    "held key and a web form. Each task has 150 seconds.\n\nDon't touch the mouse or keyboard "
+                    "held key, chopping a tree in a side-view game and a web form. Each task has 150 seconds.\n\nDon't touch the mouse or keyboard "
                     "meanwhile. To stop: push the mouse into a screen corner.\n\nThe model server has to be "
                     "running.")
         compare = QCheckBox("Also run it with the new helpers off (text clicking, marks, browser), to compare")
         think = QCheckBox("Also run it with thinking on Low, to compare")
         small = QCheckBox("Also run it with bigger screenshots (1344 wide: sharper, slower to read), to compare")
+        grid = QCheckBox("Also run it with click positions on a 0-1000 grid, to compare")
         holder = QWidget()
         v = QVBoxLayout(holder)
         v.setContentsMargins(0, 0, 0, 0)
         v.addWidget(compare)
         v.addWidget(think)
         v.addWidget(small)
+        v.addWidget(grid)
         box.layout().addWidget(holder, box.layout().rowCount(), 0, 1, box.layout().columnCount())
         start = box.addButton("Start", QMessageBox.AcceptRole)
         box.addButton(QMessageBox.Cancel)
@@ -3794,7 +3796,8 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is not start:
             return
         variants = ["as set"] + (["helpers off"] if compare.isChecked() else []) + \
-            (["thinking low"] if think.isChecked() else []) + (["big screenshots"] if small.isChecked() else [])
+            (["thinking low"] if think.isChecked() else []) + (["big screenshots"] if small.isChecked() else []) + \
+            (["0-1000 grid"] if grid.isChecked() else [])
         win = cubench.make_window(int(self.settings.monitor or 1))
         self._bench_window = win
         self.showMinimized()

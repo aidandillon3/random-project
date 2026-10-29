@@ -46,6 +46,7 @@ TASKS = [Task("words", "Click a button by its words"),
          Task("slider", "Set a slider to 70"),
          Task("drag", "Drag a box into a square"),
          Task("hold", "Hold a key for 2 seconds"),
+         Task("chop", "Hold a click on a thin tree trunk in a side-view game"),
          Task("web", "Fill in and send a web form")]
 
 # What a run can be compared against (Settings fields set for that run only).
@@ -55,6 +56,7 @@ VARIANTS = {
     "thinking low": {"thinking": "low"},
     "marks always": {"screen_marks": True},
     "big screenshots": {"screen_max_side": 1344},
+    "0-1000 grid": {"coord_mode": "normalized"},
 }
 
 
@@ -464,6 +466,85 @@ def make_window(monitor: int):
             self.key_down = None
             return "Hold down the D key for about 2 seconds (1.5 to 4 seconds counts), then let go."
 
+        def _task_chop(self, rng, taken, url):
+            """Like chopping a tree in Terraria: thin trunks, your character in the middle (the camera
+            follows it) and someone else who looks a lot like it, next to another tree."""
+            win = self
+            aw, ah = max(400, self.area.width()), max(300, self.area.height())
+            ground = int(ah * 0.62)
+            me = aw // 2
+            side = rng.choice((-1, 1))
+            near = me + side * rng.randint(34, 50)            # the trunk next to your character
+            other = rng.choice([x for x in range(80, aw - 80, 40) if abs(x - me) > aw // 4])
+            xs = [near, other + rng.choice((-1, 1)) * 40]
+            for _ in range(400):
+                if len(xs) >= 14:
+                    break
+                x = rng.randint(60, aw - 60)
+                if all(abs(x - t) > 70 for t in xs) and abs(x - me) > 110:
+                    xs.append(x)
+            trees = [(x, rng.randint(150, 300)) for x in xs]
+            st = {"down": None}
+            TRUNK = 18
+
+            def trunk(x, h):
+                return QRectF(x - TRUNK / 2, ground - h, TRUNK, h)
+
+            class Scene(Canvas):
+                def paintEvent(self, e):
+                    p = QPainter(self)
+                    sky = QLinearGradient(0, 0, 0, ground)
+                    sky.setColorAt(0, QColor("#3a6fd8"))
+                    sky.setColorAt(1, QColor("#9cc8f0"))
+                    p.fillRect(QRectF(0, 0, self.width(), ground), sky)
+                    p.setPen(Qt.NoPen)
+                    r2 = random.Random(11)
+                    for _ in range(18):       # hills and bushes behind
+                        p.setBrush(QColor(40, r2.randint(90, 130), 60))
+                        p.drawEllipse(QPointF(r2.uniform(0, self.width()), ground), r2.uniform(60, 220),
+                                      r2.uniform(40, 140))
+                    p.fillRect(QRectF(0, ground, self.width(), self.height() - ground), QColor("#5a3d22"))
+                    p.fillRect(QRectF(0, ground, self.width(), 8), QColor("#3fbf3f"))
+                    for x, h in trees:
+                        p.fillRect(trunk(x, h), QColor("#a0703c"))
+                        p.fillRect(QRectF(x - TRUNK / 2, ground - h, 4, h), QColor("#7a5228"))
+                        p.setBrush(QColor("#2f9e3a"))
+                        p.drawEllipse(QPointF(x, ground - h), 34, 26)
+                    # your character (dark hood) and someone else (brown hair), both about 18x40
+                    for x, head in ((me, "#2b2b40"), (other, "#8a4a1c")):
+                        p.fillRect(QRectF(x - 8, ground - 26, 16, 18), QColor("#c9b08a"))     # shirt
+                        p.fillRect(QRectF(x - 8, ground - 8, 16, 8), QColor("#34508a"))       # trousers
+                        p.setBrush(QColor("#e8c09a"))
+                        p.drawEllipse(QPointF(x, ground - 32), 7, 7)
+                        p.setBrush(QColor(head))
+                        p.drawChord(QRectF(x - 9, ground - 42, 18, 16), 0, 180 * 16)
+
+                def mousePressEvent(self, e):
+                    st["down"] = (time.time(), e.position())
+
+                def mouseReleaseEvent(self, e):
+                    if st["down"] is None:
+                        return
+                    t0, pt = st["down"]
+                    st["down"] = None
+                    held = time.time() - t0
+                    if trunk(*trees[0]).adjusted(-2, 0, 2, 0).contains(pt):
+                        win.done() if held >= 0.8 else win.wrong(f"on the trunk but held only {held:.1f} s")
+                        return
+                    hit = next((i for i, t in enumerate(trees) if trunk(*t).adjusted(-2, 0, 2, 0).contains(pt)), None)
+                    if hit == 1:
+                        win.wrong("held on the tree next to the other person")
+                    else:
+                        win.wrong(f"held {round(pt.x() - near):+d} px across and {round(pt.y() - (ground - trees[0][1] / 2)):+d} "
+                                  "px down from the middle of the right trunk" + (" (another tree)" if hit else ""))
+
+            c = Scene(self.area, self.state)
+            c.trees, c.ground, c.me = trees, ground, me
+            c.setGeometry(self.area.rect())
+            c.show()
+            return ("This is a side-view game. Chop the tree that stands right next to your character: hold the left "
+                    "mouse button on that tree's trunk for at least 1 second.")
+
         def _task_web(self, rng, taken, url):
             return (f"Open {url} in a web browser and fill in its form: Name 'Aidan', Colour 'Blue', tick "
                     "'I like pumpkins', then press Submit.")
@@ -656,12 +737,12 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(description="Computer use test")
     ap.add_argument("--compare", default="", help="also run with: helpers (off), thinking (low), marks (always), "
-                                                  "big (screenshots 1344 wide)")
+                                                  "big (screenshots 1344 wide), grid (0-1000 coordinates)")
     ap.add_argument("--tasks", default="", help="only these tasks: " + ",".join(t.name for t in TASKS))
     ap.add_argument("--timeout", type=float, default=150)
     a = ap.parse_args(argv)
     names = {"helpers": "helpers off", "thinking": "thinking low", "marks": "marks always",
-             "big": "big screenshots"}
+             "big": "big screenshots", "grid": "0-1000 grid"}
     variants = ["as set"] + [names[c] for c in a.compare.split(",") if c in names]
     app = QApplication.instance() or QApplication(sys.argv)
     settings = Settings.load()

@@ -106,6 +106,29 @@ class TasksTest(unittest.TestCase):
         QTest.mouseRelease(c, Qt.LeftButton, pos=goal)
         self.assertTrue(st["done"].is_set())
 
+    def test_chop_the_tree_next_to_your_character(self):
+        _, st = self.setup("chop")
+        c = [w for w in self.win.area.findChildren(QWidget) if hasattr(w, "trees")][-1]
+        clock = [100.0]
+
+        def hold(x, y, seconds):
+            QTest.mousePress(c, Qt.LeftButton, pos=QPoint(int(x), int(y)))
+            clock[0] += seconds
+            QTest.mouseRelease(c, Qt.LeftButton, pos=QPoint(int(x), int(y)))
+
+        (nx, nh), (ox, oh) = c.trees[0], c.trees[1]
+        self.assertLess(abs(nx - c.me), 60)                                # and the tree right next to it
+        with mock.patch.object(cubench.time, "time", lambda: clock[0]):
+            hold(nx + 30, c.ground - nh / 2, 1.2)                          # beside the trunk: a miss, measured
+            self.assertEqual((st["wrong"], st["note"]),
+                             (1, "held +30 px across and +0 px down from the middle of the right trunk"))
+            hold(ox, c.ground - oh / 2, 1.2)
+            self.assertEqual(st["note"], "held on the tree next to the other person")
+            hold(nx, c.ground - nh / 2, 0.3)
+            self.assertIn("held only 0.3 s", st["note"])
+            hold(nx + 5, c.ground - 20, 1.0)
+        self.assertTrue(st["done"].is_set())
+
     def test_held_key_counts_only_long_enough(self):
         task, st = self.setup("hold")
         clock = [100.0]

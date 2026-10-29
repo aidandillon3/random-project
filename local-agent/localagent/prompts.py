@@ -118,11 +118,16 @@ SCREEN = ("Computer use is on: screenshot shows the user's screen, and click, ty
           "on it and click with in_zoom=true and its position in the zoomed view. When the next few actions are sure "
           "(a click, typing, then Enter), make them together in one reply: only the last one sends back a "
           "screenshot, which saves time. Say an action worked only when the newest screenshot shows it did; "
-          "if nothing changed, zoom in and check where things really are before trying again. {coords}{games}The user can "
+          "if nothing changed, zoom in and check where things really are before trying again. The magenta ring is where "
+          "the mouse really is: when it isn't on what you aimed at, move by the gap you see between them and look "
+          "again. {coords}{games}The user can "
           "stop you by moving the mouse into a screen corner.")
 
 SCREEN_GAMES = ("In games: press_keys with hold_seconds walks (\"w\" for 2 s), move_mouse_by turns the camera "
-                "(move_mouse doesn't), click with hold_seconds keeps firing. Games don't wait for you, so keep "
+                "(move_mouse doesn't), click with hold_seconds keeps firing. Your own character is the one the "
+                "camera follows, usually near the middle of the screen; other characters may be the game's, so "
+                "if unsure, see what moves when you press a movement key. Before holding a click on something small "
+                "(a tree, a block), check the ring is on it. Games don't wait for you, so keep "
                 "your thinking between actions short and act in small bursts. ")
 
 BACKGROUND = """- Programs that keep running (servers, games, watchers): run_command with background=true, read

@@ -161,30 +161,45 @@ def _png(img) -> bytes:
 
 
 def _shot(ctx: ToolContext, monitor: int | None = None, marks: bool = False) -> bytes:
-    from PIL import Image, ImageDraw
+    from PIL import Image
 
     monitor = ctx.settings.monitor if monitor is None else monitor
     img, mon, monitor = _grab(int(monitor or 1))
     real_w, real_h = img.size
     found = _targets(ctx, img, mon) if marks else None     # read before the pointer is drawn over it
-    # draw the mouse pointer so the model can see where it is
     cur = _cursor()
-    draw = ImageDraw.Draw(img)
-    if cur and mon["left"] <= cur[0] < mon["left"] + real_w and mon["top"] <= cur[1] < mon["top"] + real_h:
-        cx, cy = cur[0] - mon["left"], cur[1] - mon["top"]
-        r = max(6, real_w // 250)
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 0, 0), width=max(2, r // 3))
     size = fit_size(ctx, real_w, real_h)
     if size != img.size:
         img = img.resize(size, Image.LANCZOS)
     ctx.screen.update(left=mon["left"], top=mon["top"], width=real_w, height=real_h,
                       img_w=img.size[0], img_h=img.size[1], monitor=monitor)
+    ctx.screen.pop("pointer", None)
+    if cur and mon["left"] <= cur[0] < mon["left"] + real_w and mon["top"] <= cur[1] < mon["top"] + real_h:
+        # drawn after shrinking, so it is as easy to see at any size: a magenta ring around the exact
+        # point with ticks outside it (the point itself stays visible). Games draw their own pointer,
+        # often not where the real one is, so this is the one to aim with.
+        cx = (cur[0] - mon["left"]) * img.width / real_w
+        cy = (cur[1] - mon["top"]) * img.height / real_h
+        ctx.screen["pointer"] = (cx, cy)
+        _draw_pointer(img, cx, cy)
     if ctx.settings.grid_overlay:
         _grid(ctx, img)
     if found is not None:
         ctx.screen["marks"] = found
         _draw_marks(img, found, mon, img.width / real_w)
     return _png(img)
+
+
+def _draw_pointer(img, cx: float, cy: float):
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(img)
+    r = 7
+    draw.ellipse([cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1], outline=(0, 0, 0), width=4)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 0, 255), width=2)
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        draw.line([cx + dx * (r + 2), cy + dy * (r + 2), cx + dx * (r + 7), cy + dy * (r + 7)],
+                  fill=(255, 0, 255), width=2)
 
 
 # ------------------------------------------------------------------ numbered marks
@@ -321,7 +336,7 @@ def _geometry_note(ctx: ToolContext) -> str:
     s = ctx.screen
     key = (s["monitor"], s["width"], s["height"], s["img_w"], s["img_h"], coord_mode(ctx))
     if s.get("explained") == key:
-        return f"Screen {s['monitor']}, image {s['img_w']}x{s['img_h']}."
+        return f"Screen {s['monitor']}, image {s['img_w']}x{s['img_h']}.{_pointer_note(ctx)}"
     s["explained"] = key
     note = (f"Screen {s['monitor']}: {s['width']}x{s['height']} real pixels, image shown at "
             f"{s['img_w']}x{s['img_h']}; positions read off an earlier screenshot of another size don't apply. "
@@ -329,7 +344,19 @@ def _geometry_note(ctx: ToolContext) -> str:
     mons = monitors()
     if len(mons) > 1:
         note += f" Screens: {monitors_text(mons)}; screenshot(monitor=N) looks at another one."
-    return note
+    return note + _pointer_note(ctx)
+
+
+def _pointer_note(ctx: ToolContext) -> str:
+    """Where the mouse is, in the coordinates the model gives: with the ring on the picture it can see
+    how far the pointer is from what it meant to hit, and correct by that much."""
+    s = ctx.screen
+    if "pointer" not in s:
+        return ""
+    x, y = s["pointer"]
+    if coord_mode(ctx) == "normalized":
+        x, y = x * 1000 / s["img_w"], y * 1000 / s["img_h"]
+    return f" Mouse pointer (magenta ring): {x:.0f}, {y:.0f}."
 
 
 def _settle(monitor, least: float = 0.12, most: float = 0.6):
@@ -369,7 +396,7 @@ def after_action(ctx: ToolContext, text: str) -> ToolResult:
 
 
 @tool("screenshot", """
-Take a screenshot so you can see the screen. The red circle is the mouse pointer. Use the
+Take a screenshot so you can see the screen. The magenta ring is the mouse pointer. Use the
 coordinates of this image with click, drag, scroll and zoom. marks=true numbers the buttons,
 fields and short text on it, so you can click one with mark=N instead of aiming.""",
       {"monitor": {"type": "integer", "description": "Screen number: 1, 2, 3... Default: the one picked in the app"},
@@ -401,11 +428,20 @@ def zoom(ctx: ToolContext, a: dict):
     img, _, _ = _grab(ctx.screen.get("monitor", ctx.settings.monitor), box)
     img = img.resize(fit_size(ctx, *img.size, most=3.0, zoom=True), Image.LANCZOS)
     ctx.screen["zoom"] = dict(box, img_w=img.width, img_h=img.height)
-    where = ("on a 0-1000 grid over this zoomed image" if coord_mode(ctx) == "normalized" else
+    norm = coord_mode(ctx) == "normalized"
+    where = ("on a 0-1000 grid over this zoomed image" if norm else
              f"in pixels of this zoomed image ({img.width}x{img.height})")
+    pointer = ""
+    cur = _cursor()
+    if cur and x1 <= cur[0] < x2 and y1 <= cur[1] < y2:
+        px, py = (cur[0] - x1) * img.width / (x2 - x1), (cur[1] - y1) * img.height / (y2 - y1)
+        _draw_pointer(img, px, py)
+        if norm:
+            px, py = px * 1000 / img.width, py * 1000 / img.height
+        pointer = f" The mouse pointer is in it (magenta ring) at {px:.0f}, {py:.0f} of this zoomed view."
     return ToolResult(f"Zoomed view attached. To click or point at something you see in it, give its position "
                       f"{where} and in_zoom=true: that aims much more precisely. Without in_zoom, positions are "
-                      "on the full screenshot.", images=[_png(img)])
+                      f"on the full screenshot.{pointer}", images=[_png(img)])
 
 
 # ------------------------------------------------------------------ mouse and keyboard

@@ -255,6 +255,28 @@ class ComputerUseTest(unittest.TestCase):
         self.assertIn("960x512", first)
         self.assertIn("Screen 1, image 960x512.", REGISTRY["press_keys"].func(ctx, {"keys": "w"}).text)
 
+    def test_the_pointer_is_drawn_and_said_where_it_is(self):
+        # the fake mouse is at 2000, 100: 80, 100 into screen 2 (2560x1440, shown at 960x512)
+        ctx = ToolContext(settings=Settings(computer_use=True, monitor=2, coord_mode="pixels"), workspace=Path("."))
+        out = REGISTRY["screenshot"].func(ctx, {})
+        self.assertIn("Mouse pointer (magenta ring): 30, 36.", out.text)
+        import io
+
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(out.images[0])).convert("RGB")
+        self.assertEqual(img.getpixel((30 + 7, 36)), (255, 0, 255))     # the ring, at the same size at any scale
+        self.assertNotEqual(img.getpixel((30, 36)), (255, 0, 255))      # and the point itself left clear
+        ctx.settings.coord_mode = "normalized"
+        self.assertIn("Mouse pointer (magenta ring): 31, 69.", REGISTRY["screenshot"].func(ctx, {}).text)
+        ctx.settings.coord_mode = "pixels"
+        z = REGISTRY["zoom"].func(ctx, {"x": 0, "y": 0, "width": 100, "height": 100})
+        self.assertIn("magenta ring) at", z.text)
+        far = REGISTRY["zoom"].func(ctx, {"x": 500, "y": 300, "width": 100, "height": 100})
+        self.assertNotIn("magenta", far.text)                            # not in that part of the screen
+        ctx.settings.monitor = 1                                         # the pointer is on another screen
+        self.assertNotIn("Mouse pointer", REGISTRY["screenshot"].func(ctx, {"monitor": 1}).text)
+
     def test_screenshot_notes_get_short_after_the_first(self):
         ctx = ToolContext(settings=Settings(computer_use=True), workspace=Path("."))
         first = REGISTRY["screenshot"].func(ctx, {}).text
