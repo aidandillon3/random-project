@@ -117,6 +117,7 @@ class Settings:
     monitors_on_ai_gpu: str = "auto"   # "auto" (gguf.monitors_on), "yes" or "no": VRAM kept free for the desktop
     strata_low_ram: bool = False       # Strata's low-RAM mode (setup --low-ram resident): only the experts the GPU
                                        # doesn't hold stay in RAM; the KV cache all in VRAM (strata.setup_args)
+    strata_ram_gib: int = 0            # with it: the most GiB of experts kept in RAM (--resident-budget-gib), 0 = no cap
 
     extra: dict = field(default_factory=dict)
     settings_version: int = 6          # bumped when an old saved default needs moving on load

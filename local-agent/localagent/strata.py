@@ -413,7 +413,36 @@ MONITOR_FLAGS = ("--vram-reserve-mib", "--expert-vram")
 ENGINE_ENV = {"STRATA_PIN_BY_NEED": "1"}
 
 
-def tune_config(preset, root: Path | None = None, model_dir: Path | None = None, monitors: bool = True) -> bool:
+# The low-RAM mode's RAM cap (Settings.strata_ram_gib). Setup's resident variant (--resident-experts) keeps every
+# expert the GPU caches don't hold in RAM, and also the ones in the cache slots the prompt path borrows (on Aidan's
+# two cards at 256K: 38.2 GiB, 6.3 of them borrowed slots' experts). --resident-budget-gib N (the engine's RAM budget,
+# which setup gives only Unsloth's files) keeps the N GiB of those the profile ranks hottest and reads the rest from
+# experts.bin on the SSD: at about the non-borrowed share (~32 GiB there) only prompts read from the SSD; lower, the
+# answers do too.
+LOW_RAM_FLAGS = ("--resident-experts", "--mmap-experts")
+
+
+def _ram_cap(args: list, gib: int) -> bool:
+    """Put the RAM cap into a low-RAM config's args, or take it out again (back to setup's --resident-experts).
+    Changes args in place; True when it did."""
+    if not any(f in args for f in LOW_RAM_FLAGS + ("--resident-budget-gib",)):
+        return False                                  # not the low-RAM mode: nothing to cap
+    before = list(args)
+    while "--resident-budget-gib" in args:
+        i = args.index("--resident-budget-gib")
+        del args[i:i + 2]
+    if gib > 0:
+        for f in LOW_RAM_FLAGS:
+            while f in args:
+                args.remove(f)
+        args += ["--resident-budget-gib", str(int(gib))]
+    elif not any(f in args for f in LOW_RAM_FLAGS):
+        args.append("--resident-experts")
+    return args != before
+
+
+def tune_config(preset, root: Path | None = None, model_dir: Path | None = None, monitors: bool = True,
+                ram_gib: int = 0) -> bool:
     """Add ENGINE_ARGS (with the mode's own values) to strata-<model>.json where it doesn't have them (it keeps
     values set by hand, except MONITOR_FLAGS'). True when the file changed. A fork's mode (strata["install"]) takes
     only its own options: the main path's are not options of its engine, which then refuses to start. An option
@@ -443,7 +472,7 @@ def tune_config(preset, root: Path | None = None, model_dir: Path | None = None,
         gib = max(ev[0] - ev[1] * max(ctx - 65536, 0) / 32768, 1.0) + (0 if monitors else NO_MONITORS_EXPERT_VRAM)
         want["--expert-vram"] = f"{gib:.1f}"
     args = list(args)
-    changed = False
+    changed = _ram_cap(args, 0 if own else ram_gib)
     for flag in MONITOR_FLAGS:          # already there with the other choice's value
         if flag in want and flag in args and args.index(flag) + 1 < len(args) \
                 and args[args.index(flag) + 1] != want[flag]:
@@ -482,6 +511,7 @@ def serve_args(preset, settings, root: Path | None = None, monitors: bool = True
     config has ENGINE_ARGS (setup rewrites them away)."""
     root = root or install_of(preset).root
     model = getattr(settings, "model_path", "")
-    tune_config(preset, root, Path(model).parent if model else None, monitors)
+    tune_config(preset, root, Path(model).parent if model else None, monitors,
+                int(getattr(settings, "strata_ram_gib", 0) or 0) if low_ram(preset, settings) else 0)
     return [str(python(root)), str(root / "serve" / "server.py"), "--engine", "strata",
             "--config", str(config_path(preset, root)), "--port", str(settings.port), "--fit-max-tokens"]

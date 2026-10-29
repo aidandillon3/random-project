@@ -167,6 +167,27 @@ class StrataTest(unittest.TestCase):
         q36 = catalog.BY_KEY["qwen36-35b-strata"]                                      # a fork's setup has no such option
         self.assertFalse(strata.low_ram(q36, Settings(strata_low_ram=True)))
 
+    def test_a_ram_cap_for_the_low_ram_mode(self):
+        self.root.mkdir(parents=True)
+        cfg_path = strata.config_path(self.flash, self.root)
+        args = lambda: json.loads(cfg_path.read_text(encoding="utf-8"))["args"]  # noqa: E731
+        cfg_path.write_text(json.dumps({"args": ["--serve", "--resident-experts"]}), encoding="utf-8")   # setup's
+        s = Settings(strata_low_ram=True, strata_ram_gib=32)
+        strata.serve_args(self.flash, s, self.root)
+        self.assertEqual(args()[args().index("--resident-budget-gib") + 1], "32")
+        self.assertNotIn("--resident-experts", args())                 # the budget is its own variant
+        s.strata_ram_gib = 28
+        strata.serve_args(self.flash, s, self.root)
+        self.assertEqual(args().count("--resident-budget-gib"), 1)
+        self.assertEqual(args()[args().index("--resident-budget-gib") + 1], "28")
+        s.strata_ram_gib = 0                                            # no cap: setup's variant back
+        strata.serve_args(self.flash, s, self.root)
+        self.assertNotIn("--resident-budget-gib", args())
+        self.assertIn("--resident-experts", args())
+        cfg_path.write_text(json.dumps({"args": ["--serve"]}), encoding="utf-8")       # normal mode: no cap to add
+        strata.serve_args(self.flash, Settings(strata_low_ram=False, strata_ram_gib=32), self.root)
+        self.assertNotIn("--resident-budget-gib", args())
+
     def test_the_picked_gpu_goes_to_setup(self):
         s = Settings(ctx_size=65536, use_vision=True)
         self.assertNotIn("--gpu", strata.setup_args(self.flash, self.model, s, self.root))   # one GPU: setup picks

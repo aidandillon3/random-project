@@ -1717,6 +1717,24 @@ class ServerPage(QWidget):
         self.low_ram.setChecked(bool(self.s.strata_low_ram))
         self.low_ram.toggled.connect(self._low_ram_toggled)
         lay.addWidget(self.low_ram)
+        self.ram_cap_row = QWidget()
+        crow = QHBoxLayout(self.ram_cap_row)
+        crow.setContentsMargins(24, 0, 0, 0)
+        crow.addWidget(QLabel("Most RAM for experts:"))
+        self.ram_cap = QSpinBox(minimum=0, maximum=256)
+        self.ram_cap.setSpecialValueText("no cap")
+        self.ram_cap.setSuffix(" GB")
+        self.ram_cap.setValue(int(self.s.strata_ram_gib or 0))
+        self.ram_cap.setToolTip("Without a cap Strata also keeps in RAM the experts of the GPU slots it lends out while "
+                                "reading a prompt. With one, it keeps the most-used experts up to this much and reads "
+                                "the rest from its experts file on the SSD. Just above what the GPUs don't hold "
+                                "(the log's 'resident RAM' line less the 'keep their experts in RAM too' amount) only "
+                                "prompt reading touches the SSD; lower, the answers do too and get slower. "
+                                "Takes effect the next time the model starts.")
+        self.ram_cap.valueChanged.connect(self._ram_cap_changed)
+        crow.addWidget(self.ram_cap)
+        crow.addStretch(1)
+        lay.addWidget(self.ram_cap_row)
 
         # ---- the mode: what most people need
         g = QGroupBox("Mode")
@@ -2061,6 +2079,11 @@ class ServerPage(QWidget):
 
     def _low_ram_toggled(self, on: bool):
         self.s.strata_low_ram = on
+        self.s.save()
+        self._changed()
+
+    def _ram_cap_changed(self, v: int):
+        self.s.strata_ram_gib = v
         self.s.save()
         self._changed()
 
@@ -2438,6 +2461,7 @@ class ServerPage(QWidget):
         self.ncm.setEnabled(manual)
         self.draft_label.setText(f"Draft model: {Path(s.draft_path).name}" if s.draft_path else "No draft model picked")
         self.low_ram.setVisible(False)          # shown below for a mode of Strata itself
+        self.ram_cap_row.setVisible(False)
         if basalt.is_model(s.model_path):
             for w in (self.kv, self.placement, self.speed, self.extra, self.ngl, self.ncm):
                 w.setEnabled(False)
@@ -2461,6 +2485,7 @@ class ServerPage(QWidget):
         for w in (self.kv, self.placement, self.speed, self.extra):
             w.setEnabled(not on_strata)
         self.low_ram.setVisible(on_strata and not p.strata.get("install"))
+        self.ram_cap_row.setVisible(on_strata and not p.strata.get("install") and bool(s.strata_low_ram))
         if on_strata:
             self.ngl.setEnabled(False)
             self.ncm.setEnabled(False)
