@@ -81,7 +81,7 @@ class Settings:
     # toggle next to the message box is turned on; while on, clicks and keys never ask.
     computer_use: bool = False
     monitor: int = 1                   # the screen it looks at first: 1, 2, 3...
-    screen_max_side: int = 0           # its screenshots' longest side; 0 = automatic: the biggest the model's
+    screen_max_side: int = 0           # its screenshots' longest side; 0 = automatic: about half of what the model's
                                        # vision takes without shrinking it again (see tools/screen.fit_size)
     coord_mode: str = "auto"           # auto | pixels | normalized (0-1000)
     grid_overlay: bool = False

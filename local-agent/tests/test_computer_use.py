@@ -216,7 +216,7 @@ class ComputerUseTest(unittest.TestCase):
         REGISTRY["click"].func(ctx, {"x": 500, "y": 500, "in_zoom": True})
         # the middle of the zoomed box: screen 1 is 1920x1080, the box 960-1152 x 540-648
         self.assertEqual(self.log[0], ("move", 1056, 594))
-        self.assertEqual((ctx.screen["img_w"], ctx.screen["img_h"]), (1344, 768))
+        self.assertEqual((ctx.screen["img_w"], ctx.screen["img_h"]), (960, 512))
         self.assertEqual(out.images[0][16:24], (576).to_bytes(4, "big") + (320).to_bytes(4, "big"))   # 3x, whole squares
 
     def test_screenshots_fit_what_the_vision_part_sees_at_any_size(self):
@@ -226,13 +226,19 @@ class ComputerUseTest(unittest.TestCase):
         for w, h in ((1920, 1080), (2560, 1440), (3840, 2160), (3440, 1440)):
             iw, ih = fit_size(auto, w, h)
             self.assertEqual((iw % 32, ih % 32), (0, 0))
-            self.assertLessEqual(iw * ih, 1024 * 32 * 32)          # never shrunk again by the model server
-            self.assertGreater(iw * ih, 900 * 32 * 32)             # but close to the most it takes
-            self.assertAlmostEqual(iw / ih, w / h, delta=0.08)
-        self.assertEqual(fit_size(auto, 2560, 1440), (1344, 768))   # the same picture as 1920x1080
-        self.assertEqual(fit_size(auto, 1280, 720), (1280, 704))   # a small screen isn't blown up
-        lowered = ToolContext(settings=Settings(screen_max_side=960), workspace=Path("."))
-        self.assertEqual(fit_size(lowered, 2560, 1440), (960, 512))
+            self.assertLessEqual(iw * ih, 512 * 32 * 32)           # the quick size the test picked
+            self.assertGreater(iw * ih, 420 * 32 * 32)
+            self.assertAlmostEqual(iw / ih, w / h, delta=0.1)
+            zw, zh = fit_size(auto, w, h, zoom=True)                # zooms: the most the vision part takes
+            self.assertLessEqual(zw * zh, 1024 * 32 * 32)           # never shrunk again by the model server
+            self.assertGreater(zw * zh, 900 * 32 * 32)
+        self.assertEqual(fit_size(auto, 2560, 1440), (960, 512))    # the same picture as 1920x1080
+        self.assertEqual(fit_size(auto, 2560, 1440, zoom=True), (1344, 768))
+        self.assertEqual(fit_size(auto, 800, 450), (800, 448))     # a small screen isn't blown up
+        raised = ToolContext(settings=Settings(screen_max_side=1344), workspace=Path("."))
+        self.assertEqual(fit_size(raised, 2560, 1440), (1344, 736))
+        huge = ToolContext(settings=Settings(screen_max_side=3840), workspace=Path("."))
+        self.assertEqual(fit_size(huge, 2560, 1440), (1344, 768))   # still under the vision limit
 
     def test_lowered_size_still_lands_clicks_in_the_right_place(self):
         ctx = self.ctx(screenshot_after_action=False, screen_max_side=640)
@@ -246,8 +252,8 @@ class ComputerUseTest(unittest.TestCase):
         ctx = ToolContext(settings=Settings(computer_use=True), workspace=Path("."))
         first = REGISTRY["press_keys"].func(ctx, {"keys": "w"}).text
         self.assertIn("real pixels", first)
-        self.assertIn("1344x768", first)
-        self.assertIn("Screen 1, image 1344x768.", REGISTRY["press_keys"].func(ctx, {"keys": "w"}).text)
+        self.assertIn("960x512", first)
+        self.assertIn("Screen 1, image 960x512.", REGISTRY["press_keys"].func(ctx, {"keys": "w"}).text)
 
     def test_screenshot_notes_get_short_after_the_first(self):
         ctx = ToolContext(settings=Settings(computer_use=True), workspace=Path("."))

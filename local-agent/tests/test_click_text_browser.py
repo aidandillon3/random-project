@@ -123,7 +123,7 @@ FORM = b"""<!doctype html><title>Order</title>
 <label>Name <input name=name></label>
 <label>Colour <select name=colour><option>Red</option><option>Blue</option></select></label>
 <label><input type=checkbox name=pumpkins value=yes> I like pumpkins</label>
-<button>Submit</button></form><a href="/other">Another page</a>"""
+<button>Submit</button></form><a href="/other">Another page</a> <a href="/other" target=_blank>In a new tab</a>"""
 
 
 def _chromium():
@@ -190,6 +190,18 @@ class BrowserTest(unittest.TestCase):
             REGISTRY["browser_click"].func(self.ctx, {"ref": 99})
         shot = REGISTRY["browser_screenshot"].func(self.ctx, {})
         self.assertEqual(len(shot.images), 1)
+
+    def test_other_tabs_dont_take_over_but_its_own_new_tabs_do(self):
+        from localagent.tools import browser
+
+        url = f"http://127.0.0.1:{self.srv.server_address[1]}/"
+        REGISTRY["browser_open"].func(self.ctx, {"url": url})
+        # a tab the browser opens by itself (Edge restoring yesterday's tabs): the page it reads stays
+        browser.BROWSER.call(lambda b: b.context.new_page().goto("about:blank"))
+        self.assertIn("Page: Order", REGISTRY["browser_read"].func(self.ctx, {}))
+        # a link on its page that opens a new tab: it carries on there
+        after = REGISTRY["browser_click"].func(self.ctx, {"text": "In a new tab"})
+        self.assertIn("The other page", after + REGISTRY["browser_read"].func(self.ctx, {}))
 
 
 if __name__ == "__main__":

@@ -269,21 +269,29 @@ def _point(ctx: ToolContext, a: dict, x: str = "x", y: str = "y", mark: str = "m
 # Qwen vision (llama.cpp's mtmd, which Strata uses too) cuts a picture into 32x32-pixel squares and, past a
 # limit, shrinks it first: Strata's limit is 1024 squares (about 1 megapixel), llama.cpp's 4096. A picture it
 # shrinks is seen at another size than the one the model is told, and its positions come back at that other
-# scale (at 2560x1440 they were half of what they should be). So screenshots are made at the size it sees:
-# whole squares, under the smaller limit, which is also about what Qwen needs to point at things well.
+# scale (at 2560x1440 they were half of what they should be). So pictures are made at a size it sees as it
+# is: whole squares, under the smaller limit.
 VISION_SQUARE = 32
 VISION_SQUARES = 1024
+# Automatic screenshots use about half that: in the computer use test (2026-10-29) 960x512 shots did all 8
+# tasks like 1344x768 ones, with 0.8 s instead of 1.4 s of reading per picture. Zooms keep the whole limit,
+# so aiming at small things stays sharp.
+AUTO_SQUARES = 512
 
 
-def fit_size(ctx: ToolContext, w: int, h: int, most: float = 1.0) -> tuple[int, int]:
-    """The size to show a w x h picture at: at most `most` times bigger, under the vision limit and the
-    size picked in Settings (0 = automatic), in whole 32-pixel squares so nothing is resized again."""
+def fit_size(ctx: ToolContext, w: int, h: int, most: float = 1.0, zoom: bool = False) -> tuple[int, int]:
+    """The size to show a w x h picture at: at most `most` times bigger, under the vision limit, in whole
+    32-pixel squares so nothing is resized again. A screenshot also stays under the size picked in Settings,
+    or about AUTO_SQUARES squares when that is 0 (automatic); a zoom uses the whole limit."""
     squares = int(ctx.settings.extra.get("vision_max_tokens") or VISION_SQUARES) if hasattr(ctx.settings, "extra") \
         else VISION_SQUARES
     scale = min(most, (squares * VISION_SQUARE * VISION_SQUARE / (w * h)) ** 0.5)
-    side = int(getattr(ctx.settings, "screen_max_side", 0) or 0)
-    if side > 0:
-        scale = min(scale, side / max(w, h))
+    if not zoom:
+        side = int(getattr(ctx.settings, "screen_max_side", 0) or 0)
+        if side > 0:
+            scale = min(scale, side / max(w, h))
+        else:
+            scale = min(scale, (min(squares, AUTO_SQUARES) * VISION_SQUARE * VISION_SQUARE / (w * h)) ** 0.5)
     return (max(VISION_SQUARE, int(w * scale) // VISION_SQUARE * VISION_SQUARE),
             max(VISION_SQUARE, int(h * scale) // VISION_SQUARE * VISION_SQUARE))
 
@@ -391,7 +399,7 @@ def zoom(ctx: ToolContext, a: dict):
         raise ToolError("That box is too small: give its top-left corner as x, y and its size as width, height.")
     box = {"left": x1, "top": y1, "width": x2 - x1, "height": y2 - y1}
     img, _, _ = _grab(ctx.screen.get("monitor", ctx.settings.monitor), box)
-    img = img.resize(fit_size(ctx, *img.size, most=3.0), Image.LANCZOS)
+    img = img.resize(fit_size(ctx, *img.size, most=3.0, zoom=True), Image.LANCZOS)
     ctx.screen["zoom"] = dict(box, img_w=img.width, img_h=img.height)
     where = ("on a 0-1000 grid over this zoomed image" if coord_mode(ctx) == "normalized" else
              f"in pixels of this zoomed image ({img.width}x{img.height})")

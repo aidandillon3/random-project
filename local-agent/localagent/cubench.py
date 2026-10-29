@@ -54,7 +54,7 @@ VARIANTS = {
     "helpers off": {"text_tools": False, "browser_tools": False, "screen_marks": False},
     "thinking low": {"thinking": "low"},
     "marks always": {"screen_marks": True},
-    "small screenshots": {"screen_max_side": 960},
+    "big screenshots": {"screen_max_side": 1344},
 }
 
 
@@ -656,12 +656,12 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(description="Computer use test")
     ap.add_argument("--compare", default="", help="also run with: helpers (off), thinking (low), marks (always), "
-                                                  "small (screenshots 960 wide)")
+                                                  "big (screenshots 1344 wide)")
     ap.add_argument("--tasks", default="", help="only these tasks: " + ",".join(t.name for t in TASKS))
     ap.add_argument("--timeout", type=float, default=150)
     a = ap.parse_args(argv)
     names = {"helpers": "helpers off", "thinking": "thinking low", "marks": "marks always",
-             "small": "small screenshots"}
+             "big": "big screenshots"}
     variants = ["as set"] + [names[c] for c in a.compare.split(",") if c in names]
     app = QApplication.instance() or QApplication(sys.argv)
     settings = Settings.load()

@@ -2988,9 +2988,9 @@ class SettingsPage(QWidget):
         self.screen_side = self._spin(s.screen_max_side, 0, 3840)
         self.screen_side.setSpecialValueText("Automatic")
         self.screen_side.setSingleStep(64)
-        self.screen_side.setToolTip("Automatic: the biggest picture the model's vision takes as it is (about 1344x768 "
-                                    "for a 16:9 screen), whatever your screen's resolution. A smaller number is faster "
-                                    "and cheaper but less sharp. Bigger isn't possible: it would be shrunk again.")
+        self.screen_side.setToolTip("Automatic: about 960x512 for a 16:9 screen, whatever its resolution (in the computer "
+                                    "use test as good as bigger shots, and quicker to read). Up to 1344 is sharper but "
+                                    "slower; bigger isn't possible: it would be shrunk again. Zooms are always sharp.")
         f.addRow("Its screenshots (longest side, pixels):", self.screen_side)
         self.coords = self._combo([("auto", "Automatic by model"), ("pixels", "Screenshot pixels"),
                                    ("normalized", "0-1000 grid (Qwen vision models)")], s.coord_mode)
@@ -3780,7 +3780,7 @@ class MainWindow(QMainWindow):
                     "running.")
         compare = QCheckBox("Also run it with the new helpers off (text clicking, marks, browser), to compare")
         think = QCheckBox("Also run it with thinking on Low, to compare")
-        small = QCheckBox("Also run it with smaller screenshots (960 wide: quicker for the model to read), to compare")
+        small = QCheckBox("Also run it with bigger screenshots (1344 wide: sharper, slower to read), to compare")
         holder = QWidget()
         v = QVBoxLayout(holder)
         v.setContentsMargins(0, 0, 0, 0)
@@ -3794,7 +3794,7 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is not start:
             return
         variants = ["as set"] + (["helpers off"] if compare.isChecked() else []) + \
-            (["thinking low"] if think.isChecked() else []) + (["small screenshots"] if small.isChecked() else [])
+            (["thinking low"] if think.isChecked() else []) + (["big screenshots"] if small.isChecked() else [])
         win = cubench.make_window(int(self.settings.monitor or 1))
         self._bench_window = win
         self.showMinimized()

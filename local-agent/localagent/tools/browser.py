@@ -155,7 +155,14 @@ class _Browser:
         return self.page
 
     def _new_page(self, page):
-        self.page = page      # a link that opens a new tab: carry on there
+        # a link or button on the page it is using that opens a new tab: carry on there. Other tabs (ones
+        # Edge restores, or opens by itself) are left alone, so the numbers it just read stay right
+        try:
+            opener = page.opener()
+        except Exception:  # noqa: BLE001
+            opener = None
+        if opener is not None and opener == self.page:
+            self.page = page
 
     def close(self):
         try:

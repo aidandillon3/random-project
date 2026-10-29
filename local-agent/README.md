@@ -256,8 +256,10 @@ turn it off; that takes effect from its next click. While it's on:
   `data/browser-profile` (your own browser and its logins are left alone). Pages come back as
   text with numbered links, buttons and fields, so it needs no screenshots there.
 - Settings > Computer use also has the click coordinates (automatic: a 0-1000 grid for Qwen
-  models), a screenshot after every action, a coordinate grid for weaker models, marks on every
-  screenshot, and switches for text clicking and the browser.
+  models), the screenshot size (automatic: about 960x512 on a 16:9 screen, which read 40% quicker
+  than 1344x768 in the test and did as well; zooms are always sharp), a screenshot after every
+  action, a coordinate grid for weaker models, marks on every screenshot, and switches for text
+  clicking and the browser.
 
 The first time you turn it on it offers to install what it needs (mss, pyautogui, pyperclip,
 pywinauto; about 20 MB) and the text reading and browser add-ons (winrt, playwright; about 60 MB).
@@ -269,8 +271,8 @@ Settings > Computer use > **Run the computer use test** (or `computer-use-test.b
 model do 8 small tasks with your real mouse and keyboard, in a window that fills its screen:
 click a button by its words, click a tiny dot, type into a box, press a button in a painted
 game-style menu, set a slider, drag a box, hold a key, and fill in a web form. Each task checks
-itself and has 150 seconds. It can also run everything again with the new helpers off, or with
-thinking on Low, to compare. The summary shows what worked and how long the model and the tools
+itself and has 150 seconds. It can also run everything again with the new helpers off, with
+thinking on Low, or with bigger screenshots, to compare. The summary shows what worked and how long the model and the tools
 took; every step (thinking, calls, timings, tokens) is saved in `data/bench/` to find what's slow.
 Don't touch the mouse while it runs; push it into a screen corner to stop.
 
