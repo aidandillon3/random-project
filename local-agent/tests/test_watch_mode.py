@@ -80,9 +80,8 @@ class WatchModeTest(unittest.TestCase):
             self.assertEqual(len(r["messages"]), 2)                     # sent fresh each look
             self.assertEqual(sum(images(m) for m in r["messages"]), 1)  # only the newest picture
         # earlier looks come as text; the short wait at the end was left out
-        self.assertIn("- you: click 500 500 / key w hold 0.2 / wait 0.2 -> clicked 500 500; pressed w (held 0.2s)\n",
-                      watch[1]["messages"][-1]["content"][0]["text"] + "\n")
-        self.assertIn("move 250 250", watch[2]["messages"][-1]["content"][0]["text"])
+        self.assertIn("- clicked 500 500; pressed w (held 0.2s)\n", watch[1]["messages"][-1]["content"][0]["text"] + "\n")
+        self.assertIn("- moved to 250 250", watch[2]["messages"][-1]["content"][0]["text"])
         self.assertTrue(watch[2]["messages"][-1]["content"][0]["text"].startswith("Goal: hit the target"))
         name, result = ui.results[-1]
         self.assertEqual(name, "watch_mode")
@@ -93,6 +92,25 @@ class WatchModeTest(unittest.TestCase):
         saved = json.loads((DATA_DIR / "watch" / "latest.json").read_text(encoding="utf-8"))
         self.assertEqual([len(x["did"]) for x in saved["looks"]], [2, 2, 0])
         self.assertTrue(agent.ctx.capture_after)
+
+    def test_a_goal_from_a_bigger_screenshot_is_rescaled_and_the_chat_gets_its_own_size_back(self):
+        agent, ui, srv = self.agent([
+            calls(("screenshot", {})),
+            calls(("watch_mode", {"goal": "hold a click on the trunk at x=625"})),
+            text("click 400 200"), text("done"), text("Ok.")], coord_mode="pixels", watch_size="small")
+        agent.run("chop")
+        first = srv.requests[2]["messages"][-1]["content"][0]["text"]
+        self.assertIn("Positions in this goal are of a 960x512 screenshot; yours is 672x384, so multiply them by 0.70",
+                      first)
+        name, result = ui.results[-1]
+        self.assertIn("Screen 2, image 960x512", result.text)
+        self.assertEqual(agent.ctx.screen["img_w"], 960)
+
+    def test_fewer_earlier_looks_are_told_once_a_look_reads_too_much(self):
+        hist = [f"- clicked {i} {i}" for i in range(6)]
+        self.assertEqual(live._messages("s", "g", hist, [], "t")[1]["content"][0]["text"].count("- clicked"), 4)
+        self.assertEqual(live._messages("s", "g", hist, [], "t", keep=1)[1]["content"][0]["text"].count("- clicked"), 1)
+        self.assertNotIn("last looks", live._messages("s", "g", hist, [], "t", keep=0)[1]["content"][0]["text"])
 
     def test_bad_lines_are_reported_and_replies_without_actions_end_it(self):
         agent, ui, srv = self.agent([

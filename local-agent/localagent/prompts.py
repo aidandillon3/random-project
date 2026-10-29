@@ -130,9 +130,10 @@ SCREEN_GAMES = ("In games: press_keys with hold_seconds walks (\"w\" for 2 s), m
                 "(a tree, a block), check the ring is on it. Games don't wait for you, so keep "
                 "your thinking between actions short and act in small bursts. ")
 
-WATCH = ("For a game, or anything that moves or takes many quick actions on one screen, use watch_mode with a "
-         "goal it can see: it looks about once a second and acts at once, much faster than a tool call per "
-         "action. Check its last screenshot when it returns. ")
+WATCH = ("For anything that moves, or that takes many quick actions on one screen (often games), use watch_mode "
+         "with a goal it can see, described by what things look like, not positions: it looks about once a second "
+         "and acts at once, much faster than a tool call per action. One click or held click on something that "
+         "stays put is quicker with click. Check its screenshot when it returns. ")
 
 BACKGROUND = """- Programs that keep running (servers, games, watchers): run_command with background=true, read
   their output with check_process, and stop_process when done.

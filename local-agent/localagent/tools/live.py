@@ -28,6 +28,10 @@ REPLY_TOKENS = 160       # a reply is a few short lines
 NO_ACTIONS_LIMIT = 3     # replies in a row without an action line before it gives up
 FRAME_GAP = 0.5          # seconds between the frames of one look when it is shown more than one
 HISTORY = 4              # earlier looks it is told about, as text
+# Strata reads a prompt in 1024-token pieces, and with this model a short prompt's start can't be kept from the last
+# request (it keeps the conversation only at checkpoints, far apart), so every look is read whole: 963 tokens took
+# 1.0 s, 1040 took 1.44 s in the computer use test. Fewer earlier looks are told about once a look goes over this.
+PROMPT_TOKENS = 1000
 SHORT_WAIT = 0.5         # a wait this short at the end of a reply is left out: the next look takes longer anyway
 SIZES = {"small": 256, "normal": screen.AUTO_SQUARES, "sharp": screen.VISION_SQUARES}   # 32x32 squares a frame
 
@@ -185,20 +189,23 @@ def _image_parts(pngs: list[bytes]) -> list[dict]:
     return [png_part(p) for p in pngs]
 
 
-def _messages(system: str, goal: str, history: list[str], pngs: list[bytes], text: str) -> list[dict]:
+def _messages(system: str, goal: str, history: list[str], pngs: list[bytes], text: str,
+              keep: int = HISTORY) -> list[dict]:
     """One look: the prompt, the goal, the last few looks as text, the screenshot(s), then how things stand.
     Everything after the goal changes every look, so it is kept short."""
     head = f"Goal: {goal}"
-    if history:
-        head += "\nYour last looks, oldest first:\n" + "\n".join(history[-HISTORY:])
+    if history and keep > 0:
+        head += "\nWhat your last looks did, oldest first:\n" + "\n".join(history[-keep:])
     return [{"role": "system", "content": system},
             {"role": "user", "content": [{"type": "text", "text": head}] + _image_parts(pngs)
              + [{"type": "text", "text": text}]}]
 
 
 def _history_line(reply: str, did: list[str]) -> str:
+    if did:
+        return "- " + "; ".join(did)[:160]
     said = " / ".join(ln.strip() for ln in reply.splitlines() if ln.strip())
-    return f"- you: {said[:120] or '(nothing)'} -> {'; '.join(did)[:160] or 'nothing done'}"
+    return f"- you wrote: {said[:120] or '(nothing)'} (nothing done)"
 
 
 def _look_text(ctx: ToolContext, left: float, older: int) -> str:
@@ -235,9 +242,18 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
     try:
         if frames:
             time.sleep(FRAME_GAP * (per_look - 1))      # earlier frames to show with the first look
+        chat_size = (ctx.screen.get("img_w"), ctx.screen.get("img_h"))
         last_png = _frame(ctx, squares)
         older = _older(ctx, frames, per_look)
         history: list[str] = []
+        keep = HISTORY
+        if (chat_size[0] and chat_size != (ctx.screen["img_w"], ctx.screen["img_h"])
+                and screen.coord_mode(ctx) == "pixels"):
+            # the chat's goal may hold positions read off its own screenshot, which had another size
+            f = ctx.screen["img_w"] / chat_size[0]
+            goal += (f"\n(Positions in this goal are of a {chat_size[0]}x{chat_size[1]} screenshot; yours is "
+                     f"{ctx.screen['img_w']}x{ctx.screen['img_h']}, so multiply them by {f:.2f}, or better, aim at "
+                     f"what you see.)")
         messages = _messages(system, goal, history, older + [last_png], _look_text(ctx, seconds, len(older)))
         while True:
             left = seconds - (time.time() - start)
@@ -280,6 +296,8 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
             act_s = time.time() - t1
             did_all += did
             usage = turn.usage or {}
+            if (usage.get("prompt_n") or 0) > PROMPT_TOKENS and keep > 0:
+                keep -= 1
             log.append(dict(t=round(t0 - start, 2), model_s=round(model_s, 2), act_s=round(act_s, 2),
                             prompt_ms=usage.get("prompt_ms"), prompt_n=usage.get("prompt_n"),
                             cache_n=usage.get("cache_n"), reply=reply[:300], did=did))
@@ -302,7 +320,9 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
             text = _look_text(ctx, seconds - (time.time() - start), len(older))
             if not actions:
                 text = "No action lines in your last reply: answer only with action lines. " + text
-            messages = _messages(system, goal, history, older + [last_png], text)
+            messages = _messages(system, goal, history, older + [last_png], text, keep)
+        if chat_size[0] and chat_size != (ctx.screen["img_w"], ctx.screen["img_h"]):
+            last_png = screen._shot(ctx, monitor)     # back at the chat's own size, so its positions stay its scale
     finally:
         ctx.capture_after = capture_after
         if frames:
@@ -320,7 +340,7 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
     if did_all:
         text += "\nWhat it did (latest last): " + "; ".join(did_all[-40:])
     if last_png:
-        text += f"\nThe last screenshot it saw is attached. {screen._geometry_note(ctx)}"
+        text += f"\nA screenshot of how it ended is attached. {screen._geometry_note(ctx)}"
     return ToolResult(text, ok=ended_by in ("done", "time"), images=[last_png] if last_png else [])
 
 
@@ -343,8 +363,10 @@ def _save_log(ctx: ToolContext, goal: str, log: list[dict], ended_by: str):
 Hand the screen to watch mode for a goal: it looks at the newest screenshot about once a second and acts
 right away with short commands (click, keys, mouse moves) until the goal is reached or the time is up,
 much faster than one tool call per action. Use it for games and anything that moves or needs many quick
-steps on one screen. Give a clear goal it can see on screen ("chop down the tree to the right of the
-character", "get to the top of the hill"). It returns what it did and its last screenshot.""",
+steps on one screen; a single click or held click on something that stays put is quicker with click.
+Give a clear goal it can see on screen, by what things look like rather than positions ("chop down the
+tree to the right of the character", "get to the top of the hill"). It returns what it did and a
+screenshot of how it ended.""",
       {"goal": {"type": "string", "description": "What to do, and what the screen shows when it's done"},
        "seconds": {"type": "number", "description": "Most time it may take (default 60)"}},
       required=["goal"], risk=CONTROL, group="control",
