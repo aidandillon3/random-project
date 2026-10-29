@@ -148,6 +148,25 @@ class StrataTest(unittest.TestCase):
         s.ctx_size = 131072
         self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))
 
+    def test_low_ram_mode_goes_to_setup_and_sets_it_up_again(self):
+        s = Settings(ctx_size=262144, use_vision=True)
+        self.assertNotIn("--low-ram", strata.setup_args(self.flash, self.model, s, self.root))   # off: setup decides
+        self.root.mkdir(parents=True)
+        strata.config_path(self.flash, self.root).write_text("{}")
+        strata.python(self.root).parent.mkdir(parents=True)
+        strata.python(self.root).write_text("")
+        strata.mark_setup_done(self.flash, self.model, s, self.root)
+        s.strata_low_ram = True
+        self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))      # it writes experts.bin
+        a = strata.setup_args(self.flash, self.model, s, self.root)
+        self.assertEqual(a[a.index("--low-ram") + 1], "resident")
+        strata.mark_setup_done(self.flash, self.model, s, self.root)
+        self.assertFalse(strata.needs_setup(self.flash, self.model, s, self.root))
+        s.strata_low_ram = False
+        self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))      # and back
+        q36 = catalog.BY_KEY["qwen36-35b-strata"]                                      # a fork's setup has no such option
+        self.assertFalse(strata.low_ram(q36, Settings(strata_low_ram=True)))
+
     def test_the_picked_gpu_goes_to_setup(self):
         s = Settings(ctx_size=65536, use_vision=True)
         self.assertNotIn("--gpu", strata.setup_args(self.flash, self.model, s, self.root))   # one GPU: setup picks

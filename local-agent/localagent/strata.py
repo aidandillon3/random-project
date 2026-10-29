@@ -286,7 +286,17 @@ def wanted(preset, model: Path, settings, gpus: list[int] | None = None) -> dict
          "context": int(settings.ctx_size), "vision": bool(settings.use_vision), "strata": install_of(preset).commit}
     if gpus:
         w["gpus"] = list(gpus)
+    if low_ram(preset, settings):
+        w["low_ram"] = True
     return w
+
+
+def low_ram(preset, settings) -> bool:
+    """Strata's low-RAM mode is picked (Settings), for a mode of Strata itself (a fork's setup has no such option).
+    Setup then writes the experts into one file next to the model (about 43 GB for IQ3_XXS, once) and the engine copies
+    into RAM only the ones the GPU's cache doesn't hold (--resident-experts). The context's KV cache stays all in VRAM
+    then (normally, from 64K on, it is kept in RAM), so at a long context the GPU holds fewer experts."""
+    return bool(getattr(settings, "strata_low_ram", False)) and not preset.strata.get("install")
 
 
 def _stamps(root: Path) -> dict:
@@ -346,7 +356,8 @@ def setup_args(preset, model: Path, settings, root: Path | None = None, gpus: li
     return launch + ["--yes", "--no-start", "--no-browser", "--family", w["family"], "--model", w["model"],
                      "--gguf-dir", w["gguf_dir"], "--data-dir", str(data_dir(model)),
                      "--context", str(w["context"]), "--vision", "gpu" if w["vision"] else "no",
-                     "--port", str(settings.port)] + _gpu_args(gpus)
+                     "--port", str(settings.port)] + _gpu_args(gpus) + \
+        (["--low-ram", "resident"] if w.get("low_ram") else [])
 
 
 def _gpu_args(gpus: list[int] | None) -> list[str]:

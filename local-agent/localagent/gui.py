@@ -1708,6 +1708,15 @@ class ServerPage(QWidget):
         mrow.addWidget(self.monitors)
         mrow.addWidget(self.monitors_note, 1)
         lay.addLayout(mrow)
+        self.low_ram = QCheckBox("Low-RAM mode (Strata): keep in RAM only the experts the GPU doesn't hold")
+        self.low_ram.setToolTip("Strata's own low-RAM mode. The first start with it writes the experts into one file "
+                                "next to the model (about 43 GB for IQ3_XXS, one time) and then copies into RAM only "
+                                "the ones the GPU doesn't hold. The context's memory stays on the GPU then, so at a "
+                                "long context the GPU holds fewer experts and it can be slower. Changing it runs "
+                                "Strata's setup again.")
+        self.low_ram.setChecked(bool(self.s.strata_low_ram))
+        self.low_ram.toggled.connect(self._low_ram_toggled)
+        lay.addWidget(self.low_ram)
 
         # ---- the mode: what most people need
         g = QGroupBox("Mode")
@@ -2049,6 +2058,11 @@ class ServerPage(QWidget):
         self.monitors.blockSignals(False)
         self.monitors_note.setText("(found by itself)" if self.s.monitors_on_ai_gpu not in ("yes", "no")
                                    and any(g.display is not None for g in self.gpus) else "")
+
+    def _low_ram_toggled(self, on: bool):
+        self.s.strata_low_ram = on
+        self.s.save()
+        self._changed()
 
     def _monitors_toggled(self, on: bool):
         self.s.monitors_on_ai_gpu = "yes" if on else "no"
@@ -2423,6 +2437,7 @@ class ServerPage(QWidget):
         self.ngl.setEnabled(manual)
         self.ncm.setEnabled(manual)
         self.draft_label.setText(f"Draft model: {Path(s.draft_path).name}" if s.draft_path else "No draft model picked")
+        self.low_ram.setVisible(False)          # shown below for a mode of Strata itself
         if basalt.is_model(s.model_path):
             for w in (self.kv, self.placement, self.speed, self.extra, self.ngl, self.ncm):
                 w.setEnabled(False)
@@ -2445,6 +2460,7 @@ class ServerPage(QWidget):
         on_strata = strata.active(s, p)
         for w in (self.kv, self.placement, self.speed, self.extra):
             w.setEnabled(not on_strata)
+        self.low_ram.setVisible(on_strata and not p.strata.get("install"))
         if on_strata:
             self.ngl.setEnabled(False)
             self.ncm.setEnabled(False)

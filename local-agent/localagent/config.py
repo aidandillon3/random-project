@@ -115,6 +115,8 @@ class Settings:
     gpus: str = ""                     # GPUs the model uses: "" = the strongest, "all", or GPU UUIDs (gguf.chosen_gpus)
     basalt_models: list = field(default_factory=list)    # .basalt files used before: kept in the model lists
     monitors_on_ai_gpu: str = "auto"   # "auto" (gguf.monitors_on), "yes" or "no": VRAM kept free for the desktop
+    strata_low_ram: bool = False       # Strata's low-RAM mode (setup --low-ram resident): only the experts the GPU
+                                       # doesn't hold stay in RAM; the KV cache all in VRAM (strata.setup_args)
 
     extra: dict = field(default_factory=dict)
     settings_version: int = 6          # bumped when an old saved default needs moving on load
