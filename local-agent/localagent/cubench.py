@@ -47,6 +47,7 @@ TASKS = [Task("words", "Click a button by its words"),
          Task("drag", "Drag a box into a square"),
          Task("hold", "Hold a key for 2 seconds"),
          Task("chop", "Hold a click on a thin tree trunk in a side-view game"),
+         Task("chase", "Click a target that jumps somewhere else every 2.5 seconds, 3 times"),
          Task("web", "Fill in and send a web form")]
 
 # What a run can be compared against (Settings fields set for that run only).
@@ -57,6 +58,7 @@ VARIANTS = {
     "marks always": {"screen_marks": True},
     "big screenshots": {"screen_max_side": 1344},
     "0-1000 grid": {"coord_mode": "normalized"},
+    "watch mode off": {"watch_tool": False},
 }
 
 
@@ -545,6 +547,56 @@ def make_window(monitor: int):
             return ("This is a side-view game. Chop the tree that stands right next to your character: hold the left "
                     "mouse button on that tree's trunk for at least 1 second.")
 
+        def _task_chase(self, rng, taken, url):
+            """Something that doesn't wait: a target that jumps every JUMP seconds. A step that takes longer
+            than that clicks where it was."""
+            win = self
+            JUMP, R, NEED = 2.5, 22, 3
+            st = {"hits": 0, "at": None, "moved": 0.0}
+
+            class Field(Canvas):
+                def jump(self):
+                    w, h = max(400, self.width()), max(300, self.height())
+                    st["at"] = QPointF(rng.randint(60, w - 60), rng.randint(60, h - 60))
+                    st["moved"] = time.time()
+                    self.update()
+
+                def paintEvent(self, e):
+                    p = QPainter(self)
+                    p.setRenderHint(QPainter.Antialiasing)
+                    p.fillRect(self.rect(), QColor("#1d2b22"))
+                    p.setPen(QColor("#e8e8e8"))
+                    p.setFont(QFont("Arial", 16))
+                    p.drawText(20, 30, f"Hits: {st['hits']} of {NEED}")
+                    if st["at"] is not None:
+                        p.setPen(QPen(QColor("#ffffff"), 3))
+                        p.setBrush(QColor("#ff4d2e"))
+                        p.drawEllipse(st["at"], R, R)
+
+                def mousePressEvent(self, e):
+                    if st["at"] is None:
+                        return
+                    d = math.dist((e.position().x(), e.position().y()), (st["at"].x(), st["at"].y()))
+                    if d <= R + 3:
+                        st["hits"] += 1
+                        if st["hits"] >= NEED:
+                            win.done()
+                        self.jump()
+                    else:
+                        win.wrong(f"clicked {d:.0f} px from the target {time.time() - st['moved']:.1f} s after it "
+                                  "last jumped")
+
+            c = Field(self.area, self.state)
+            c.st = st
+            c.setGeometry(self.area.rect())
+            c.show()
+            c.jump()
+            c._timer = QTimer(c)
+            c._timer.timeout.connect(c.jump)
+            c._timer.start(int(JUMP * 1000))
+            return (f"Click the red target {NEED} times. It jumps to a new place every {JUMP:g} seconds and after "
+                    "each hit, so be quick.")
+
         def _task_web(self, rng, taken, url):
             return (f"Open {url} in a web browser and fill in its form: Name 'Aidan', Colour 'Blue', tick "
                     "'I like pumpkins', then press Submit.")
@@ -617,7 +669,8 @@ def run(settings, window, variants=("as set",), tasks=None, timeout: float = 150
     server = _FormServer(posted)
     out = {"when": time.strftime("%Y-%m-%d %H:%M:%S"), "model": "", "timeout": timeout,
            "settings": {k: getattr(settings, k, None) for k in ("thinking", "screen_max_side", "monitor", "coord_mode",
-                                                                   "screen_marks", "browser_tools", "text_tools",
+                                                                   "screen_marks", "browser_tools", "text_tools", "watch_tool",
+                                                                   "watch_size", "watch_frames",
                                                                    "screenshot_after_action", "model")},
            "variants": []}
     rng = random.Random()
@@ -737,12 +790,13 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(description="Computer use test")
     ap.add_argument("--compare", default="", help="also run with: helpers (off), thinking (low), marks (always), "
-                                                  "big (screenshots 1344 wide), grid (0-1000 coordinates)")
+                                                  "big (screenshots 1344 wide), grid (0-1000 coordinates), "
+                                                  "watch (watch mode off)")
     ap.add_argument("--tasks", default="", help="only these tasks: " + ",".join(t.name for t in TASKS))
     ap.add_argument("--timeout", type=float, default=150)
     a = ap.parse_args(argv)
     names = {"helpers": "helpers off", "thinking": "thinking low", "marks": "marks always",
-             "big": "big screenshots", "grid": "0-1000 grid"}
+             "big": "big screenshots", "grid": "0-1000 grid", "watch": "watch mode off"}
     variants = ["as set"] + [names[c] for c in a.compare.split(",") if c in names]
     app = QApplication.instance() or QApplication(sys.argv)
     settings = Settings.load()

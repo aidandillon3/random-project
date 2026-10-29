@@ -130,6 +130,10 @@ SCREEN_GAMES = ("In games: press_keys with hold_seconds walks (\"w\" for 2 s), m
                 "(a tree, a block), check the ring is on it. Games don't wait for you, so keep "
                 "your thinking between actions short and act in small bursts. ")
 
+WATCH = ("For a game, or anything that moves or takes many quick actions on one screen, use watch_mode with a "
+         "goal it can see: it looks about once a second and acts at once, much faster than a tool call per "
+         "action. Check its last screenshot when it returns. ")
+
 BACKGROUND = """- Programs that keep running (servers, games, watchers): run_command with background=true, read
   their output with check_process, and stop_process when done.
 """
@@ -173,6 +177,8 @@ def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mod
         if "browser_open" in names:
             ui += ("For websites use the browser tools (browser_open, browser_click, browser_type): they read the "
                    "page as text, no screenshots needed. ")
+        if "watch_mode" in names:
+            ui += WATCH
         games = SCREEN_GAMES if "move_mouse_by" in names else ""
         screen = textwrap.fill(SCREEN.format(ui=ui, coords=coords + " " if coords else "", games=games), 98,
                                initial_indent="- ", subsequent_indent="  ") + "\n"

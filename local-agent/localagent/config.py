@@ -89,6 +89,11 @@ class Settings:
     screen_marks: bool = False         # number the things to click on every screenshot (else only when asked)
     browser_tools: bool = True         # with Computer use: a browser it drives directly (tools/browser.py)
     text_tools: bool = True            # with Computer use: click_text and numbered marks (tools/ocr.py)
+    watch_tool: bool = True            # with Computer use: watch mode, a look about once a second and short action
+                                       # lines instead of a tool call per action (tools/live.py)
+    watch_size: str = "normal"         # its screenshots: small | normal | sharp (tools/live.SIZES)
+    watch_frames: int = 1              # screenshots per look, 0.5 s apart (2-3 show what moves; each costs a read)
+    watch_max_seconds: int = 300       # the longest one watch mode run may take
     shell: str = "auto"                # auto | powershell | cmd | bash
 
     # the window

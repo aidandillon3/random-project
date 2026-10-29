@@ -457,7 +457,8 @@ class Agent:
         if saved:
             self.ui.notice("Remembered: " + "; ".join(saved))
 
-    def _params(self, max_tokens: int | None = None) -> dict:
+    def _params(self, max_tokens: int | None = None, thinking: str | None = None) -> dict:
+        """The request's sampling and thinking settings; thinking overrides the chat's level (watch mode: off)."""
         s = self.settings
         p = {"temperature": s.temperature, "top_p": s.top_p, "max_tokens": self._fit(max_tokens or s.max_tokens)}
         if s.top_k:
@@ -465,10 +466,10 @@ class Agent:
         if s.min_p:
             p["min_p"] = s.min_p
         if s.auto_sampling:
-            rec = sampling_for(self.client.resolve_model(), thinking=s.thinking != "off")
+            rec = sampling_for(self.client.resolve_model(), thinking=(thinking or s.thinking) != "off")
             if rec:
                 p.update(rec)
-        want = "high" if s.thinking == "on" else s.thinking
+        want = thinking or ("high" if s.thinking == "on" else s.thinking)
         if want == "off":
             p["chat_template_kwargs"] = {"enable_thinking": False}
             if "low" in self.effort_levels():   # models that can't switch it off (gpt-oss) think least

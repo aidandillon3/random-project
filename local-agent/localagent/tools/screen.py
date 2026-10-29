@@ -160,7 +160,7 @@ def _png(img) -> bytes:
     return buf.getvalue()
 
 
-def _shot(ctx: ToolContext, monitor: int | None = None, marks: bool = False) -> bytes:
+def _shot(ctx: ToolContext, monitor: int | None = None, marks: bool = False, squares: int | None = None) -> bytes:
     from PIL import Image
 
     monitor = ctx.settings.monitor if monitor is None else monitor
@@ -168,7 +168,7 @@ def _shot(ctx: ToolContext, monitor: int | None = None, marks: bool = False) -> 
     real_w, real_h = img.size
     found = _targets(ctx, img, mon) if marks else None     # read before the pointer is drawn over it
     cur = _cursor()
-    size = fit_size(ctx, real_w, real_h)
+    size = fit_size(ctx, real_w, real_h, squares=squares)
     if size != img.size:
         img = img.resize(size, Image.LANCZOS)
     ctx.screen.update(left=mon["left"], top=mon["top"], width=real_w, height=real_h,
@@ -294,14 +294,19 @@ VISION_SQUARES = 1024
 AUTO_SQUARES = 512
 
 
-def fit_size(ctx: ToolContext, w: int, h: int, most: float = 1.0, zoom: bool = False) -> tuple[int, int]:
+def fit_size(ctx: ToolContext, w: int, h: int, most: float = 1.0, zoom: bool = False,
+             squares: int | None = None) -> tuple[int, int]:
     """The size to show a w x h picture at: at most `most` times bigger, under the vision limit, in whole
     32-pixel squares so nothing is resized again. A screenshot also stays under the size picked in Settings,
-    or about AUTO_SQUARES squares when that is 0 (automatic); a zoom uses the whole limit."""
+    or about AUTO_SQUARES squares when that is 0 (automatic); a zoom uses the whole limit. squares: about
+    this many squares instead of the Settings size (watch mode's own)."""
+    own = squares
     squares = int(ctx.settings.extra.get("vision_max_tokens") or VISION_SQUARES) if hasattr(ctx.settings, "extra") \
         else VISION_SQUARES
     scale = min(most, (squares * VISION_SQUARE * VISION_SQUARE / (w * h)) ** 0.5)
-    if not zoom:
+    if own:
+        scale = min(scale, (min(squares, int(own)) * VISION_SQUARE * VISION_SQUARE / (w * h)) ** 0.5)
+    elif not zoom:
         side = int(getattr(ctx.settings, "screen_max_side", 0) or 0)
         if side > 0:
             scale = min(scale, side / max(w, h))

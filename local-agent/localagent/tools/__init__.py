@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import browser, code, files, github, misc, ocr, screen, shell, unity, web  # noqa: F401  (registers tools)
+from . import browser, code, files, github, live, misc, ocr, screen, shell, unity, web  # noqa: F401  (registers tools)
 from .base import CONTROL, EDIT, PUBLISH, REGISTRY, RISK_LABELS, RUN, SAFE, Tool, ToolContext, ToolError, ToolResult
 
 # Every tool's definition goes with every request and costs prompt tokens, so two big groups are
@@ -73,6 +73,8 @@ def enabled_tools(settings, depth: int = 0, workspace=None, full=()) -> list[Too
             tools = [t for t in tools if t.name != "click_text"]
         if browser.missing() or not getattr(settings, "browser_tools", True):
             tools = [t for t in tools if not t.name.startswith("browser_")]
+        if not getattr(settings, "watch_tool", True):
+            tools = [t for t in tools if t.name != "watch_mode"]
     if depth > 0:  # helpers work quietly: no questions to the user
         tools = [t for t in tools if t.name != "ask_user"]
     return tools

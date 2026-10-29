@@ -3050,9 +3050,24 @@ class SettingsPage(QWidget):
         self.marks.setChecked(s.screen_marks)
         self.browser_tools = QCheckBox("Let it use a browser of its own for websites (Edge, with its own profile)")
         self.browser_tools.setChecked(s.browser_tools)
-        for w in (self.after, self.grid, self.minimize, self.text_tools, self.marks, self.browser_tools):
+        self.watch = QCheckBox("Let it use watch mode for games and moving things: a look about once a second "
+                               "and short commands, instead of a tool call per action")
+        self.watch.setChecked(s.watch_tool)
+        for w in (self.after, self.grid, self.minimize, self.text_tools, self.marks, self.browser_tools, self.watch):
             w.toggled.connect(self._save)
             f.addRow(w)
+        self.watch_size = self._combo([("small", "Small (fastest)"), ("normal", "Normal"),
+                                       ("sharp", "Sharp (slowest)")], s.watch_size)
+        self.watch_size.setToolTip("Small reads in about half the time of Normal, but small things are harder to hit.")
+        f.addRow("Watch mode screenshots:", self.watch_size)
+        self.watch_frames = self._combo([(1, "1 (newest only)"), (2, "2, half a second apart"),
+                                         (3, "3, half a second apart")], s.watch_frames)
+        self.watch_frames.setToolTip("More frames show it what is moving, but each one takes as long to read as "
+                                     "a screenshot.")
+        f.addRow("Watch mode frames per look:", self.watch_frames)
+        self.watch_secs = self._spin(s.watch_max_seconds, 10, 3600)
+        self.watch_secs.setSuffix(" s")
+        f.addRow("Longest watch mode run:", self.watch_secs)
         row = QHBoxLayout()
         b = QPushButton("Run the computer use test...")
         b.setToolTip("Small timed tasks it does with your mouse and keyboard on the screen picked above, to see "
@@ -3362,6 +3377,8 @@ class SettingsPage(QWidget):
         s.extra["minimize_during_control"] = self.minimize.isChecked()
         s.text_tools, s.screen_marks = self.text_tools.isChecked(), self.marks.isChecked()
         s.browser_tools = self.browser_tools.isChecked()
+        s.watch_tool, s.watch_size = self.watch.isChecked(), self.watch_size.currentData()
+        s.watch_frames, s.watch_max_seconds = int(self.watch_frames.currentData()), self.watch_secs.value()
         s.context_limit, s.keep_images = self.ctx_limit.value(), self.keep_images.value()
         s.max_images = max(self.max_images.value(), s.keep_images)
         s.max_steps, s.max_tool_output = self.max_steps.value(), self.max_out.value()
@@ -3814,15 +3831,16 @@ class MainWindow(QMainWindow):
             return
         box = QMessageBox(self)
         box.setWindowTitle("Computer use test")
-        box.setText("The model does 9 small tasks with your mouse and keyboard, in a window that fills screen "
+        box.setText("The model does 10 small tasks with your mouse and keyboard, in a window that fills screen "
                     f"{self.settings.monitor}: buttons, a tiny dot, typing, a game-style menu, a slider, a drag, a "
-                    "held key, chopping a tree in a side-view game and a web form. Each task has 150 seconds.\n\nDon't touch the mouse or keyboard "
+                    "held key, chopping a tree in a side-view game, a jumping target and a web form. Each task has 150 seconds.\n\nDon't touch the mouse or keyboard "
                     "meanwhile. To stop: push the mouse into a screen corner.\n\nThe model server has to be "
                     "running.")
         compare = QCheckBox("Also run it with the new helpers off (text clicking, marks, browser), to compare")
         think = QCheckBox("Also run it with thinking on Low, to compare")
         small = QCheckBox("Also run it with bigger screenshots (1344 wide: sharper, slower to read), to compare")
         grid = QCheckBox("Also run it with click positions on a 0-1000 grid, to compare")
+        nowatch = QCheckBox("Also run it with watch mode off, to compare")
         holder = QWidget()
         v = QVBoxLayout(holder)
         v.setContentsMargins(0, 0, 0, 0)
@@ -3830,6 +3848,7 @@ class MainWindow(QMainWindow):
         v.addWidget(think)
         v.addWidget(small)
         v.addWidget(grid)
+        v.addWidget(nowatch)
         box.layout().addWidget(holder, box.layout().rowCount(), 0, 1, box.layout().columnCount())
         start = box.addButton("Start", QMessageBox.AcceptRole)
         box.addButton(QMessageBox.Cancel)
@@ -3838,7 +3857,7 @@ class MainWindow(QMainWindow):
             return
         variants = ["as set"] + (["helpers off"] if compare.isChecked() else []) + \
             (["thinking low"] if think.isChecked() else []) + (["big screenshots"] if small.isChecked() else []) + \
-            (["0-1000 grid"] if grid.isChecked() else [])
+            (["0-1000 grid"] if grid.isChecked() else []) + (["watch mode off"] if nowatch.isChecked() else [])
         win = cubench.make_window(int(self.settings.monitor or 1))
         self._bench_window = win
         self.showMinimized()
