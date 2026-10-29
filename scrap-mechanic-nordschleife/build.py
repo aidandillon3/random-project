@@ -365,6 +365,9 @@ def kerbs(place, pieces):
     print(f"{count} kerb pieces")
 
 
+STAND_UP = (math.sin(math.pi / 4), 0.0, 0.0, math.cos(math.pi / 4))  # Rx(90)
+
+
 def trees(place, pts, ground, vx, vy):
     """Forest beside the track: a jittered grid of the game's trees in a band beside the
     road, with open meadows where a smooth noise field is low. Same trees every build."""
@@ -401,7 +404,10 @@ def trees(place, pts, ground, vx, vy):
     sizes = rng.uniform(0.8, 1.25, len(cand))
     for (x, y), z, k, yaw, s in zip(cand, h, kinds, yaws, sizes):
         u, cols, _ = TREES[k]
-        place(x, y, z - 0.3, (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)), (s, s, s),
+        # The game's tree models are y-up (the Tile Editor places assets at X = 90), so stand
+        # them up with Rx(90) before turning them about the vertical.
+        rot = qmul((0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)), STAND_UP)
+        place(x, y, z - 0.3, rot, (s, s, s),
               {name: hex_colour(c) for name, c in cols.items()}, asset_uuid=u)
     print(f"{len(cand)} trees")
 
