@@ -191,6 +191,15 @@ class WatchModeTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(len(srv.requests), 1 + live.STUCK_LOOKS + 1)
 
+    def test_it_hands_back_for_a_check_after_ten_looks(self):
+        replies = [text(f"turn {i * 10} 0") for i in range(12)]
+        agent, ui, srv = self.agent([calls(("watch_mode", {"goal": "walk"}))] + replies + [text("Ok.")])
+        with mock.patch.object(live, "_changed", lambda a, b: 50.0):
+            agent.run("go")
+        result = dict(ui.results)["watch_mode"]
+        self.assertIn("handed back after 10 looks so you can check", result.text)
+        self.assertEqual(len(srv.requests), 1 + live.CHECK_LOOKS + 1)
+
     def test_bad_lines_are_reported_and_replies_without_actions_end_it(self):
         agent, ui, srv = self.agent([
             calls(("watch_mode", {"goal": "do it"})),

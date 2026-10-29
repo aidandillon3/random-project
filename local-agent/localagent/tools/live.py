@@ -26,6 +26,7 @@ from .base import CONTROL, ToolContext, ToolError, ToolResult, tool
 MAX_ACTIONS = 6          # action lines run from one reply
 REPLY_TOKENS = 160       # a reply is a few short lines
 NO_ACTIONS_LIMIT = 3     # replies in a row without an action line before it gives up
+CHECK_LOOKS = 10         # looks before the chat checks how it's going (it drifted into random moves after ~10)
 STUCK_LOOKS = 4          # looks in a row with the same reply, or with the screen unchanged, before the chat rethinks
 FRAME_GAP = 0.5          # seconds between the frames of one look when it is shown more than one
 HISTORY = 4              # earlier looks it is told about, as text
@@ -397,6 +398,9 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
             said = " ".join(reply.lower().split())
             same = same + 1 if said == last_reply else 1
             last_reply = said
+            if len(log) >= CHECK_LOOKS:
+                ended_by, end = "check", f"{len(log)} looks"
+                break
             if still >= STUCK_LOOKS or same >= STUCK_LOOKS:
                 # going round in circles: back to the chat, which can think about it and start again
                 ended_by = "stuck"
@@ -425,6 +429,9 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
            if steps else "")
     how = {"done": f"It says the goal is reached: {end}", "stop": f"It stopped: {end}",
            "time": f"Time ran out ({seconds:g} s).", "no actions": f"It gave no actions three times: {end}",
+           "check": f"It handed back after {end} so you can check how it's going: look at the screenshot, then "
+                    "start watch mode again with the next step as its goal, saying what to do differently if it "
+                    "wasn't working.",
            "stuck": f"It looked stuck, so it handed back to you: {end}. Look at the screenshot, work out what went "
                     "wrong, and start watch mode again with a goal that says what to do differently."}
     text = f"Watch mode ended. {how.get(ended_by, ended_by.capitalize() + '.')}{avg}{note}"
@@ -432,7 +439,7 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
         text += "\nWhat it did (latest last): " + "; ".join(did_all[-40:])
     if last_png:
         text += f"\nA screenshot of how it ended is attached. {screen._geometry_note(ctx)}"
-    return ToolResult(text, ok=ended_by in ("done", "time"), images=[last_png] if last_png else [])
+    return ToolResult(text, ok=ended_by in ("done", "time", "check"), images=[last_png] if last_png else [])
 
 
 def _save_log(ctx: ToolContext, goal: str, log: list[dict], ended_by: str, model: str):
