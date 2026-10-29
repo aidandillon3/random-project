@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 from . import basalt, catalog, chats, launcher, mcp, odp, plugins, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
-from .gguf import chosen_gpus, gpu_env, gpu_info, list_gpus, model_info, monitors_on, strongest
+from .gguf import chosen_gpus, gpu_env, gpu_info, list_gpus, model_info, monitors_on, peer_monitors, strongest
 from .guide import GUIDE, sampling_for
 from .llm import LLMClient, ServerError
 from . import memory as memory_mod
@@ -168,6 +168,14 @@ def in_background(fn, done, poll_ms: int = 50) -> threading.Thread:
     QTimer.singleShot(poll_ms, check)
     return t
 
+
+
+def _short_gpu(name: str) -> str:
+    """'NVIDIA GeForce RTX 5080' -> 'RTX 5080'."""
+    for lead in ("NVIDIA GeForce ", "NVIDIA "):
+        if name.startswith(lead):
+            return name[len(lead):]
+    return name
 
 class GuiThreadGC(QObject):
     """Python collects reference cycles in whichever thread happens to trigger it, often the agent's
@@ -2031,8 +2039,16 @@ class ServerPage(QWidget):
             self.gpu_pick.addItem(f"{g.name} only", g.uuid)
         if len(self.gpus) > 1:
             self.gpu_pick.addItem("Both GPUs" if len(self.gpus) == 2 else f"All {len(self.gpus)} GPUs", "all")
+            main, store = strongest(self.gpus)[:2]
+            self.gpu_pick.addItem(f"{_short_gpu(main.name)}, with the {_short_gpu(store.name)} holding experts "
+                                  "(Strata)", "peer")
+            self.gpu_pick.setItemData(self.gpu_pick.count() - 1,
+                                      f"Strata only. The {main.name} runs the whole model; the {store.name} only keeps "
+                                      "experts in its VRAM that would otherwise be read from RAM (Strata's peer "
+                                      "expert tier). Other engines use the main card alone with this choice.",
+                                      Qt.ToolTipRole)
         use = chosen_gpus(self.s.gpus, self.gpus)
-        want = "all" if self.s.gpus == "all" and len(self.gpus) > 1 else (use[0].uuid if use else None)
+        want = self.s.gpus if self.s.gpus in ("all", "peer") and len(self.gpus) > 1 else (use[0].uuid if use else None)
         i = self.gpu_pick.findData(want)
         self.gpu_pick.setCurrentIndex(max(i, 0))
         self.gpu_pick.blockSignals(False)
@@ -2453,7 +2469,7 @@ class ServerPage(QWidget):
             model = Path(s.model_path)
             ids = self._gpu_ids()
             args = strata.setup_args(p, model, s, gpus=ids) if strata.needs_setup(p, model, s, gpus=ids) \
-                else strata.serve_args(p, s, monitors=self._monitors())
+                else strata.serve_args(p, s, monitors=self._monitors(), peer_monitors=peer_monitors(s.gpus, self.gpus))
             self.cmd.setPlainText(" ".join(f'"{a}"' if " " in a else a for a in args))
             ins = strata.install_of(p)
             first = not strata.installed(ins.root) or not strata.set_up_before(ins.root)
@@ -2547,12 +2563,14 @@ class ServerPage(QWidget):
         self._changed()
         if not self.proc.running and not self._clear_port():
             return
-        self.proc.env = gpu_env(self.s.gpus, self.gpus)
+        p = catalog.matching(self.s.model_path)
+        # "peer" is Strata's alone: llama.cpp and Basalt get the main card only (llama.cpp would split the layers)
+        self.proc.env = gpu_env(self.s.gpus, self.gpus,
+                                peer=not basalt.is_model(self.s.model_path) and strata.active(self.s, p))
         self.gpu_note.setText("")
         if basalt.is_model(self.s.model_path):
             self._start_basalt()
             return
-        p = catalog.matching(self.s.model_path)
         if strata.active(self.s, p):
             self._start_strata(p)
             return
@@ -2697,6 +2715,7 @@ class ServerPage(QWidget):
         run = copy.copy(s)       # what this start uses, even if the settings change during a long setup
         ids = self._gpu_ids()
         mon = self._monitors()
+        peer_mon = peer_monitors(self.s.gpus, self.gpus)
         self._run_port = run.port
 
         def say(msg, frac=None):
@@ -2730,7 +2749,7 @@ class ServerPage(QWidget):
                             "Start model to try again, it carries on where it stopped.")
                         return
                     strata.mark_setup_done(p, model, run, gpus=ids)
-                if self.proc.start(strata.serve_args(p, run, monitors=mon), cwd=ins.root, clear=False, cancel=stop):
+                if self.proc.start(strata.serve_args(p, run, monitors=mon, peer_monitors=peer_mon), cwd=ins.root, clear=False, cancel=stop):
                     say("Loading the model...")
             except strata.Stopped:
                 pass

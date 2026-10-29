@@ -157,6 +157,12 @@ class GpuPickTest(unittest.TestCase):
         self.assertEqual(name, "NVIDIA GeForce RTX 5080 + NVIDIA GeForce RTX 3080 Ti")
         self.assertAlmostEqual(total, (16303 + 12288) / 1024)
         self.assertEqual(gguf.gpu_info("", gpus)[0], "NVIDIA GeForce RTX 5080")
+        # the 3080 Ti only holding experts: both seen by Strata, the main card alone for the others and the plan
+        self.assertEqual(gguf.gpu_env("peer", gpus)["CUDA_VISIBLE_DEVICES"], "1,0")
+        self.assertEqual(gguf.gpu_env("peer", gpus, peer=False)["CUDA_VISIBLE_DEVICES"], "1")
+        name, total, _ = gguf.gpu_info("peer", gpus)
+        self.assertEqual(name, "NVIDIA GeForce RTX 5080 (the NVIDIA GeForce RTX 3080 Ti holds experts)")
+        self.assertAlmostEqual(total, 16303 / 1024)
 
     def test_where_the_monitors_are(self):
         def out(fields):
@@ -170,6 +176,9 @@ class GpuPickTest(unittest.TestCase):
         self.assertFalse(gguf.monitors_on("", gpus))            # the AI on the 5080, the desktop on the 3080 Ti
         self.assertTrue(gguf.monitors_on("all", gpus))
         self.assertTrue(gguf.monitors_on("GPU-aaa", gpus))
+        self.assertFalse(gguf.monitors_on("peer", gpus))        # the 5080 runs it; the 3080 Ti keeps its own reserve
+        self.assertTrue(gguf.peer_monitors("peer", gpus))
+        self.assertFalse(gguf.peer_monitors("all", gpus))
         self.smi(lambda f: self.TWO)                            # the driver doesn't say: taken to be on it
         self.assertTrue(gguf.monitors_on("", gguf.list_gpus()))
         self.assertTrue(gguf.monitors_on("", []))

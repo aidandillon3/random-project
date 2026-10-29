@@ -373,6 +373,27 @@ class StrataTest(unittest.TestCase):
         args = json.loads(cfg_path.read_text(encoding="utf-8"))["args"]
         self.assertEqual(args[args.index("--vram-reserve-mib") + 1], "1728")
 
+    def test_the_second_card_as_expert_storage(self):
+        # setup ran with --gpus 1,0 (the 5080, then the 3080 Ti): a layer split, unless the args name a peer
+        self.root.mkdir(parents=True)
+        cfg_path = strata.config_path(self.flash, self.root)
+        cfg_path.write_text(json.dumps({"gpu": [1, 0], "args": ["--serve"]}), encoding="utf-8")
+        args = lambda: json.loads(cfg_path.read_text(encoding="utf-8"))["args"]  # noqa: E731
+        val = lambda k: args()[args().index(k) + 1]  # noqa: E731
+        strata.serve_args(self.flash, Settings(gpus="peer"), self.root, monitors=False, peer_monitors=True)
+        self.assertEqual(val("--peer-device"), "1")                     # CUDA's second of the two the config names
+        self.assertEqual(val("--vram-reserve-mib"), "700")              # the 5080 drives no monitors
+        self.assertEqual(val("--vram-reserve-later-mib"), "1728")       # the 3080 Ti does
+        self.assertFalse(strata.tune_config(self.flash, self.root, monitors=False, peer=True, peer_monitors=True))
+        self.assertTrue(strata.tune_config(self.flash, self.root, monitors=False, peer=True, peer_monitors=False))
+        self.assertEqual(val("--vram-reserve-later-mib"), "700")
+        strata.serve_args(self.flash, Settings(gpus="all"), self.root, monitors=False)    # back to a layer split
+        self.assertNotIn("--peer-device", args())
+        self.assertNotIn("--vram-reserve-later-mib", args())
+        cfg_path.write_text(json.dumps({"gpu": [1], "args": ["--serve"]}), encoding="utf-8")
+        strata.serve_args(self.flash, Settings(gpus="peer"), self.root)  # one card in the config: no peer to name
+        self.assertNotIn("--peer-device", args())
+
     def test_qwen36_engine_comes_from_this_repos_releases(self):
         ins = strata.Install("q36", self.root, "xyehya/Strata", strata.Q36.commit, "test", dict(strata.Q36.engine))
         self.assertFalse(strata.engine_ready(ins))

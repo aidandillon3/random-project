@@ -402,7 +402,14 @@ MONITOR_FLAGS = ("--vram-reserve-mib", "--expert-vram")
 ENGINE_ENV = {"STRATA_PIN_BY_NEED": "1"}
 
 
-def tune_config(preset, root: Path | None = None, model_dir: Path | None = None, monitors: bool = True) -> bool:
+# "Run the AI on: ... holds experts": the second card (CUDA's 1 of the two the config names) is Strata's peer expert
+# tier (--peer-device, #665): it keeps experts the main card would read from RAM, instead of running layers of its
+# own as in a layer split. Its VRAM reserve: --vram-reserve-later-mib, more when it drives the monitors.
+PEER_FLAGS = ("--peer-device", "--vram-reserve-later-mib")
+
+
+def tune_config(preset, root: Path | None = None, model_dir: Path | None = None, monitors: bool = True,
+                peer: bool = False, peer_monitors: bool = True) -> bool:
     """Add ENGINE_ARGS (with the mode's own values) to strata-<model>.json where it doesn't have them (it keeps
     values set by hand, except MONITOR_FLAGS'). True when the file changed. A fork's mode (strata["install"]) takes
     only its own options: the main path's are not options of its engine, which then refuses to start. An option
@@ -433,7 +440,16 @@ def tune_config(preset, root: Path | None = None, model_dir: Path | None = None,
         want["--expert-vram"] = f"{gib:.1f}"
     args = list(args)
     changed = False
-    for flag in MONITOR_FLAGS:          # already there with the other choice's value
+    if peer and isinstance(cfg.get("gpu"), list) and len(cfg["gpu"]) > 1:
+        want["--peer-device"] = "1"
+        want["--vram-reserve-later-mib"] = "1728" if peer_monitors else NO_MONITORS_RESERVE
+    else:                               # back to one card or a layer split: the peer's options go
+        for flag in PEER_FLAGS:
+            while flag in args:
+                i = args.index(flag)
+                del args[i:i + 2]
+                changed = True
+    for flag in MONITOR_FLAGS + PEER_FLAGS:      # already there with the other choice's value
         if flag in want and flag in args and args.index(flag) + 1 < len(args) \
                 and args[args.index(flag) + 1] != want[flag]:
             args[args.index(flag) + 1] = want[flag]
@@ -465,12 +481,13 @@ def tune_config(preset, root: Path | None = None, model_dir: Path | None = None,
     return True
 
 
-def serve_args(preset, settings, root: Path | None = None, monitors: bool = True) -> list[str]:
+def serve_args(preset, settings, root: Path | None = None, monitors: bool = True, peer_monitors: bool = True) -> list[str]:
     """What Strata's run-<model> script runs, minus opening the browser. --fit-max-tokens: a request whose prompt
     plus max_tokens is longer than the context gets a shorter answer instead of an error. Also makes sure the
     config has ENGINE_ARGS (setup rewrites them away)."""
     root = root or install_of(preset).root
     model = getattr(settings, "model_path", "")
-    tune_config(preset, root, Path(model).parent if model else None, monitors)
+    tune_config(preset, root, Path(model).parent if model else None, monitors,
+                peer=getattr(settings, "gpus", "") == "peer", peer_monitors=peer_monitors)
     return [str(python(root)), str(root / "serve" / "server.py"), "--engine", "strata",
             "--config", str(config_path(preset, root)), "--port", str(settings.port), "--fit-max-tokens"]

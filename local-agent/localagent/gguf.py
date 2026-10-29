@@ -305,21 +305,25 @@ def strongest(gpus: list[Gpu]) -> list[Gpu]:
     return sorted(gpus, key=lambda g: (-g.cc, -g.total_gb, g.index))
 
 
-def chosen_gpus(choice: str, gpus: list[Gpu]) -> list[Gpu]:
+def chosen_gpus(choice: str, gpus: list[Gpu], peer: bool = True) -> list[Gpu]:
     """The GPUs a model uses, best first (the first one is CUDA's device 0, where the main work goes).
-    choice: "" = the strongest one only, "all" = every GPU, otherwise GPU UUIDs joined by commas. A choice
-    naming a GPU that isn't there any more falls back to the strongest one."""
+    choice: "" = the strongest one only, "all" = every GPU, "peer" = the strongest runs the model and the next one
+    only holds experts for it (Strata's peer expert tier; peer=False: the main card alone, for engines without
+    one), otherwise GPU UUIDs joined by commas. A choice naming a GPU that isn't there any more falls back to the
+    strongest one."""
     if not gpus:
         return []
     if choice == "all":
         return strongest(gpus)
+    if choice == "peer":
+        return strongest(gpus)[:2 if peer else 1]
     picked = [g for g in gpus if g.uuid in {c.strip() for c in choice.split(",") if c.strip()}]
     return strongest(picked) if picked else strongest(gpus)[:1]
 
 
-def gpu_env(choice: str, gpus: list[Gpu]) -> dict[str, str]:
+def gpu_env(choice: str, gpus: list[Gpu], peer: bool = True) -> dict[str, str]:
     """What a model server needs in its environment to see only the chosen GPUs, best one first."""
-    use = chosen_gpus(choice, gpus)
+    use = chosen_gpus(choice, gpus, peer)
     if not use:
         return {}
     return {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": ",".join(str(g.index) for g in use)}
@@ -330,7 +334,15 @@ def monitors_on(choice: str, gpus: list[Gpu]) -> bool:
     the desktop (an old driver, or monitors on the motherboard), it's taken that one does: the safe guess."""
     if not any(g.display for g in gpus):
         return True
-    return any(g.display for g in chosen_gpus(choice, gpus))
+    return any(g.display for g in chosen_gpus(choice, gpus, peer=False))   # a peer card's own reserve: peer_monitors
+
+
+def peer_monitors(choice: str, gpus: list[Gpu]) -> bool:
+    """With "peer": whether the desktop is on the card that holds the experts (it then keeps VRAM free for it)."""
+    use = chosen_gpus(choice, gpus)
+    if choice != "peer" or len(use) < 2:
+        return False
+    return use[1].display is not False
 
 
 def gpu_info(choice: str = "", gpus: list[Gpu] | None = None) -> tuple[str, float, float] | None:
@@ -338,6 +350,8 @@ def gpu_info(choice: str = "", gpus: list[Gpu] | None = None) -> tuple[str, floa
     use = chosen_gpus(choice, list_gpus() if gpus is None else gpus)
     if not use:
         return None
+    if choice == "peer" and len(use) > 1:       # the model is planned for the main card; the other only stores
+        return f"{use[0].name} (the {use[1].name} holds experts)", use[0].total_gb, use[0].used_gb
     return " + ".join(g.name for g in use), sum(g.total_gb for g in use), sum(g.used_gb for g in use)
 
 
