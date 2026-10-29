@@ -209,7 +209,40 @@ class ComputerUseTest(unittest.TestCase):
         REGISTRY["click"].func(ctx, {"x": 500, "y": 500, "in_zoom": True})
         # the middle of the zoomed box: screen 1 is 1920x1080, the box 960-1152 x 540-648
         self.assertEqual(self.log[0], ("move", 1056, 594))
-        self.assertEqual(ctx.screen["img_w"], 1280)
+        self.assertEqual((ctx.screen["img_w"], ctx.screen["img_h"]), (1344, 768))
+        self.assertEqual(out.images[0][16:24], (576).to_bytes(4, "big") + (320).to_bytes(4, "big"))   # 3x, whole squares
+
+    def test_screenshots_fit_what_the_vision_part_sees_at_any_size(self):
+        from localagent.tools.screen import fit_size
+
+        auto = ToolContext(settings=Settings(), workspace=Path("."))
+        for w, h in ((1920, 1080), (2560, 1440), (3840, 2160), (3440, 1440)):
+            iw, ih = fit_size(auto, w, h)
+            self.assertEqual((iw % 32, ih % 32), (0, 0))
+            self.assertLessEqual(iw * ih, 1024 * 32 * 32)          # never shrunk again by the model server
+            self.assertGreater(iw * ih, 900 * 32 * 32)             # but close to the most it takes
+            self.assertAlmostEqual(iw / ih, w / h, delta=0.08)
+        self.assertEqual(fit_size(auto, 2560, 1440), (1344, 768))   # the same picture as 1920x1080
+        self.assertEqual(fit_size(auto, 1280, 720), (1280, 704))   # a small screen isn't blown up
+        lowered = ToolContext(settings=Settings(screen_max_side=960), workspace=Path("."))
+        self.assertEqual(fit_size(lowered, 2560, 1440), (960, 512))
+
+    def test_lowered_size_still_lands_clicks_in_the_right_place(self):
+        ctx = self.ctx(screenshot_after_action=False, screen_max_side=640)
+        self.assertEqual((ctx.screen["img_w"], ctx.screen["img_h"]), (640, 352))
+        ctx.settings.coord_mode = "pixels"
+        REGISTRY["click"].func(ctx, {"x": 320, "y": 176})
+        self.assertEqual(self.log[0], ("move", 960, 540))      # the middle of the 1920x1080 screen
+
+    def test_screenshot_notes_get_short_after_the_first(self):
+        ctx = ToolContext(settings=Settings(computer_use=True), workspace=Path("."))
+        first = REGISTRY["screenshot"].func(ctx, {}).text
+        second = REGISTRY["screenshot"].func(ctx, {}).text
+        self.assertIn("real pixels", first)
+        self.assertNotIn("real pixels", second)
+        self.assertLess(len(second), len(first) / 2)
+        third = REGISTRY["screenshot"].func(ctx, {"monitor": 2}).text   # another screen: explained again
+        self.assertIn("real pixels", third)
 
     def test_off_grid_positions_are_explained_not_clamped(self):
         ctx = self.ctx()

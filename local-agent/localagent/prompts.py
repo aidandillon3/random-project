@@ -115,7 +115,9 @@ SCREEN = ("Computer use is on: screenshot shows the user's screen, and click, ty
           "scroll, drag and open use their mouse and keyboard. Prefer files, commands and keyboard shortcuts "
           "when they do the job; use the screen for what only works by hand. {ui}Take a screenshot first, and "
           "after each action look at the screenshot it returns before the next step. For something small, zoom in "
-          "on it and click with in_zoom=true and its position in the zoomed view. {coords}{games}The user can "
+          "on it and click with in_zoom=true and its position in the zoomed view. When the next few actions are sure "
+          "(a click, typing, then Enter), make them together in one reply: only the last one sends back a "
+          "screenshot, which saves time. {coords}{games}The user can "
           "stop you by moving the mouse into a screen corner.")
 
 SCREEN_GAMES = ("In games: press_keys with hold_seconds walks (\"w\" for 2 s), move_mouse_by turns the camera "

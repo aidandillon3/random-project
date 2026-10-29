@@ -172,10 +172,9 @@ def _shot(ctx: ToolContext, monitor: int | None = None) -> bytes:
         cx, cy = cur[0] - mon["left"], cur[1] - mon["top"]
         r = max(6, real_w // 250)
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 0, 0), width=max(2, r // 3))
-    max_side = _max_side(ctx)
-    scale = min(1.0, max_side / max(real_w, real_h))
-    if scale < 1.0:
-        img = img.resize((round(real_w * scale), round(real_h * scale)), Image.LANCZOS)
+    size = fit_size(ctx, real_w, real_h)
+    if size != img.size:
+        img = img.resize(size, Image.LANCZOS)
     ctx.screen.update(left=mon["left"], top=mon["top"], width=real_w, height=real_h,
                       img_w=img.size[0], img_h=img.size[1], monitor=monitor)
     if ctx.settings.grid_overlay:
@@ -183,8 +182,26 @@ def _shot(ctx: ToolContext, monitor: int | None = None) -> bytes:
     return _png(img)
 
 
-def _max_side(ctx: ToolContext) -> int:
-    return int(getattr(ctx.settings, "screen_max_side", 0) or ctx.settings.screenshot_max_side or 1280)
+# Qwen vision (llama.cpp's mtmd, which Strata uses too) cuts a picture into 32x32-pixel squares and, past a
+# limit, shrinks it first: Strata's limit is 1024 squares (about 1 megapixel), llama.cpp's 4096. A picture it
+# shrinks is seen at another size than the one the model is told, and its positions come back at that other
+# scale (at 2560x1440 they were half of what they should be). So screenshots are made at the size it sees:
+# whole squares, under the smaller limit, which is also about what Qwen needs to point at things well.
+VISION_SQUARE = 32
+VISION_SQUARES = 1024
+
+
+def fit_size(ctx: ToolContext, w: int, h: int, most: float = 1.0) -> tuple[int, int]:
+    """The size to show a w x h picture at: at most `most` times bigger, under the vision limit and the
+    size picked in Settings (0 = automatic), in whole 32-pixel squares so nothing is resized again."""
+    squares = int(ctx.settings.extra.get("vision_max_tokens") or VISION_SQUARES) if hasattr(ctx.settings, "extra") \
+        else VISION_SQUARES
+    scale = min(most, (squares * VISION_SQUARE * VISION_SQUARE / (w * h)) ** 0.5)
+    side = int(getattr(ctx.settings, "screen_max_side", 0) or 0)
+    if side > 0:
+        scale = min(scale, side / max(w, h))
+    return (max(VISION_SQUARE, int(w * scale) // VISION_SQUARE * VISION_SQUARE),
+            max(VISION_SQUARE, int(h * scale) // VISION_SQUARE * VISION_SQUARE))
 
 
 def _grid(ctx: ToolContext, img):
@@ -207,7 +224,13 @@ def _grid(ctx: ToolContext, img):
 
 
 def _geometry_note(ctx: ToolContext) -> str:
+    """The whole explanation once, then only what it needs (fewer tokens per screenshot), unless the
+    screen, its size or the coordinate style changed since."""
     s = ctx.screen
+    key = (s["monitor"], s["width"], s["height"], s["img_w"], s["img_h"], coord_mode(ctx))
+    if s.get("explained") == key:
+        return f"Screen {s['monitor']}, image {s['img_w']}x{s['img_h']}."
+    s["explained"] = key
     note = (f"Screen {s['monitor']}: {s['width']}x{s['height']} real pixels, image shown at "
             f"{s['img_w']}x{s['img_h']}. {coord_help(ctx)}")
     mons = monitors()
@@ -256,8 +279,7 @@ def zoom(ctx: ToolContext, a: dict):
         raise ToolError("That box is too small: give its top-left corner as x, y and its size as width, height.")
     box = {"left": x1, "top": y1, "width": x2 - x1, "height": y2 - y1}
     img, _, _ = _grab(ctx.screen.get("monitor", ctx.settings.monitor), box)
-    scale = min(3.0, _max_side(ctx) / max(img.size))
-    img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
+    img = img.resize(fit_size(ctx, *img.size, most=3.0), Image.LANCZOS)
     ctx.screen["zoom"] = dict(box, img_w=img.width, img_h=img.height)
     where = ("on a 0-1000 grid over this zoomed image" if coord_mode(ctx) == "normalized" else
              f"in pixels of this zoomed image ({img.width}x{img.height})")

@@ -81,8 +81,8 @@ class Settings:
     # toggle next to the message box is turned on; while on, clicks and keys never ask.
     computer_use: bool = False
     monitor: int = 1                   # the screen it looks at first: 1, 2, 3...
-    screen_max_side: int = 1280        # its screenshots; bigger ones get shrunk again inside the model's vision
-                                       # part, and then it gives positions in the size it saw, not the size it was told
+    screen_max_side: int = 0           # its screenshots' longest side; 0 = automatic: the biggest the model's
+                                       # vision takes without shrinking it again (see tools/screen.fit_size)
     coord_mode: str = "auto"           # auto | pixels | normalized (0-1000)
     grid_overlay: bool = False
     screenshot_after_action: bool = True
@@ -114,7 +114,7 @@ class Settings:
     monitors_on_ai_gpu: str = "auto"   # "auto" (gguf.monitors_on), "yes" or "no": VRAM kept free for the desktop
 
     extra: dict = field(default_factory=dict)
-    settings_version: int = 5          # bumped when an old saved default needs moving on load
+    settings_version: int = 6          # bumped when an old saved default needs moving on load
 
     # ---------------------------------------------------------------
     def workspace_path(self) -> Path:
@@ -146,6 +146,8 @@ class Settings:
             s.answer_font = "sans"    # the old default; serif looked odd on Windows
         if version < 5 and raw.get("max_steps") == 150:
             s.max_steps = 0           # the old default; a long job paused and waited for "continue"
+        if version < 6:
+            s.screen_max_side = 0     # tried at 1920 and 2560 the night it came: both too big for the vision part
         s.settings_version = cls.settings_version   # saved as moved on, so a choice made later sticks
         return s
 

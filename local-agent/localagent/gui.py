@@ -2956,9 +2956,12 @@ class SettingsPage(QWidget):
         self._fill_monitors()
         self.monitor.currentIndexChanged.connect(self._save)
         f.addRow("Screen it looks at first:", self.monitor)
-        self.screen_side = self._spin(s.screen_max_side, 640, 3840)
-        self.screen_side.setToolTip("1280 is best for Qwen models: their vision shrinks bigger pictures again, and "
-                                    "then their clicks land at the wrong scale. For small things it zooms in instead.")
+        self.screen_side = self._spin(s.screen_max_side, 0, 3840)
+        self.screen_side.setSpecialValueText("Automatic")
+        self.screen_side.setSingleStep(64)
+        self.screen_side.setToolTip("Automatic: the biggest picture the model's vision takes as it is (about 1344x768 "
+                                    "for a 16:9 screen), whatever your screen's resolution. A smaller number is faster "
+                                    "and cheaper but less sharp. Bigger isn't possible: it would be shrunk again.")
         f.addRow("Its screenshots (longest side, pixels):", self.screen_side)
         self.coords = self._combo([("auto", "Automatic by model"), ("pixels", "Screenshot pixels"),
                                    ("normalized", "0-1000 grid (Qwen vision models)")], s.coord_mode)
