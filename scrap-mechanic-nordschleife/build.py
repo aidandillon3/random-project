@@ -30,14 +30,14 @@ import track
 ROAD_WIDTH = 20.0      # metres (Scrap Mechanic cars are ~3x real size)
 PIECE_SIZE = 32.0      # Blank Road (Matte) mesh is 32 x 32 m at scale 1 (collision .obj)
 PIECE_THICK = 0.5      # ... and 0.5 m thick
-THICK_SCALE = 0.2      # mesh is 0.5 m thick at scale 1 (local z 0..0.5), so the slab is 0.10 m;
-                       # thin, so the lip where one piece rests on the next stays small
-ROAD_SINK = 0.08       # slab bottom sits this far below the road profile, top 0.02 above
+THICK_SCALE = 0.5      # mesh is 0.5 m thick at scale 1 (local z 0..0.5), so the slab is 0.25 m
+ROAD_SINK = 0.15       # slab bottom sits this far below the road profile, top 0.10 above
 TILE_STEP = 0.03       # metres each piece's front end sits above the next piece (roof tiles)
 START_AHEAD = 10       # pieces between the spawn point (T13) and the start/finish line
 STEP = 4.0             # metres of centre line per road piece (short pieces lean across each
                        # other less in bends on hills, so the steps stay small)
 GROUND_UNDER = 0.06    # ground sits this far below the road profile (inside the slab)
+CARVE = 0.12           # ... and at least this far below the top of every piece over it
 FLAT_EDGE = ROAD_WIDTH / 2 + 2.0   # ground is flat at road height out to here ...
 BLEND_EDGE = 45.0                  # ... and back to the real hillside by here
 PROFILE_SMOOTH = 60.0  # metres either side used to smooth the road's height profile
@@ -214,7 +214,6 @@ def main():
         ground -= base
         zs -= base
         print(f"road height {zs.min():.0f} to {zs.max():.0f} m, ground {ground.min():.0f} to {ground.max():.0f} m")
-        ground = shape_ground(ground, vx, vy, pts, zs)
 
     # Road pieces into tiles/cells.
     tiles = {}  # (tx, ty) -> {(cx, cy): [(Asset, tileson dict)]}
@@ -238,6 +237,8 @@ def main():
         tiles.setdefault((tx, ty), {}).setdefault((cx, cy), []).append((a, j))
 
     pieces = list(road_pieces(pts, zs))
+    if not args.flat:
+        ground = carve_under(shape_ground(ground, vx, vy, pts, zs), vx, vy, pieces)
     steps = sorted(road_pieces.steps)
     print(f"steps between pieces: median {steps[len(steps) // 2] * 100:.0f} cm, "
           f"95% under {steps[int(len(steps) * .95)] * 100:.0f} cm, max {steps[-1] * 100:.0f} cm")
@@ -363,6 +364,35 @@ def shape_ground(ground, vx, vy, pts, zs):
         t = t * t * (3 - 2 * t)
         blk = out[r:r + 256]
         out[r:r + 256] = np.where(near, road_h * (1 - t) + blk * t, blk)
+    return out
+
+
+def carve_under(ground, vx, vy, pieces):
+    """Push the ground below every road piece. The pieces are flat slabs, so in bends and
+    over crests their corners can sit lower than the smoothed road line the ground was
+    shaped to, and the grass would poke up through them. Reaches 2 m (one ground vertex)
+    past each piece so the ground's triangles can't come up between vertices either."""
+    out = ground.copy()
+    x0, y0 = vx[0], vy[0]
+    top = PIECE_THICK * THICK_SCALE
+    reach = VERTEX
+    for x, y, z, yaw, pitch, length in pieces:
+        half_l = length * math.cos(pitch) / 2
+        r = math.hypot(half_l, ROAD_WIDTH / 2) + reach
+        i0, i1 = max(0, int((x - r - x0) / VERTEX)), min(len(vx), int((x + r - x0) / VERTEX) + 2)
+        j0, j1 = max(0, int((y - r - y0) / VERTEX)), min(len(vy), int((y + r - y0) / VERTEX) + 2)
+        if i0 >= i1 or j0 >= j1:
+            continue
+        gxx, gyy = np.meshgrid(vx[i0:i1] - x, vy[j0:j1] - y)
+        u = gxx * math.cos(yaw) + gyy * math.sin(yaw)
+        v = -gxx * math.sin(yaw) + gyy * math.cos(yaw)
+        inside = (np.abs(u) <= half_l + reach) & (np.abs(v) <= ROAD_WIDTH / 2 + reach)
+        h = z - ROAD_SINK + np.clip(u, -half_l, half_l) * math.tan(pitch) + top / math.cos(pitch) - CARVE
+        blk = out[j0:j1, i0:i1]
+        out[j0:j1, i0:i1] = np.where(inside, np.minimum(blk, h), blk)
+    cut = ground - out
+    print(f"ground pushed under the road at {(cut > 0.01).sum()} vertices, "
+          f"{(cut > 0.1).sum()} by over 10 cm, most {cut.max():.2f} m")
     return out
 
 
