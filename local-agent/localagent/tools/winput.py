@@ -138,8 +138,22 @@ def window_at(x: int, y: int):
 
 
 def bring_to_front(hwnd) -> None:
-    user32 = ctypes.windll.user32
+    """Windows lets a program put another window in front only right after input of its own, or while
+    it shares input with the window in front now. This used to tap Alt for that, which overlays that
+    listen for Alt shortcuts (NVIDIA's) took as theirs and opened; a mouse move of 0 is input too, and
+    attaching to the front window's input covers the rest."""
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
     user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-    key("alt", False)      # a program may only take the front after a key press: tap Alt first
-    key("alt", True)
-    user32.SetForegroundWindow(hwnd)
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.c_void_p]
+    move_by(0, 0)
+    front = user32.GetForegroundWindow()
+    theirs = user32.GetWindowThreadProcessId(front, None) if front else 0
+    mine = kernel32.GetCurrentThreadId()
+    attached = bool(theirs and theirs != mine and user32.AttachThreadInput(mine, theirs, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(mine, theirs, False)

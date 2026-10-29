@@ -857,8 +857,10 @@ def focus_window(ctx: ToolContext, a: dict):
     try:
         if w.isMinimized:
             w.restore()
-        _gui().press("alt")  # lets Windows hand focus to another app
-        w.activate()
+        if WINDOWS:
+            winput.bring_to_front(w._hWnd)     # without an Alt tap, which overlays take as theirs
+        else:
+            w.activate()
     except Exception:
         try:
             w.minimize()
