@@ -137,6 +137,38 @@ class Tile:
         self._set_cell_int(x, y, ASSET_CSIZE + lst, len(comp))
         self._set_cell_int(x, y, ASSET_SIZE + lst, len(raw))
 
+    def rebuild(self, cell_assets, lst=1):
+        """Rewrite the data section in the editor's order (per cell: 6 mips, clutter,
+        asset list) with new assets. cell_assets maps (x, y) -> [Asset]. Only plain
+        terrain tiles (no prefabs, blueprints, nodes, ...) are supported."""
+        out = bytearray(self.data[:self.cell_offset + self.width * self.height * self.cell_size])
+        start = len(out)
+        for y in range(self.height):
+            for x in range(self.width):
+                h = self.cell_ints(x, y)
+                if any(h[37:97]):
+                    raise ValueError(f"template cell {x},{y} has objects other than assets")
+                for m in range(6):
+                    blob = self.data[h[m]:h[m] + h[6 + m]]
+                    h[m] = len(out)
+                    out += blob
+                blob = self.data[h[18]:h[18] + h[19]]
+                h[18] = len(out)
+                out += blob
+                for i in range(4):
+                    h[ASSET_COUNT + i] = h[ASSET_INDEX + i] = h[ASSET_CSIZE + i] = h[ASSET_SIZE + i] = 0
+                assets = cell_assets.get((x, y), [])
+                if assets:
+                    raw = self._pack_assets(assets)
+                    comp = lz4.block.compress(raw, store_size=False, mode="high_compression")
+                    h[ASSET_COUNT + lst], h[ASSET_INDEX + lst] = len(assets), len(out)
+                    h[ASSET_CSIZE + lst], h[ASSET_SIZE + lst] = len(comp), len(raw)
+                    out += comp
+                struct.pack_into(f"<{len(h)}i", out, self._cell_pos(x, y), *h)
+        self.val1, self.val2 = start, len(out) - start
+        struct.pack_into("<ii", out, 48, self.val1, self.val2)
+        self.data = out
+
     def set_uuid(self, new_uuid=None):
         u = new_uuid or uuidlib.uuid4()
         self.uuid_raw = u.bytes
