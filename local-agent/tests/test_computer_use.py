@@ -209,7 +209,7 @@ class ComputerUseTest(unittest.TestCase):
         REGISTRY["click"].func(ctx, {"x": 500, "y": 500, "in_zoom": True})
         # the middle of the zoomed box: screen 1 is 1920x1080, the box 960-1152 x 540-648
         self.assertEqual(self.log[0], ("move", 1056, 594))
-        self.assertEqual(ctx.screen["img_w"], 1920)        # screenshots default to 1920 wide now
+        self.assertEqual(ctx.screen["img_w"], 1280)
 
     def test_off_grid_positions_are_explained_not_clamped(self):
         ctx = self.ctx()

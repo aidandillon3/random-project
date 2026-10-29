@@ -2957,8 +2957,8 @@ class SettingsPage(QWidget):
         self.monitor.currentIndexChanged.connect(self._save)
         f.addRow("Screen it looks at first:", self.monitor)
         self.screen_side = self._spin(s.screen_max_side, 640, 3840)
-        self.screen_side.setToolTip("Bigger helps it aim at small things (game tiles, tiny buttons); each screenshot "
-                                    "costs more tokens and takes longer to read")
+        self.screen_side.setToolTip("1280 is best for Qwen models: their vision shrinks bigger pictures again, and "
+                                    "then their clicks land at the wrong scale. For small things it zooms in instead.")
         f.addRow("Its screenshots (longest side, pixels):", self.screen_side)
         self.coords = self._combo([("auto", "Automatic by model"), ("pixels", "Screenshot pixels"),
                                    ("normalized", "0-1000 grid (Qwen vision models)")], s.coord_mode)
