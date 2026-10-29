@@ -20,7 +20,17 @@ from .base import CONTROL, RUN, ToolContext, ToolError, ToolResult, tool
 
 WINDOWS = sys.platform == "win32"
 
-if WINDOWS:  # real pixels everywhere, so screenshots and clicks agree on high-DPI screens
+_dpi_done = False
+
+
+def _dpi_aware():
+    """Real pixels everywhere, so screenshots and clicks agree on high-DPI screens. Only once the
+    screen is used: the app window (Qt) has usually made itself DPI-aware by then, and this does
+    nothing."""
+    global _dpi_done
+    if _dpi_done or not WINDOWS:
+        return
+    _dpi_done = True
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
@@ -74,6 +84,7 @@ def from_screen(ctx: ToolContext, px: int, py: int) -> tuple[int, int]:
 def _mss():
     import mss
 
+    _dpi_aware()
     return getattr(mss, "MSS", None) or mss.mss    # mss 10.2 renamed mss.mss to mss.MSS
 
 
@@ -227,6 +238,7 @@ def zoom(ctx: ToolContext, a: dict):
 
 # ------------------------------------------------------------------ mouse and keyboard
 def _gui():
+    _dpi_aware()
     try:
         import pyautogui
     except (Exception, SystemExit) as e:  # pragma: no cover - depends on the desktop
@@ -358,6 +370,7 @@ def press_keys(ctx: ToolContext, a: dict):
 
 # ------------------------------------------------------------------ windows and apps
 def _windows():
+    _dpi_aware()
     try:
         import pygetwindow as gw
     except Exception as e:
