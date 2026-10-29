@@ -94,6 +94,10 @@ class Settings:
     watch_size: str = "normal"         # its screenshots: small | normal | sharp (tools/live.SIZES)
     watch_frames: int = 1              # screenshots per look, 0.5 s apart (2-3 show what moves; each costs a read)
     watch_max_seconds: int = 300       # the longest one watch mode run may take
+    watch_model: str = "chat"          # chat | eyes: watch mode looks with the chat's model or a small one of its own
+                                       # on another GPU (localagent/eyes.py)
+    watch_model_gpu: str = ""          # GPU UUID for that one; "" = the one the chat's model doesn't use
+    watch_model_port: int = 8091
     shell: str = "auto"                # auto | powershell | cmd | bash
 
     # the window

@@ -41,6 +41,7 @@ action lines: no explanations, no thinking out loud.
 
 Actions, one per line:
 click X Y            left click; add "right", "double", or "hold 0.5" (seconds held down)
+click                click where the mouse already is (first-person games: where the crosshair is); "click hold 3"
 move X Y             move the mouse pointer there
 turn DX DY           move the mouse by an amount: turns the camera in games (try 100-300)
 key KEYS             press a key or shortcut: "key space", "key ctrl+s"; "key w hold 1.5" holds it down
@@ -56,10 +57,16 @@ where they are in the newest screenshot. {games}Say done only when the newest sc
 reached."""
 
 GAMES = ("In games your own character is the one the camera follows, usually near the middle; hold movement "
-         "keys a short while (0.3-1 s) and look again. ")
+         "keys a short while (0.3-1 s) and look again. In first-person games aim with turn and use click without a "
+         "position: a position moves the mouse, which turns the camera. Breaking or mining something takes the button "
+         "held until it breaks, often several seconds: if it didn't break, hold longer. Esc opens a game's pause menu: "
+         "press it only to close a menu you see open. ")
 
-ALIASES = {"press": "key", "keys": "key", "hold": "key", "mouse": "move", "look": "turn", "write": "type",
-           "sleep": "wait", "finish": "done", "finished": "done", "fail": "stop", "quit": "stop"}
+ALIASES = {"press": "key", "pressed": "key", "keys": "key", "hold": "key", "mouse": "move", "look": "turn",
+           "write": "type", "sleep": "wait", "finish": "done", "finished": "done", "fail": "stop", "quit": "stop",
+           # what the results of earlier looks say, when a reply copies them
+           "clicked": "click", "moved": "move", "turned": "turn", "typed": "type", "scrolled": "scroll",
+           "waited": "wait"}
 _NUM = r"-?\d+(?:\.\d+)?"
 
 
@@ -67,7 +74,9 @@ def parse(text: str) -> list[tuple[str, str]]:
     """(action, rest of the line) for each action line of a reply; other lines are left out. Forgives
     bullets, numbering, code fences and "Action:" in front."""
     out = []
-    for raw in text.splitlines():
+    # several actions on one line, " / " or "; " between them (as the earlier looks are listed)
+    pieces = [piece for raw in text.splitlines() for piece in re.split(r"\s+/\s+|;\s+", raw)]
+    for raw in pieces:
         line = raw.strip().strip("`").strip()
         line = re.sub(r"^(?:[-*>]+|\d+[.)])\s*", "", line)
         line = re.sub(r"^action\s*:\s*", "", line, flags=re.I)
@@ -88,8 +97,11 @@ def _numbers(rest: str, n: int, what: str) -> list[float]:
     return [float(v) for v in found[:n]]
 
 
+_HOLD = r"\(?\b(?:hold|held)\s+(" + _NUM + r")\s*s?\)?"
+
+
 def _hold(rest: str) -> float:
-    m = re.search(r"\bhold\s+(" + _NUM + r")", rest)
+    m = re.search(_HOLD, rest)
     return float(m.group(1)) if m else 0.0
 
 
@@ -97,12 +109,16 @@ def run_action(ctx: ToolContext, action: str, rest: str) -> str:
     """Do one action line with the screen tools (without their screenshot after); what happened, short.
     Raises ToolError for a line it can't do."""
     if action == "click":
-        x, y = _numbers(re.sub(r"\bhold\s+" + _NUM, "", rest), 2, "click")
         low = rest.lower()
-        args = {"x": x, "y": y, "button": "right" if "right" in low else "middle" if "middle" in low else "left",
-                "clicks": 2 if "double" in low else 1, "hold_seconds": _hold(low)}
-        screen.click(ctx, args)
-        return f"clicked {x:g} {y:g}" + (f" (held {args['hold_seconds']:g}s)" if args["hold_seconds"] else "")
+        button = "right" if "right" in low else "middle" if "middle" in low else "left"
+        clicks, hold = 2 if "double" in low else 1, _hold(low)
+        held = f" (held {hold:g}s)" if hold else ""
+        if not re.findall(_NUM, re.sub(_HOLD, "", low)):      # no position: where the mouse is
+            screen._click_here(ctx, screen._gui(), button, clicks, hold)
+            return f"clicked here{' ' + button if button != 'left' else ''}{held}"
+        x, y = _numbers(re.sub(_HOLD, "", low), 2, "click")
+        screen.click(ctx, {"x": x, "y": y, "button": button, "clicks": clicks, "hold_seconds": hold})
+        return f"clicked {x:g} {y:g}{held}"
     if action == "move":
         x, y = _numbers(rest, 2, "move")
         screen.move_mouse(ctx, {"x": x, "y": y})
@@ -113,7 +129,7 @@ def run_action(ctx: ToolContext, action: str, rest: str) -> str:
         return f"turned {dx:g} {dy:g}"
     if action == "key":
         hold = _hold(rest.lower())
-        keys = re.sub(r"\bhold\s+" + _NUM, "", rest, flags=re.I).strip().strip("\"'")
+        keys = re.sub(_HOLD, "", rest, flags=re.I).strip().strip("\"'")
         if not keys:
             raise ToolError("key needs a key name")
         screen.press_keys(ctx, {"keys": keys, "hold_seconds": hold})
@@ -229,10 +245,25 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
     squares = SIZES.get(str(getattr(s, "watch_size", "normal")), screen.AUTO_SQUARES)
     per_look = max(1, min(3, int(getattr(s, "watch_frames", 1) or 1)))
     monitor = int(ctx.screen.get("monitor") or s.monitor or 1)
+    chat_coords = screen.coord_mode(ctx)
+    client, params, own, note = agent.client, None, False, ""
+    if getattr(s, "watch_model", "chat") == "eyes":
+        from .. import eyes
+
+        try:
+            client = eyes.EYES.client(s, agent.ui.status, ctx.stop)
+            params, own = dict(eyes.PARAMS, max_tokens=REPLY_TOKENS), True
+            note = f" It looked with its own model ({eyes.PRESET.title.split(' (')[0]}" + \
+                (f" on the {eyes.EYES.gpu_name})." if eyes.EYES.gpu_name else ").")
+        except RuntimeError as e:
+            note = f" Its own model couldn't be used, so the chat's model looked: {e}"
+    if params is None:
+        params = agent._params(REPLY_TOKENS, thinking="off")
+        params.pop("stop", None)
+        params["max_tokens"] = REPLY_TOKENS      # _params fits it to the chat's context, which this isn't
+    if own:
+        ctx.screen["coords_for_now"] = "normalized"     # Qwen's vision models point on a 0-1000 grid
     system = PROMPT.format(coords=screen.coord_help(ctx), most=MAX_ACTIONS, games=GAMES)
-    params = agent._params(REPLY_TOKENS, thinking="off")
-    params.pop("stop", None)
-    params["max_tokens"] = REPLY_TOKENS      # _params fits it to the chat's context, which this isn't
     frames = _Frames(monitor) if per_look > 1 else None
     start = time.time()
     log: list[dict] = []
@@ -247,7 +278,11 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
         older = _older(ctx, frames, per_look)
         history: list[str] = []
         keep = HISTORY
-        if (chat_size[0] and chat_size != (ctx.screen["img_w"], ctx.screen["img_h"])
+        has_positions = bool(re.search(r"\d{2,}", goal))
+        if chat_size[0] and has_positions and chat_coords == "pixels" and screen.coord_mode(ctx) == "normalized":
+            goal += (f"\n(Positions in this goal are pixels of a {chat_size[0]}x{chat_size[1]} screenshot, not "
+                     "your 0-1000 grid: aim at what you see.)")
+        elif (chat_size[0] and has_positions and chat_size != (ctx.screen["img_w"], ctx.screen["img_h"])
                 and screen.coord_mode(ctx) == "pixels"):
             # the chat's goal may hold positions read off its own screenshot, which had another size
             f = ctx.screen["img_w"] / chat_size[0]
@@ -267,7 +302,7 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
                 break
             t0 = time.time()
             ctx.agent.ui.status(f"Watch mode: looking ({left:.0f} s left)")
-            turn = agent.client.stream(messages, None, params, stop=ctx.stop)
+            turn = client.stream(messages, None, params, stop=ctx.stop)
             model_s = time.time() - t0
             if turn.stopped:
                 ended_by = "stopped"
@@ -285,6 +320,11 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
                     break
                 try:
                     did.append(run_action(ctx, action, rest))
+                    if action == "key" and re.sub(_HOLD, "", rest.lower()).strip(" \"'") in ("esc", "escape") \
+                            and i < len(actions) - 1:
+                        # Esc opens or closes menus (a game's pause menu): what follows needs a new look
+                        did.append("the rest of that reply was left out: look after Esc")
+                        break
                 except ToolError as e:
                     did.append(f"'{action} {rest}' failed: {e}")
                 except Exception as e:  # noqa: BLE001
@@ -325,10 +365,11 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
             last_png = screen._shot(ctx, monitor)     # back at the chat's own size, so its positions stay its scale
     finally:
         ctx.capture_after = capture_after
+        ctx.screen.pop("coords_for_now", None)
         if frames:
             frames.stop()
         ctx.agent.ui.status("")
-        _save_log(ctx, goal, log, ended_by)
+        _save_log(ctx, goal, log, ended_by, client.model)
     took = time.time() - start
     steps = len(log)
     avg = (f" {steps} looks in {took:.0f} s ({took / steps:.1f} s each: model "
@@ -336,7 +377,7 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
            if steps else "")
     how = {"done": f"It says the goal is reached: {end}", "stop": f"It stopped: {end}",
            "time": f"Time ran out ({seconds:g} s).", "no actions": f"It gave no actions three times: {end}"}
-    text = f"Watch mode ended. {how.get(ended_by, ended_by.capitalize() + '.')}{avg}"
+    text = f"Watch mode ended. {how.get(ended_by, ended_by.capitalize() + '.')}{avg}{note}"
     if did_all:
         text += "\nWhat it did (latest last): " + "; ".join(did_all[-40:])
     if last_png:
@@ -344,14 +385,14 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
     return ToolResult(text, ok=ended_by in ("done", "time"), images=[last_png] if last_png else [])
 
 
-def _save_log(ctx: ToolContext, goal: str, log: list[dict], ended_by: str):
+def _save_log(ctx: ToolContext, goal: str, log: list[dict], ended_by: str, model: str):
     """data/watch/latest.json: every look's timing, reply and result, for tuning."""
     try:
         from ..config import DATA_DIR
 
         d = DATA_DIR / "watch"
         d.mkdir(parents=True, exist_ok=True)
-        (d / "latest.json").write_text(json.dumps(dict(goal=goal, ended_by=ended_by, model=ctx.agent.client.model,
+        (d / "latest.json").write_text(json.dumps(dict(goal=goal, ended_by=ended_by, model=model,
                                                        size=getattr(ctx.settings, "watch_size", "normal"),
                                                        frames=getattr(ctx.settings, "watch_frames", 1), looks=log),
                                                   indent=1), encoding="utf-8")

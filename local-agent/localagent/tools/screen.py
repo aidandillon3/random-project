@@ -44,6 +44,8 @@ def _dpi_aware():
 
 # ------------------------------------------------------------------ coordinates
 def coord_mode(ctx: ToolContext) -> str:
+    if ctx.screen.get("coords_for_now"):      # watch mode's own model, while it runs
+        return ctx.screen["coords_for_now"]
     mode = getattr(ctx.settings, "coord_mode", "auto")
     if mode in ("pixels", "normalized"):
         return mode

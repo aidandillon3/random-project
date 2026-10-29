@@ -112,12 +112,53 @@ class WatchModeTest(unittest.TestCase):
         self.assertEqual(live._messages("s", "g", hist, [], "t", keep=1)[1]["content"][0]["text"].count("- clicked"), 1)
         self.assertNotIn("last looks", live._messages("s", "g", hist, [], "t", keep=0)[1]["content"][0]["text"])
 
+    def test_actions_on_one_line_or_copied_from_results_are_split(self):
+        self.assertEqual(live.parse("key w hold 0.8 / wait 0.3 / click 480 270 hold 0.9 / key e"), [
+            ("key", "w hold 0.8"), ("wait", "0.3"), ("click", "480 270 hold 0.9"), ("key", "e")])
+        self.assertEqual(live.parse("- pressed w (held 1.2s); clicked 480 270 (held 0.9s); turned -30 0"), [
+            ("key", "w (held 1.2s)"), ("click", "480 270 (held 0.9s)"), ("turn", "-30 0")])
+
+    def test_a_click_without_a_position_doesnt_move_the_mouse_and_esc_ends_the_reply(self):
+        agent, ui, srv = self.agent([
+            calls(("watch_mode", {"goal": "break the log"})),
+            text("click hold 0.5\nkey esc\nturn 100 0"), text("done"), text("Ok.")])
+        sys.modules["pyautogui"].KEYBOARD_KEYS.append("esc")
+        agent.run("go")
+        self.assertEqual([x for x in self.log if x[0] == "move"], [])           # no pointer move: no camera turn
+        self.assertIn(("down", "left"), self.log)
+        first = srv.requests[2]["messages"][-1]["content"][0]["text"]
+        self.assertIn("- clicked here (held 0.5s); pressed esc; the rest of that reply was left out: look after Esc",
+                      first)
+        self.assertNotIn("turned", first)
+
+    def test_its_own_model_is_used_with_the_grid_or_the_chats_when_it_cant_be(self):
+        from localagent import eyes
+
+        agent, ui, srv = self.agent([calls(("watch_mode", {"goal": "go"})), text("done"), text("Ok.")],
+                                    watch_model="eyes", coord_mode="pixels")
+        with mock.patch.object(eyes, "files", lambda s: (None, None, ["x"])), \
+                mock.patch.object(eyes.Eyes, "_ours", lambda self, s: False):
+            agent.run("go")
+        self.assertIn("the chat's model looked: Watch mode's own model isn't downloaded", dict(ui.results)["watch_mode"].text)
+        other = MockServer([text("click 500 500"), text("done")])
+        self.addCleanup(other.close)
+        from localagent.llm import LLMClient
+        agent, ui, srv = self.agent([calls(("watch_mode", {"goal": "go"})), text("Ok.")],
+                                    watch_model="eyes", coord_mode="pixels")
+        with mock.patch.object(eyes.EYES, "client", lambda *a, **k: LLMClient(other.url, model="Qwen3.5-4B-Q6_K.gguf")):
+            agent.run("go")
+        self.assertIn("0-1000 grid", other.requests[0]["messages"][0]["content"])
+        self.assertEqual(other.requests[0]["temperature"], 0.3)
+        self.assertEqual(self.log[0], ("move", 3200, 720))          # 500 500 on the grid: the middle of screen 2
+        self.assertIn("It looked with its own model (Qwen3.5 4B)", dict(ui.results)["watch_mode"].text)
+        self.assertNotIn("coords_for_now", agent.ctx.screen)
+
     def test_bad_lines_are_reported_and_replies_without_actions_end_it(self):
         agent, ui, srv = self.agent([
             calls(("watch_mode", {"goal": "do it"})),
-            text("click here"), text("I am not sure"), text("hmm"), text("Ok."), text("Ok.")])
+            text("click 12"), text("I am not sure"), text("hmm"), text("Ok."), text("Ok.")])
         agent.run("go")
-        self.assertIn("'click here' failed: click needs 2 number(s)", srv.requests[2]["messages"][-1]["content"][0]["text"])
+        self.assertIn("'click 12' failed: click needs 2 number(s)", srv.requests[2]["messages"][-1]["content"][0]["text"])
         self.assertIn("No action lines in your last reply", srv.requests[3]["messages"][-1]["content"][-1]["text"])
         result = dict(ui.results)["watch_mode"]
         self.assertIn("gave no actions three times", result.text)
