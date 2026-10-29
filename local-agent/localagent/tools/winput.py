@@ -15,7 +15,7 @@ import sys
 WINDOWS = sys.platform == "win32"
 
 INPUT_MOUSE, INPUT_KEYBOARD = 0, 1
-MOVE, ABSOLUTE = 0x0001, 0x8000
+MOVE, ABSOLUTE, VIRTUALDESK = 0x0001, 0x8000, 0x4000
 BUTTONS = {"left": (0x0002, 0x0004), "right": (0x0008, 0x0010), "middle": (0x0020, 0x0040)}
 KEYUP, SCANCODE, EXTENDED = 0x0002, 0x0008, 0x0001
 
@@ -96,6 +96,29 @@ def button(name: str, up: bool) -> None:
 
 def move_by(dx: int, dy: int) -> None:
     _send(INPUT(type=INPUT_MOUSE, u=_U(mi=MOUSEINPUT(dx=int(dx), dy=int(dy), dwFlags=MOVE))))
+
+
+def move_to(x: int, y: int, seconds: float = 0.0, sleep=None) -> None:
+    """Move the pointer like a real mouse does, in a few steps: games that draw their own pointer
+    (Terraria) follow mouse input, not the pointer position that SetCursorPos sets."""
+    import time
+
+    user32 = ctypes.windll.user32
+    left, top = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)       # the desktop over all screens
+    width, height = max(2, user32.GetSystemMetrics(78)), max(2, user32.GetSystemMetrics(79))
+    pt = wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(pt))
+    steps = max(2, min(30, int(seconds / 0.01)))
+    for i in range(1, steps + 1):
+        px = pt.x + (x - pt.x) * i / steps
+        py = pt.y + (y - pt.y) * i / steps
+        nx = round((px - left) * 65535 / (width - 1))
+        ny = round((py - top) * 65535 / (height - 1))
+        _send(INPUT(type=INPUT_MOUSE, u=_U(mi=MOUSEINPUT(dx=nx, dy=ny, dwFlags=MOVE | ABSOLUTE | VIRTUALDESK))))
+        (sleep or time.sleep)(max(0.005, seconds / steps))
+    user32.GetCursorPos(ctypes.byref(pt))
+    if abs(pt.x - x) > 1 or abs(pt.y - y) > 1:       # rounding on a very wide desktop: land exactly
+        user32.SetCursorPos(int(x), int(y))
 
 
 def window_at(x: int, y: int):

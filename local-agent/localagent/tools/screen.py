@@ -329,6 +329,14 @@ def _click_here(ctx: ToolContext, g, b: str, clicks: int, hold: float):
             _button(g, b, True)
 
 
+def _move_to(g, px: int, py: int, seconds: float = 0.05):
+    if WINDOWS:
+        winput.move_to(px, py, seconds)
+    else:
+        g.moveTo(px, py, duration=seconds)
+    time.sleep(0.03)      # a game frame or two to see where the pointer is before a click
+
+
 def _to_front(px: int, py: int) -> str:
     """Clicks go to the window under the point, but a game that isn't in front often eats the first
     click to come to the front (or doesn't come at all): bring it there first."""
@@ -359,7 +367,7 @@ def click(ctx: ToolContext, a: dict):
     g = _gui()
     px, py = to_screen(ctx, a["x"], a["y"])
     hold = _seconds(a)
-    g.moveTo(px, py)
+    _move_to(g, px, py)
     note = _to_front(px, py)
     _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), hold)
     return after_action(ctx, f"Clicked at {_where(a)}" + (f", held {hold:g}s" if hold else "") + "." + note)
@@ -370,7 +378,7 @@ def click(ctx: ToolContext, a: dict):
       group="control", describe=lambda a: f"Move mouse to {_where(a)}")
 def move_mouse(ctx: ToolContext, a: dict):
     g = _gui()
-    g.moveTo(*to_screen(ctx, a["x"], a["y"]), duration=0.15)
+    _move_to(g, *to_screen(ctx, a["x"], a["y"]), 0.15)
     return after_action(ctx, f"Mouse moved to {_where(a)}.")
 
 
@@ -413,11 +421,11 @@ def drag(ctx: ToolContext, a: dict):
     g = _gui()
     x1, y1 = to_screen(ctx, a["from_x"], a["from_y"])
     x2, y2 = to_screen(ctx, a["to_x"], a["to_y"])
-    g.moveTo(x1, y1, duration=0.1)
+    _move_to(g, x1, y1, 0.1)
     _button(g, "left", False)
     try:
         time.sleep(0.05)
-        g.moveTo(x2, y2, duration=0.4)
+        _move_to(g, x2, y2, 0.4)
     finally:
         _button(g, "left", True)
     return after_action(ctx, "Dragged.")
@@ -431,7 +439,7 @@ def drag(ctx: ToolContext, a: dict):
 def scroll(ctx: ToolContext, a: dict):
     g = _gui()
     if a.get("x") is not None and a.get("y") is not None:
-        g.moveTo(*to_screen(ctx, a["x"], a["y"]), duration=0.1)
+        _move_to(g, *to_screen(ctx, a["x"], a["y"]), 0.1)
     # Windows counts wheel movement in 120ths of a notch, X11 in notches
     g.scroll(-int(a["amount"]) * (120 if WINDOWS else 1))
     return after_action(ctx, f"Scrolled {a['amount']}.")
@@ -673,7 +681,7 @@ def click_element(ctx: ToolContext, a: dict):
         raise ToolError("No such index. Run ui_elements first.")
     ctype, name, (px, py) = ctx.ui_cache[i]
     g = _gui()
-    g.moveTo(px, py)
+    _move_to(g, px, py)
     _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), 0)
     return after_action(ctx, f"Clicked {ctype} '{name}'.")
 

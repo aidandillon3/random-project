@@ -218,6 +218,7 @@ class ComputerUseTest(unittest.TestCase):
                 mock.patch.object(winput, "key", lambda k, up: sent.append(("key", k, up))), \
                 mock.patch.object(winput, "button", lambda b, up: sent.append(("button", b, up))), \
                 mock.patch.object(winput, "move_by", lambda x, y: sent.append(("by", x, y))), \
+                mock.patch.object(winput, "move_to", lambda x, y, s=0: sent.append(("to", x, y))), \
                 mock.patch.object(winput, "vk_code", lambda k: 0x57 if k == "w" else None), \
                 mock.patch.object(winput, "window_at", lambda x, y: (2, 1, "Rainbow Six")), \
                 mock.patch.object(winput, "bring_to_front", lambda h: sent.append(("front", h))):
@@ -226,7 +227,7 @@ class ComputerUseTest(unittest.TestCase):
             REGISTRY["move_mouse_by"].func(ctx, {"dx": 10, "dy": 0, "seconds": 0})
             with self.assertRaises(Exception) as e:
                 REGISTRY["press_keys"].func(ctx, {"keys": "notakey"})
-        self.assertEqual(sent, [("front", 2), ("button", "left", False), ("button", "left", True),
+        self.assertEqual(sent, [("to", 960, 540), ("front", 2), ("button", "left", False), ("button", "left", True),
                                 ("key", "w", False), ("key", "w", True), ("by", 10, 0)])
         self.assertIn("'Rainbow Six' was brought to the front first", out.text)
         self.assertIn("Unknown key", str(e.exception))
