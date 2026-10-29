@@ -44,6 +44,26 @@ PROFILE_SMOOTH = 60.0  # metres either side used to smooth the road's height pro
 TILE_CELLS = 4         # Large tile = 4 x 4 cells of 64 m
 TILE_SIZE = TILE_CELLS * smtile.CELL_SIZE
 VERTEX = 2.0           # ground vertex spacing (33 x 33 per cell)
+# Decorations: the game's own forest assets (Data/Terrain/Database/AssetSets/forest.assetset),
+# with their default colours. The Nordschleife runs through the Eifel forest, mostly spruce.
+TREES = [  # (uuid, {colour name: RRGGBB}, how often)
+    ("3958948a-9da3-4ef2-bbc6-f3f6c8efd69b", {"leaves": "5b7110", "trunk": "453724"}, 5),  # pine01
+    ("89cf550e-96e0-4b8d-9fcf-c4cb701eb2ce", {"leaves": "4f622b", "trunk": "483430"}, 5),  # pine02
+    ("ad7428d8-b1f9-497e-b20e-7b6c23303ba3", {"leaves": "405d2b", "trunk": "4f3734"}, 5),  # pine03
+    ("ab2221f1-b86a-45aa-b28f-dac06d2c71d8", {"leaves": "6faf0a", "trunk": "804620"}, 2),  # oak01
+    ("2160d36d-a3bb-409f-93c9-9ece9cd45310", {"leaves": "6faf0a", "trunk": "804620"}, 2),  # oak02
+    ("6076c649-dae7-4fe5-8ca9-4dd98b35fd73", {"leaves": "409748", "trunk": "5d4a3c"}, 2),  # oak03
+    ("80535813-ae09-427b-a914-e6c320df6005", {"leaves": "659526", "trunk": "4a4015"}, 2),  # oak05
+    ("bc8b746d-4b85-46a9-924c-f1edb0eef5f6", {"leaves": "d89c1a", "trunk": "f5e9f5"}, 1),  # birch01
+    ("81ca86c6-7c74-4a90-82ed-dc08734baa6d", {"leaves": "f1c52e", "trunk": "f5e9f5"}, 1),  # birch02
+]
+TREE_CLEAR = 32.0      # no trees closer than this to the centre line (22 m of grass beside the road)
+TREE_BAND = 170.0      # ... or further than this (keeps the tree count, and load time, down)
+TREE_SPACING = 13.0    # metres between trees in the forest (jittered grid)
+FOREST_SHARE = 0.7     # roughly this much of the band is forest, the rest open meadow
+KERB_RADIUS = 200.0    # red and white kerbs on both sides of bends tighter than this
+KERB_WIDTH = 1.5
+KERB_RED, KERB_WHITE = 0xFF2828D2, 0xFFF0F0F0  # 0xAABBGGRR
 ASSET_LIST = 1         # the list the Tile Editor put the road piece in
 
 
@@ -218,12 +238,14 @@ def main():
     # Road pieces into tiles/cells.
     tiles = {}  # (tx, ty) -> {(cx, cy): [(Asset, tileson dict)]}
 
-    def place(x, y, z, rot, scale, colors=None):
+    def place(x, y, z, rot, scale, colors=None, asset_uuid=None):
         lx, ly = x - gx, y - gy
         tx, ty = math.floor(lx / TILE_SIZE), math.floor(ly / TILE_SIZE)
         px, py = lx - tx * TILE_SIZE, ly - ty * TILE_SIZE
         cx, cy = int(px // smtile.CELL_SIZE), int(py // smtile.CELL_SIZE)
         a = copy.deepcopy(road)
+        if asset_uuid:
+            a.uuid_bytes = uuid.UUID(asset_uuid).bytes
         a.pos = (px - cx * smtile.CELL_SIZE, py - cy * smtile.CELL_SIZE, z)
         a.rot = rot
         a.scale = scale
@@ -233,6 +255,8 @@ def main():
             j["colorMap"] = {k: "#%02X%02X%02XFF" % (v & 255, (v >> 8) & 255, (v >> 16) & 255)
                              for k, v in colors.items()}
         j["guid"] = str(uuid.uuid4())
+        if asset_uuid:
+            j["uuid"] = asset_uuid
         j["transform"] = {"position": [px, py, z], "rotation": editor_angles(rot), "scale": list(scale)}
         tiles.setdefault((tx, ty), {}).setdefault((cx, cy), []).append((a, j))
 
@@ -246,6 +270,9 @@ def main():
         place(x, y, z - ROAD_SINK, road_rotation(yaw, pitch),
               (length / PIECE_SIZE, ROAD_WIDTH / PIECE_SIZE, THICK_SCALE))
     start_line(place, pieces[START_AHEAD])
+    kerbs(place, pieces)
+    if not args.flat:
+        trees(place, pts, ground, vx, vy)
     spawn_yaw = pieces[0][3]
 
     if args.mod:
@@ -304,6 +331,79 @@ def main():
     else:
         write_world(args, made, tw, th)
     overview(pts, gx, gy, tw, th, ground, os.path.join(args.out, "overview.png"))
+
+
+def hex_colour(rgb):
+    """"RRGGBB" -> the tile's 0xAABBGGRR."""
+    r, g, b = int(rgb[0:2], 16), int(rgb[2:4], 16), int(rgb[4:6], 16)
+    return 0xFF000000 | b << 16 | g << 8 | r
+
+
+def kerbs(place, pieces):
+    """Red and white kerb strips just outside both road edges in the bends, laid in the
+    road piece's own plane and 2 cm lower, so a wheel coming off the road drops onto them."""
+    from scipy.spatial.transform import Rotation
+    n = len(pieces)
+    top = PIECE_THICK * THICK_SCALE
+    count = 0
+    for i, (x, y, z, yaw, pitch, length) in enumerate(pieces):
+        # Radius from the heading change over the pieces either side (about 16 m of road).
+        turn = (pieces[(i + 2) % n][3] - pieces[i - 2][3] + math.pi) % (2 * math.pi) - math.pi
+        if abs(turn) < 1e-6 or 4 * STEP / abs(turn) > KERB_RADIUS:
+            continue
+        rot = road_rotation(yaw, pitch)
+        m = Rotation.from_quat(rot).as_matrix()
+        # Long enough to close the gap on the outside of the bend.
+        kl = STEP / math.cos(pitch) + 0.6 + (ROAD_WIDTH / 2 + KERB_WIDTH) * abs(turn) / 4
+        for side in (-1, 1):
+            off = side * (ROAD_WIDTH / 2 + KERB_WIDTH / 2)
+            p = np.array([x, y, z - ROAD_SINK - 0.02]) + m @ np.array([0.0, off, 0.0])
+            colour = KERB_RED if i % 2 else KERB_WHITE
+            place(p[0], p[1], p[2], rot, (kl / PIECE_SIZE, KERB_WIDTH / PIECE_SIZE, THICK_SCALE),
+                  {"Road2": colour})
+            count += 1
+    print(f"{count} kerb pieces")
+
+
+def trees(place, pts, ground, vx, vy):
+    """Forest beside the track: a jittered grid of the game's trees in a band beside the
+    road, with open meadows where a smooth noise field is low. Same trees every build."""
+    rng = np.random.default_rng(1927)  # the year the Nordschleife opened
+    tree = cKDTree(np.array(pts))
+    x0, y0, x1, y1 = vx[0], vy[0], vx[-1], vy[-1]
+    gx, gy = np.meshgrid(np.arange(x0 + TREE_SPACING / 2, x1, TREE_SPACING),
+                         np.arange(y0 + TREE_SPACING / 2, y1, TREE_SPACING))
+    cand = np.column_stack([gx.ravel(), gy.ravel()])
+    cand += rng.uniform(-0.4, 0.4, cand.shape) * TREE_SPACING
+    dist, _ = tree.query(cand, distance_upper_bound=TREE_BAND)
+    cand = cand[(dist > TREE_CLEAR) & np.isfinite(dist)]
+    cand = cand[(cand[:, 0] > x0 + 2) & (cand[:, 0] < x1 - 2) & (cand[:, 1] > y0 + 2) & (cand[:, 1] < y1 - 2)]
+    # Meadows: value noise on a 150 m grid, smoothly interpolated.
+    cs = 150.0
+    nx, ny = int((x1 - x0) / cs) + 3, int((y1 - y0) / cs) + 3
+    lattice = rng.random((ny, nx))
+    fx, fy = (cand[:, 0] - x0) / cs, (cand[:, 1] - y0) / cs
+    ix, iy = fx.astype(int), fy.astype(int)
+    tx, ty = fx - ix, fy - iy
+    tx, ty = tx * tx * (3 - 2 * tx), ty * ty * (3 - 2 * ty)
+    noise = ((lattice[iy, ix] * (1 - tx) + lattice[iy, ix + 1] * tx) * (1 - ty)
+             + (lattice[iy + 1, ix] * (1 - tx) + lattice[iy + 1, ix + 1] * tx) * ty)
+    cand = cand[noise > np.quantile(noise, 1 - FOREST_SHARE)]
+    # Ground height under each tree (bilinear on the 2 m grid), sunk a little.
+    px, py = (cand[:, 0] - x0) / VERTEX, (cand[:, 1] - y0) / VERTEX
+    i, j = px.astype(int), py.astype(int)
+    fx, fy = px - i, py - j
+    h = ((ground[j, i] * (1 - fx) + ground[j, i + 1] * fx) * (1 - fy)
+         + (ground[j + 1, i] * (1 - fx) + ground[j + 1, i + 1] * fx) * fy)
+    weights = np.array([w for _, _, w in TREES], dtype=float)
+    kinds = rng.choice(len(TREES), size=len(cand), p=weights / weights.sum())
+    yaws = rng.uniform(0, 2 * math.pi, len(cand))
+    sizes = rng.uniform(0.8, 1.25, len(cand))
+    for (x, y), z, k, yaw, s in zip(cand, h, kinds, yaws, sizes):
+        u, cols, _ = TREES[k]
+        place(x, y, z - 0.3, (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)), (s, s, s),
+              {name: hex_colour(c) for name, c in cols.items()}, asset_uuid=u)
+    print(f"{len(cand)} trees")
 
 
 def start_line(place, piece):
