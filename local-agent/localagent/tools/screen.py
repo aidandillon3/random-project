@@ -50,6 +50,10 @@ def coord_mode(ctx: ToolContext) -> str:
     if mode in ("pixels", "normalized"):
         return mode
     name = (ctx.screen.get("model_name") or getattr(ctx.settings, "model", "") or "").lower()
+    # Swift fine-tunes of Qwen give screenshot pixels whatever their base does: on the grid the 27B's clicks
+    # landed far off (Flash Next, named without "qwen3" on Strata, already got pixels)
+    if "swift" in name:
+        return "pixels"
     return "normalized" if "qwen3" in name or "qwen-3" in name else "pixels"
 
 

@@ -340,6 +340,15 @@ class ComputerUseTest(unittest.TestCase):
         self.assertNotIn("let go", out.text)
 
 
+    def test_swift_models_get_pixels_other_qwen3_models_the_grid(self):
+        from localagent.tools import screen
+
+        for name, mode in [("Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf", "pixels"), ("swift-1.5-iq3_xxs", "pixels"),
+                           ("Qwen3-VL-8B-Instruct-Q8_0.gguf", "normalized"), ("gemma-3-27b", "pixels")]:
+            ctx = ToolContext(settings=Settings(), workspace=Path("."))
+            ctx.screen["model_name"] = name
+            self.assertEqual(screen.coord_mode(ctx), mode, name)
+
     def test_set_slider_sets_the_value_through_accessibility(self):
         from localagent.tools import screen
 
