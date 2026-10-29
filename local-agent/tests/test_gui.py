@@ -137,9 +137,9 @@ class GuiTest(unittest.TestCase):
         w = self.gui.MainWindow(s)
         w.show()
         chat = w.chat
-        # no screen control anywhere: the chat says so, Settings has nothing for it
-        self.assertIn("without touching your mouse, keyboard or screen", chat.welcome_text.text())
-        self.assertFalse(hasattr(w.settings_page, "computer") or hasattr(w.settings_page, "control"))
+        # no screen control unless Computer use is turned on
+        self.assertIn("only uses your mouse, keyboard and screen while Computer use is on", chat.welcome_text.text())
+        self.assertFalse(chat.computer_btn.isChecked())
         # the thinking picker in the chat bar changes the setting straight away
         chat.think.setCurrentIndex(chat.think.findData("low"))
         self.assertEqual(s.thinking, "low")
@@ -820,6 +820,53 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(page.gpu_row.isHidden())
         self.assertTrue(page.monitors.isChecked())
         self.assertEqual(page.gpu.text(), "GPU: RTX 5080, 16.0 GB (3.0 GB in use right now)")
+        w.close()
+
+    def test_computer_use_toggle_and_screen_picker(self):
+        import importlib.util
+        from unittest import mock
+
+        from localagent.config import Settings
+
+        screens = [{"left": 0, "top": 0, "width": 1920, "height": 1080},
+                   {"left": 1920, "top": 0, "width": 2560, "height": 1440}]
+        mons = mock.patch.object(self.gui.screen_tools, "monitors", lambda: [dict(m) for m in screens])
+        mons.start()
+        self.addCleanup(mons.stop)
+        s = Settings(base_url="http://127.0.0.1:9/v1")
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        w.move(0, 0)
+        w.show()
+        chat = w.chat
+        self.assertFalse(chat.computer_btn.isChecked())
+        # the add-ons missing and the offer declined: it stays off
+        real = importlib.util.find_spec
+        with mock.patch("importlib.util.find_spec", lambda n, *a: None if n == "mss" else real(n, *a)), \
+                mock.patch.object(self.gui.QMessageBox, "question", return_value=self.gui.QMessageBox.No):
+            chat.computer_btn.click()
+        self.assertFalse(chat.computer_btn.isChecked())
+        self.assertFalse(s.computer_use)
+        # installed: one click turns it on (and it's saved), another turns it off
+        with mock.patch("importlib.util.find_spec", lambda n, *a: object()):
+            chat.computer_btn.click()
+            self.assertTrue(chat.computer_btn.isChecked())
+            self.assertTrue(Settings.load().computer_use)
+            chat.computer_btn.click()
+        self.assertFalse(s.computer_use)
+        # the arrow lists the screens; picking one shows in Settings too
+        chat._fill_computer_menu()
+        labels = [a.text() for a in chat.computer_menu.actions() if a.text()]
+        self.assertEqual(labels[:2], ["Look at screen 1: 1920x1080 (main)", "Look at screen 2: 2560x1440"])
+        chat.computer_menu.actions()[1].trigger()
+        self.assertEqual(s.monitor, 2)
+        w.show_settings("computer")
+        self.assertEqual(w.settings_page.monitor.currentText(), "Screen 2: 2560x1440")
+        w.settings_page.monitor.setCurrentIndex(0)
+        self.assertEqual(s.monitor, 1)
+        # the window gets out of the way only of the screen it is on
+        self.assertTrue(self.gui._window_on_monitor(w, 1))
+        self.assertFalse(self.gui._window_on_monitor(w, 2))
         w.close()
 
     def test_one_llama_download_at_a_time(self):

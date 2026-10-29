@@ -76,6 +76,14 @@ class Settings:
 
     # images and the shell
     screenshot_max_side: int = 1280    # images the model reads are scaled to fit this (longest side, pixels)
+
+    # Computer use: screenshots, mouse and keyboard on this PC (tools/screen.py). Off unless the
+    # toggle next to the message box is turned on; while on, clicks and keys never ask.
+    computer_use: bool = False
+    monitor: int = 1                   # the screen it looks at first: 1, 2, 3...
+    coord_mode: str = "auto"           # auto | pixels | normalized (0-1000)
+    grid_overlay: bool = False
+    screenshot_after_action: bool = True
     shell: str = "auto"                # auto | powershell | cmd | bash
 
     # the window

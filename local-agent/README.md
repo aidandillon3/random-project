@@ -2,8 +2,8 @@
 
 A chat app where a local AI model can actually do things on your computer: read and edit files,
 run commands, programs and tests and fix what fails, search the web, plan multi-step work and
-remember things between chats. It never touches your mouse, keyboard or screen. Nothing goes to
-the cloud: the model runs on your GPU.
+remember things between chats. It only touches your mouse, keyboard or screen while you have
+**Computer use** turned on. Nothing goes to the cloud: the model runs on your GPU.
 
 It also starts the model for you, with the speed settings worked out for an
 **RTX 5080 (16 GB) + 64 GB RAM**.
@@ -36,7 +36,8 @@ It's laid out like the Claude app:
   Yesterday, Previous 7 days...). Click one to carry on in it; right-click to rename or delete it;
   type in **Search chats** to find one. **«** or Ctrl+B hides the list, **☰** brings it back.
 - **The message box** at the bottom: **+** adds an image or a screenshot or changes the work folder,
-  then what it may do without asking, how long it thinks, and the model. **↑** sends (or Enter), and
+  then what it may do without asking, how long it thinks, **Computer use** (on/off, its arrow picks
+  the screen) and the model. **↑** sends (or Enter), and
   turns into **■** Stop while it works (or Esc).
 - **Text size**: Ctrl + bigger, Ctrl - smaller, Ctrl 0 back to normal, or Ctrl + mouse wheel over the
   chat. Settings > Look has the same, and switches answers between sans serif
@@ -77,9 +78,9 @@ aren't `.gguf` files you can browse to, so for Ollama models use Ollama itself.)
 Things it does the way Claude does:
 
 - **Works in a loop**: it calls tools, reads the results, and keeps going until the job is done
-  (up to 150 steps before it checks in with you).
+  (no step limit: one message runs until the job is done or you press Stop).
 - **Checks its own work by running it**: it runs the program, script or tests, reads what they
-  print, fixes what fails and runs them again until it works. See [No screen control](#no-screen-control).
+  print, fixes what fails and runs them again until it works. See [Computer use](#computer-use).
 - **Plans** bigger jobs with a visible to-do list.
 - **Keeps long tasks going**: when the conversation gets near the model's memory limit, older
   parts are summarized automatically, and old images are dropped.
@@ -229,13 +230,29 @@ it should do instead. Deleted files go to the Recycle Bin.
 
 **Emergency stop:** press **Stop** (or Esc).
 
-## No screen control
+## Computer use
 
-It works the way Claude Code does: it tests and debugs by running things and reading what they
-print (test results, errors, logs), never by clicking. It has no tools for your mouse, keyboard or
-screen. The programs it runs still run on your PC, so one with a window shows that window, but it
-can't click in it. For Unity it uses the editor's own tools (play mode, the console, pictures of
-the game view) instead.
+Off by default. Then it works the way Claude Code does: it tests and debugs by running things and
+reading what they print (test results, errors, logs), never by clicking. The programs it runs
+still run on your PC, so one with a window shows that window, but it can't click in it. For Unity
+it uses the editor's own tools (play mode, the console, pictures of the game view) instead.
+
+Press **Computer use** next to the message box to let it see and use your screen, like Claude's
+computer use: it takes a screenshot, moves the mouse, clicks, scrolls, drags, types and presses
+shortcuts, lists and switches windows, and reads buttons by name in Windows apps. Press it again to
+turn it off; that takes effect from its next click. While it's on:
+
+- **It doesn't ask** before a click or keypress. Opening a program file (.exe, .bat...) still
+  follows the approval mode, like any command. Read only mode still blocks everything.
+- **Emergency stop**: slam the mouse into a corner of the screen, or press Stop.
+- **Which screen**: the arrow on the button (or Settings > Computer use) picks the screen it looks
+  at first; it can look at the others too. This window minimizes while it uses the screen it's on,
+  and comes back when it's done.
+- Settings > Computer use also has the click coordinates (automatic: a 0-1000 grid for Qwen
+  models), a screenshot after every action, and a coordinate grid for weaker models.
+
+The first time you turn it on it offers to install what it needs (mss, pyautogui, pyperclip,
+pywinauto; about 20 MB). Running `setup.bat` again does the same.
 
 Used an older version with its own virtual computer? Delete the `data/vdesktop` folder (the
 Ubuntu download, about 390 MB). If you got as far as setting it up, first run

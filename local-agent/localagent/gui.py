@@ -6,6 +6,8 @@ import copy
 import gc
 import json
 import re
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -30,7 +32,8 @@ from .guide import GUIDE, sampling_for
 from .llm import LLMClient, ServerError
 from . import memory as memory_mod
 from .permissions import ApprovalRequest, Decision, risk_text
-from .tools import RISK_LABELS
+from .tools import REGISTRY, RISK_LABELS
+from .tools import screen as screen_tools
 
 # the Claude app's dark look: warm greys, its clay orange for what you press
 BG = "#262624"          # the chat
@@ -96,6 +99,8 @@ QFrame#composer QComboBox:hover {{ background: {RAISED}; color: {TEXT}; }}
 QFrame#composer QToolButton {{ color: {MUTED}; border-radius: 8px; padding: 4px 8px; }}
 QFrame#composer QToolButton:hover {{ background: {RAISED}; color: {TEXT}; }}
 QFrame#composer QToolButton::menu-indicator {{ image: none; }}
+QFrame#composer QToolButton#computer:checked {{ background: {ACCENT}; color: white; }}
+QFrame#composer QToolButton#computer::menu-button {{ border: none; width: 14px; }}
 QPushButton#send {{ background: {ACCENT}; border: none; color: white; font-size: 13pt; font-weight: 700;
     border-radius: 10px; padding: 0; }}
 QPushButton#send:hover {{ background: #e08a6d; }}
@@ -648,6 +653,7 @@ class Bridge(QObject):
     usage = Signal(int, int, object)
     approval = Signal(object)
     ask = Signal(object)
+    hide_window = Signal(object)
     finished = Signal(str)
     failed = Signal(str)
 
@@ -664,6 +670,18 @@ class GuiUI(AgentUI):
 
     def __init__(self, bridge: Bridge, stop: threading.Event, settings: Settings):
         self.b, self.stop, self.settings = bridge, stop, settings
+        self.ctx = None      # the agent's ToolContext: which screen the screen tools are on
+
+    def _hide_for(self, name, args=None):
+        """The screen it is about to use, when this window should get out of its way first."""
+        tool = REGISTRY.get(name)
+        if not (tool and tool.group == "control" and self.settings.computer_use
+                and self.settings.extra.get("minimize_during_control", True)):
+            return None
+        if name == "screenshot" and isinstance(args, dict) and isinstance(args.get("monitor"), int):
+            return args["monitor"]
+        screen = self.ctx.screen if self.ctx is not None else {}
+        return screen.get("monitor") or self.settings.monitor
 
     def assistant_start(self):
         self.b.assistant_start.emit()
@@ -679,6 +697,9 @@ class GuiUI(AgentUI):
 
     def tool_start(self, call_id, name, args, summary):
         self.b.tool_start.emit(call_id, name, args, summary)
+        monitor = self._hide_for(name, args)
+        if monitor is not None:
+            self._wait(self.b.hide_window, monitor)
 
     def tool_end(self, call_id, name, result):
         self.b.tool_end.emit(call_id, name, result)
@@ -705,6 +726,9 @@ class GuiUI(AgentUI):
 
     def approve(self, req):
         d = self._wait(self.b.approval, req)
+        monitor = self._hide_for(req.tool, req.args) if d and d.allow else None
+        if monitor is not None:
+            self._wait(self.b.hide_window, monitor)   # the dialog brought the window back; out of the way again
         return d or Decision(False, note="Stopped by the user.")
 
     def ask(self, question, options):
@@ -773,6 +797,31 @@ class ApprovalDialog(QDialog):
 def _greeting() -> str:
     h = time.localtime().tm_hour
     return "Good morning" if 5 <= h < 12 else "Good afternoon" if 12 <= h < 18 else "Good evening"
+
+
+def _window_on_monitor(win: QWidget, monitor) -> bool:
+    """The window covers some of that screen (numbered like the monitor setting). When that can't
+    be told, it is taken to: getting out of the way is the safe side."""
+    mons = screen_tools.monitors()
+    if not mons or not isinstance(monitor, int) or not 1 <= monitor <= len(mons):
+        return True
+    m = mons[monitor - 1]
+    rect = None
+    if sys.platform == "win32":
+        try:       # real pixels, like the screen tools' (Qt's own geometry is scaled by Windows' zoom)
+            import ctypes
+            import ctypes.wintypes
+
+            r = ctypes.wintypes.RECT()
+            if ctypes.windll.user32.GetWindowRect(int(win.winId()), ctypes.byref(r)):
+                rect = (r.left, r.top, r.right, r.bottom)
+        except Exception:  # noqa: BLE001 - fall back to Qt's numbers
+            rect = None
+    if rect is None:
+        g, k = win.frameGeometry(), win.devicePixelRatio()
+        rect = (g.left() * k, g.top() * k, (g.right() + 1) * k, (g.bottom() + 1) * k)
+    return (rect[0] < m["left"] + m["width"] and rect[2] > m["left"]
+            and rect[1] < m["top"] + m["height"] and rect[3] > m["top"])
 
 
 class ChatPage(QWidget):
@@ -857,8 +906,9 @@ class ChatPage(QWidget):
         self.welcome_text = muted(
             "Ask for anything: \"tidy up my Downloads folder\", \"write a script that renames these photos by "
             "date\", \"find the bug that makes my game crash on start and fix it\". It runs and tests what it "
-            "makes and fixes what fails, without touching your mouse, keyboard or screen. It asks before "
-            "changing anything (you can loosen that below).\n\nEmergency stop: press Stop (or Esc).")
+            "makes and fixes what fails. It only uses your mouse, keyboard and screen while Computer use is on. "
+            "It asks before changing anything (you can loosen that below).\n\nEmergency stop: press Stop "
+            "(or Esc).")
         self.welcome_text.setAlignment(Qt.AlignCenter)
         wl.addWidget(self.welcome_text)
         # first run: one click to a working model
@@ -924,6 +974,17 @@ class ChatPage(QWidget):
         self.think.currentIndexChanged.connect(self._thinking_changed)
         self.think.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         row.addWidget(self.think)
+        self.computer_btn = QToolButton(text="Computer use")
+        self.computer_btn.setObjectName("computer")
+        self.computer_btn.setCheckable(True)
+        self.computer_btn.setChecked(bool(self.s.computer_use))
+        self.computer_btn.setPopupMode(QToolButton.MenuButtonPopup)
+        self.computer_menu = QMenu(self.computer_btn)
+        self.computer_menu.aboutToShow.connect(self._fill_computer_menu)
+        self.computer_btn.setMenu(self.computer_menu)
+        self.computer_btn.toggled.connect(self._computer_toggled)
+        row.addWidget(self.computer_btn)
+        self._computer_tip()
         row.addStretch(1)
         self.dot = QLabel("●")
         self.dot.setStyleSheet(f"color: {BAD}; font-size: 8pt;")
@@ -1011,6 +1072,7 @@ class ChatPage(QWidget):
         b.usage.connect(self._on_usage)
         b.approval.connect(self._on_approval)
         b.ask.connect(self._on_ask)
+        b.hide_window.connect(self._on_hide)
         b.finished.connect(self._on_finished)
         b.failed.connect(self._on_failed)
         self.input.send.connect(self.send)
@@ -1145,7 +1207,8 @@ class ChatPage(QWidget):
                 self._add_pending(png_bytes(img))
 
     def _add_screenshot(self):
-        """A picture of the screen, taken when the user presses the button (the AI can't take one)."""
+        """A picture of the screen, taken when the user presses the button (the AI takes its own only
+        while Computer use is on)."""
         self.win.showMinimized()
         QApplication.processEvents()
         time.sleep(0.4)
@@ -1182,7 +1245,9 @@ class ChatPage(QWidget):
                s.enable_subagents, s.enable_github, s.enable_code, s.enable_unity, s.github_token, s.shell)
         if self.agent is None or sig != self._agent_sig:
             prev = self.agent
-            self.agent = Agent(s, GuiUI(self.bridge, self.stop, s), stop=self.stop)
+            ui = GuiUI(self.bridge, self.stop, s)
+            self.agent = Agent(s, ui, stop=self.stop)
+            ui.ctx = self.agent.ctx
             if prev is not None:
                 self.agent.messages, self.agent.todos = prev.messages, prev.todos
                 self.agent.ctx.processes = prev.ctx.processes     # its background commands stay reachable
@@ -1385,6 +1450,97 @@ class ChatPage(QWidget):
         if tps:
             self.speed.setText(f"{tps:.1f} tokens/second")
             self.win.last_tps = tps
+
+    # ---------------------------------------------------------------- computer use
+    def _computer_tip(self):
+        on = self.computer_btn.isChecked()
+        self.computer_btn.setToolTip(
+            ("On: it can take screenshots and use your mouse and keyboard, without asking each time. "
+             "Move the mouse into a screen corner to stop it.\n\nClick to turn it off." if on else
+             "Off: it can't see your screen or touch your mouse and keyboard.\n\nClick to let it.")
+            + f"\nThe arrow picks the screen it looks at first (now screen {self.s.monitor}).")
+
+    def _fill_computer_menu(self):
+        m = self.computer_menu
+        m.clear()
+        mons = screen_tools.monitors()
+        if not mons:
+            m.addAction("The screens show up here once Computer use is set up").setEnabled(False)
+        for i, mon in enumerate(mons, 1):
+            a = m.addAction(f"Look at screen {i}: {screen_tools.monitor_size(mon)}", lambda n=i: self._pick_monitor(n))
+            a.setCheckable(True)
+            a.setChecked(i == self.s.monitor)
+        m.addSeparator()
+        m.addAction("Computer use settings...", lambda: self.win.show_settings("computer"))
+
+    def _pick_monitor(self, n: int):
+        self.s.monitor = n
+        if self.agent is not None:
+            self.agent.ctx.screen.pop("monitor", None)     # its next look is at the new screen
+        self.s.save()
+        self._computer_tip()
+
+    def _computer_toggled(self, on: bool):
+        if on and not self._computer_ready():
+            self.computer_btn.blockSignals(True)
+            self.computer_btn.setChecked(False)
+            self.computer_btn.blockSignals(False)
+            return
+        self.s.computer_use = on
+        self.s.save()
+        self._computer_tip()
+        if self.busy():
+            self._add(muted("ℹ️ " + ("Computer use is on from your next message." if on else
+                                     "Computer use is off: it won't click or type any more.")))
+
+    def _computer_ready(self) -> bool:
+        """The screen add-ons are installed, or the user had them installed now."""
+        import importlib.util
+
+        need = ["mss", "pyautogui", "pyperclip"] + (["pywinauto"] if sys.platform == "win32" else [])
+        missing = [n for n in need if importlib.util.find_spec(n) is None]
+        if not missing:
+            return True
+        ask = QMessageBox.question(
+            self, "Computer use",
+            "Computer use needs a few add-ons that aren't installed yet: " + ", ".join(missing)
+            + ". Install them now? (about 20 MB; then press Computer use again)")
+        if ask != QMessageBox.Yes:
+            return False
+        self.computer_btn.setEnabled(False)
+        self.computer_btn.setText("Installing...")
+
+        def work():
+            try:
+                r = subprocess.run([sys.executable, "-m", "pip", "install", *missing], capture_output=True,
+                                   text=True, timeout=600,
+                                   creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+                ok, msg = r.returncode == 0, (r.stderr or r.stdout)[-600:]
+            except Exception as e:  # noqa: BLE001 - shown to the user
+                ok, msg = False, str(e)
+            QTimer.singleShot(0, self, lambda: self._computer_installed(ok, msg))
+
+        threading.Thread(target=work, daemon=True).start()
+        return False
+
+    def _computer_installed(self, ok: bool, msg: str):
+        import importlib
+
+        importlib.invalidate_caches()
+        self.computer_btn.setEnabled(True)
+        self.computer_btn.setText("Computer use")
+        if ok:
+            self.computer_btn.setChecked(True)
+        else:
+            QMessageBox.warning(self, "Computer use", "Installing the add-ons failed:\n\n" + msg)
+
+    def _on_hide(self, w: Waiter):
+        """Minimize this window before it looks at or uses the screen the window is on."""
+        if self.win.isMinimized() or not _window_on_monitor(self.win, w.payload):
+            w.event.set()
+            return
+        self.win.showMinimized()
+        QTimer.singleShot(450, w.event.set)
 
     def _restore(self):
         if self.win.isMinimized():
@@ -2741,7 +2897,7 @@ class SettingsPage(QWidget):
         self.setObjectName("page")
         self.win = win
         s = self.s = win.settings
-        area = QScrollArea()
+        area = self.area = QScrollArea()
         area.setWidgetResizable(True)
         body = QWidget()
         body.setObjectName("page")
@@ -2788,6 +2944,30 @@ class SettingsPage(QWidget):
         self.dangerous.setChecked(s.always_ask_dangerous)
         self.dangerous.toggled.connect(self._save)
         f.addRow(self.dangerous)
+        lay.addWidget(g)
+
+        g = self.computer_group = QGroupBox("Computer use")
+        f = QFormLayout(g)
+        f.addRow(muted("Turn it on or off with the Computer use button next to the message box. While it's on, "
+                       "it takes screenshots and uses your mouse and keyboard without asking each time (opening "
+                       "a program file still follows the approval mode). Move the mouse into a screen corner to "
+                       "stop it."))
+        self.monitor = QComboBox()
+        self._fill_monitors()
+        self.monitor.currentIndexChanged.connect(self._save)
+        f.addRow("Screen it looks at first:", self.monitor)
+        self.coords = self._combo([("auto", "Automatic by model"), ("pixels", "Screenshot pixels"),
+                                   ("normalized", "0-1000 grid (Qwen vision models)")], s.coord_mode)
+        f.addRow("Click coordinates:", self.coords)
+        self.after = QCheckBox("Take a screenshot after every click or keypress so it can check its work")
+        self.after.setChecked(s.screenshot_after_action)
+        self.grid = QCheckBox("Draw a coordinate grid on screenshots (helps weaker models aim)")
+        self.grid.setChecked(s.grid_overlay)
+        self.minimize = QCheckBox("Minimize this window while it uses the screen this window is on")
+        self.minimize.setChecked(s.extra.get("minimize_during_control", True))
+        for w in (self.after, self.grid, self.minimize):
+            w.toggled.connect(self._save)
+            f.addRow(w)
         lay.addWidget(g)
 
         g = QGroupBox("GitHub")
@@ -2985,6 +3165,18 @@ class SettingsPage(QWidget):
         self._conn_shown = (self.s.base_url, self.s.model)
         self._sync_preset()
         self._show_addons()
+        self._fill_monitors()       # the message box's screen picker changes it too
+
+    def _fill_monitors(self):
+        self.monitor.blockSignals(True)
+        self.monitor.clear()
+        mons = screen_tools.monitors()
+        for i, mon in enumerate(mons, 1):
+            self.monitor.addItem(f"Screen {i}: {screen_tools.monitor_size(mon)}", i)
+        if self.monitor.findData(self.s.monitor) < 0:     # not plugged in now, or the screens can't be read
+            self.monitor.addItem(f"Screen {self.s.monitor}", self.s.monitor)
+        self.monitor.setCurrentIndex(self.monitor.findData(self.s.monitor))
+        self.monitor.blockSignals(False)
 
     def _show_addons(self):
         m = mcp.manager()
@@ -3070,6 +3262,10 @@ class SettingsPage(QWidget):
         s.enable_github, s.always_ask_publish = self.github.isChecked(), self.publish.isChecked()
         s.github_token = self.gh_token.text().strip()
         s.screenshot_max_side = self.max_side.value()
+        s.monitor = int(self.monitor.currentData() or 1)
+        s.coord_mode = self.coords.currentData()
+        s.screenshot_after_action, s.grid_overlay = self.after.isChecked(), self.grid.isChecked()
+        s.extra["minimize_during_control"] = self.minimize.isChecked()
         s.context_limit, s.keep_images = self.ctx_limit.value(), self.keep_images.value()
         s.max_images = max(self.max_images.value(), s.keep_images)
         s.max_steps, s.max_tool_output = self.max_steps.value(), self.max_out.value()
@@ -3508,6 +3704,12 @@ class MainWindow(QMainWindow):
         mcp.manager().start_background(cwd=self.settings.workspace_path())
         if self.settings.index_files:
             memory_mod.start_indexer(self.settings)
+
+    def show_settings(self, section: str = ""):
+        self.nav.setCurrentRow(2)
+        if section == "computer":
+            QTimer.singleShot(0, lambda: self.settings_page.area.ensureWidgetVisible(
+                self.settings_page.computer_group, 0, 40))
 
     def toggle_sidebar(self):
         on = not self.sidebar.isVisible()

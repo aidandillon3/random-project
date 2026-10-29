@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import platform
+import textwrap
 from pathlib import Path
 
 
@@ -39,9 +40,7 @@ read and change files and run programs, commands and tests.
 - Code that only runs inside another program (a game's scripting, a plugin, a mod): check what
   you can here (a syntax check, the logic run with stand-ins for that program's functions) and
   tell the user what still has to be tried in the program.
-{background}- You can't see or use the user's screen, mouse or keyboard: test through what programs print,
-  their logs and tests, never by clicking.
-- Several independent tool calls can be made at once.
+{background}{screen}- Several independent tool calls can be made at once.
 - Stay inside what the user asked: no extra features or refactors nobody asked for. Ask with
   ask_user only when you truly can't decide.
 - If a tool call is denied, don't retry it; follow the user's note or find another way.
@@ -108,6 +107,16 @@ RESEARCH = """- Before writing code for a game, mod, app or library with its own
   limits the docs show, and say in your reply which docs you used.
 """
 
+NO_SCREEN = """- You can't see or use the user's screen, mouse or keyboard: test through what programs print,
+  their logs and tests, never by clicking.
+"""
+
+SCREEN = ("Computer use is on: screenshot shows the user's screen, and click, type_text, press_keys, "
+          "scroll, drag and open use their mouse and keyboard. Prefer files, commands and keyboard shortcuts "
+          "when they do the job; use the screen for what only works by hand. {ui}Take a screenshot first, and "
+          "after each action look at the screenshot it returns before the next step. {coords}The user can stop "
+          "you by moving the mouse into a screen corner.")
+
 BACKGROUND = """- Programs that keep running (servers, games, watchers): run_command with background=true, read
   their output with check_process, and stop_process when done.
 """
@@ -133,10 +142,18 @@ def _pinned_notes() -> str:
     return "\n# Pinned notes from your memory\n" + "\n".join(out) + "\n" if out else ""
 
 
-def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mode: bool) -> str:
+def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mode: bool,
+                        coords: str = "") -> str:
     """The same text for the same tools, whatever the chat (the work folder goes in build_context
-    instead; it is still taken here so older callers keep working)."""
+    instead; it is still taken here so older callers keep working). coords: how click
+    coordinates work, when the screen tools are there."""
     names = {t.name for t in tools}
+    screen = NO_SCREEN
+    if "screenshot" in names:
+        ui = ("In a Windows app, ui_elements + click_element hit buttons more reliably than coordinates. "
+              if "ui_elements" in names else "")
+        screen = textwrap.fill(SCREEN.format(ui=ui, coords=coords + " " if coords else ""), 98,
+                               initial_indent="- ", subsequent_indent="  ") + "\n"
     if "start_coding_task" in names:
         review = (REVIEW_PUBLISH if "git_push" in names else REVIEW_LOCAL if "git_commit" in names
                   else REVIEW_SHELL)
@@ -150,6 +167,7 @@ def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mod
         coding=coding,
         unity=unity,
         background=BACKGROUND if "check_process" in names else "",
+        screen=screen,
         research=RESEARCH if {"web_search", "web_fetch"} <= names else "",
     )
     if prompt_mode:

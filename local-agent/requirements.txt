@@ -2,3 +2,8 @@ PySide6>=6.6           # the app window
 requests>=2.31         # talks to the model server
 Pillow>=10.0           # image resizing
 Send2Trash>=1.8        # deletes go to the Recycle Bin
+# Computer use (only used while its toggle is on)
+mss>=9.0               # screenshots
+pyautogui>=0.9.54      # mouse and keyboard (brings pygetwindow for the window list)
+pyperclip>=1.8         # typing non-English text, the clipboard
+pywinauto>=0.6.8; sys_platform == "win32"   # buttons and menus by name (ui_elements)

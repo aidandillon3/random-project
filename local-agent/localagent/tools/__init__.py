@@ -5,8 +5,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import code, files, github, misc, shell, unity, web  # noqa: F401  (registers tools)
-from .base import EDIT, PUBLISH, REGISTRY, RISK_LABELS, RUN, SAFE, Tool, ToolContext, ToolError, ToolResult
+from . import code, files, github, misc, screen, shell, unity, web  # noqa: F401  (registers tools)
+from .base import CONTROL, EDIT, PUBLISH, REGISTRY, RISK_LABELS, RUN, SAFE, Tool, ToolContext, ToolError, ToolResult
 
 # Every tool's definition goes with every request and costs prompt tokens, so two big groups are
 # cut down unless they're likely to be used. Left in: what's needed to start using them.
@@ -56,6 +56,8 @@ def enabled_tools(settings, depth: int = 0, workspace=None, full=()) -> list[Too
         groups.add("code")
     if getattr(settings, "enable_unity", True):
         groups.add("unity")
+    if getattr(settings, "computer_use", False) and depth == 0:   # the Computer use toggle; off unless turned on
+        groups.add("control")
     if settings.enable_subagents and depth == 0:
         groups.add("subagents")
     groups.add("mcp")     # tools of the MCP servers in data/mcp.json (opt-in by being listed there)
@@ -71,4 +73,4 @@ def enabled_tools(settings, depth: int = 0, workspace=None, full=()) -> list[Too
 
 
 __all__ = ["REGISTRY", "Tool", "ToolContext", "ToolError", "ToolResult", "enabled_tools", "github_signed_in",
-           "SAFE", "EDIT", "RUN", "PUBLISH", "RISK_LABELS"]
+           "SAFE", "EDIT", "RUN", "CONTROL", "PUBLISH", "RISK_LABELS"]
