@@ -89,8 +89,8 @@ class AgentUI:
 
 # Screen tools that end with a picture of the screen (list_windows, ui_elements and the clipboard
 # only read): of several in one step, only the last one waits for the screen and takes it.
-SHOWS_SCREEN = {"click", "move_mouse", "drag", "scroll", "type_text", "press_keys", "focus_window", "open",
-                "click_element", "screenshot", "zoom"}
+SHOWS_SCREEN = {"click", "move_mouse", "move_mouse_by", "drag", "scroll", "type_text", "press_keys", "focus_window",
+                "open", "click_element", "screenshot", "zoom"}
 
 
 def png_part(png: bytes) -> dict:
@@ -610,7 +610,9 @@ class Agent:
         about is the user's call (one model took ~20 screenshot-and-adjust rounds on a render that already ran)."""
         out = []
         for c, r in results:
-            if r.images:
+            tool = self.tools.get(c.name)
+            # screenshots taken while using the screen aren't polishing a look
+            if r.images and not (tool and tool.group == "control"):
                 self._task_images += len(r.images)
                 if self._task_images >= MANY_IMAGES:
                     r = ToolResult(r.text + MANY_IMAGES_NOTE.format(n=self._task_images), ok=r.ok, images=r.images)

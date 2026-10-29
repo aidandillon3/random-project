@@ -4,6 +4,7 @@ then never ask. The screen and the mouse are stand-ins here (no desktop in the t
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -44,14 +45,18 @@ class FailSafeException(Exception):
 
 def fake_pyautogui(log, fail=False):
     m = types.ModuleType("pyautogui")
-    m.KEYBOARD_KEYS = ["ctrl", "s", "enter", "alt", "tab"]
+    m.KEYBOARD_KEYS = ["ctrl", "s", "enter", "alt", "tab", "w", "shift"]
     m.position = lambda: (2000, 100)
 
-    def click(x, y, **kw):
+    def corner():
         if fail:
             raise FailSafeException("corner")
-        log.append(("click", x, y))
-    m.click = click
+    m.failSafeCheck = corner
+    m.mouseDown = lambda button="left": log.append(("down", button))
+    m.mouseUp = lambda button="left": log.append(("up", button))
+    m.keyDown = lambda k: log.append(("keydown", k))
+    m.keyUp = lambda k: log.append(("keyup", k))
+    m.moveRel = lambda x, y: log.append(("rel", x, y))
     m.moveTo = lambda x, y, **kw: log.append(("move", x, y))
     m.write = lambda t, **kw: log.append(("write", t))
     m.press = lambda k: log.append(("press", k))
@@ -127,7 +132,8 @@ class ComputerUseTest(unittest.TestCase):
         self.assertEqual(agent.run("type hello on my second screen"), "Done.")
         self.assertEqual(ui.asked, [])
         # 500 on the 0-1000 grid of screen 2 (2560 wide, starting at x=1920) is its middle
-        self.assertEqual(self.log, [("click", 3200, 720), ("write", "hello"), ("press", "enter")])
+        self.assertEqual(self.log, [("move", 3200, 720), ("down", "left"), ("up", "left"), ("write", "hello"),
+                                    ("press", "enter")])
         shots = dict(ui.results)
         self.assertIn("Screen 2: 2560x1440", shots["screenshot"].text)
         self.assertIn("Screens: 1 = 1920x1080 (main), 2 = 2560x1440", shots["screenshot"].text)
@@ -160,7 +166,7 @@ class ComputerUseTest(unittest.TestCase):
             agent.settings.computer_use = False      # the user presses the button after the first click
         ui.tool_end = end
         agent.run("click twice")
-        self.assertEqual(len(self.log), 1)
+        self.assertEqual([e for e in self.log if e[0] == "down"], [("down", "left")])
         self.assertIn("turned Computer use off", ui.results[1][1].text)
 
     def test_mouse_in_a_corner_stops_the_task(self):
@@ -169,6 +175,61 @@ class ComputerUseTest(unittest.TestCase):
         agent.run("click")
         self.assertTrue(agent.stop.is_set())
         self.assertIn("emergency stop", ui.results[0][1].text)
+        self.assertEqual(self.log[-1], ("up", "left"))      # never left pressed down
+
+    def ctx(self, **kw):
+        ctx = ToolContext(settings=Settings(computer_use=True, coord_mode="normalized", **kw), workspace=Path("."))
+        REGISTRY["screenshot"].func(ctx, {})
+        self.log.clear()
+        return ctx
+
+    def test_keys_held_for_games(self):
+        ctx = self.ctx(screenshot_after_action=False)
+        start = time.time()
+        REGISTRY["press_keys"].func(ctx, {"keys": "w+shift", "hold_seconds": 0.3})
+        self.assertGreaterEqual(time.time() - start, 0.3)
+        self.assertEqual(self.log, [("keydown", "w"), ("keydown", "shift"), ("keyup", "shift"), ("keyup", "w")])
+        self.assertIn("held 10s", REGISTRY["press_keys"].describe({"keys": "w", "hold_seconds": 10}))
+
+    def test_camera_turn_is_a_relative_move_in_small_steps(self):
+        ctx = self.ctx(screenshot_after_action=False)
+        out = REGISTRY["move_mouse_by"].func(ctx, {"dx": 300, "dy": -45})
+        moves = [e for e in self.log if e[0] == "rel"]
+        self.assertGreater(len(moves), 5)
+        self.assertEqual((sum(m[1] for m in moves), sum(m[2] for m in moves)), (300, -45))
+        self.assertIn("(300, -45)", out.text)
+
+    def test_off_grid_positions_are_explained_not_clamped(self):
+        ctx = self.ctx()
+        with self.assertRaises(Exception) as e:
+            REGISTRY["click"].func(ctx, {"x": 1167, "y": 490})     # pixels of the 1280-wide image, not the grid
+        self.assertIn("off the 0-1000 grid", str(e.exception))
+        self.assertEqual(self.log, [])
+        # a zoom box running past the edge stops at it
+        out = REGISTRY["zoom"].func(ctx, {"x": 900, "y": 900, "width": 300, "height": 300})
+        self.assertEqual(len(out.images), 1)
+
+    def test_windows_input_goes_through_sendinput(self):
+        from localagent.tools import screen, winput
+
+        ctx = self.ctx(screenshot_after_action=False)
+        sent = []
+        with mock.patch.object(screen, "WINDOWS", True), \
+                mock.patch.object(winput, "key", lambda k, up: sent.append(("key", k, up))), \
+                mock.patch.object(winput, "button", lambda b, up: sent.append(("button", b, up))), \
+                mock.patch.object(winput, "move_by", lambda x, y: sent.append(("by", x, y))), \
+                mock.patch.object(winput, "vk_code", lambda k: 0x57 if k == "w" else None), \
+                mock.patch.object(winput, "window_at", lambda x, y: (2, 1, "Rainbow Six")), \
+                mock.patch.object(winput, "bring_to_front", lambda h: sent.append(("front", h))):
+            out = REGISTRY["click"].func(ctx, {"x": 500, "y": 500, "hold_seconds": 0.1})
+            REGISTRY["press_keys"].func(ctx, {"keys": "w"})
+            REGISTRY["move_mouse_by"].func(ctx, {"dx": 10, "dy": 0, "seconds": 0})
+            with self.assertRaises(Exception) as e:
+                REGISTRY["press_keys"].func(ctx, {"keys": "notakey"})
+        self.assertEqual(sent, [("front", 2), ("button", "left", False), ("button", "left", True),
+                                ("key", "w", False), ("key", "w", True), ("by", 10, 0)])
+        self.assertIn("'Rainbow Six' was brought to the front first", out.text)
+        self.assertIn("Unknown key", str(e.exception))
 
 
 if __name__ == "__main__":

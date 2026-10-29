@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 
+from . import winput
 from .base import CONTROL, RUN, ToolContext, ToolError, ToolResult, tool
 
 WINDOWS = sys.platform == "win32"
@@ -62,14 +63,26 @@ def to_screen(ctx: ToolContext, x: float, y: float) -> tuple[int, int]:
     if "img_w" not in s:       # no screenshot yet (it may hold only the model's name)
         _shot(ctx)  # take one so we know the geometry
         s = ctx.screen
-    if coord_mode(ctx) == "normalized":
-        fx, fy = float(x) / 1000.0, float(y) / 1000.0
-    else:
-        fx, fy = float(x) / s["img_w"], float(y) / s["img_h"]
+    lim_x, lim_y = _limits(ctx)
+    x, y = float(x), float(y)
+    if not (-5 <= x <= lim_x + 5 and -5 <= y <= lim_y + 5):
+        # a silent clamp to the edge would click somewhere else; say what the numbers mean instead
+        if coord_mode(ctx) == "normalized":
+            raise ToolError(f"({x:g}, {y:g}) is off the 0-1000 grid. Positions go from 0 to 1000 across and down "
+                            f"the screenshot, whatever its size (it is {s['img_w']}x{s['img_h']} pixels): "
+                            f"grid x = pixel x * 1000 / {s['img_w']}, grid y = pixel y * 1000 / {s['img_h']}.")
+        raise ToolError(f"({x:g}, {y:g}) is outside the screenshot, which is {s['img_w']}x{s['img_h']} pixels.")
+    fx, fy = x / lim_x, y / lim_y
     px, py = int(s["left"] + fx * s["width"]), int(s["top"] + fy * s["height"])
     # Stay 1 pixel off the edges: a corner is pyautogui's emergency stop, and x=0 / x=1000 would land on one.
     return (min(max(px, s["left"] + 1), s["left"] + s["width"] - 2),
             min(max(py, s["top"] + 1), s["top"] + s["height"] - 2))
+
+
+def _limits(ctx: ToolContext) -> tuple[float, float]:
+    """The right and bottom edges in the coordinates the model uses."""
+    s = ctx.screen
+    return (1000.0, 1000.0) if coord_mode(ctx) == "normalized" else (float(s["img_w"]), float(s["img_h"]))
 
 
 def from_screen(ctx: ToolContext, px: int, py: int) -> tuple[int, int]:
@@ -224,9 +237,11 @@ def zoom(ctx: ToolContext, a: dict):
     from PIL import Image
 
     x1, y1 = to_screen(ctx, a["x"], a["y"])
-    x2, y2 = to_screen(ctx, float(a["x"]) + float(a["width"]), float(a["y"]) + float(a["height"]))
+    lim_x, lim_y = _limits(ctx)     # a box that runs past the edge stops at it
+    x2, y2 = to_screen(ctx, min(lim_x, float(a["x"]) + float(a["width"])),
+                       min(lim_y, float(a["y"]) + float(a["height"])))
     if x2 - x1 < 4 or y2 - y1 < 4:
-        raise ToolError("That box is too small.")
+        raise ToolError("That box is too small: give its top-left corner as x, y and its size as width, height.")
     img, _, _ = _grab(ctx.screen.get("monitor", ctx.settings.monitor),
                    {"left": x1, "top": y1, "width": x2 - x1, "height": y2 - y1})
     max_side = int(ctx.settings.screenshot_max_side or 1280)
@@ -252,17 +267,102 @@ def _where(a: dict) -> str:
     return f"({a.get('x')}, {a.get('y')})"
 
 
-@tool("click", "Click at a point on the screen (coordinates of the last screenshot).",
+MAX_HOLD = 10.0     # seconds a key or button may be held down in one call
+
+
+def _seconds(a: dict, name: str = "hold_seconds") -> float:
+    try:
+        return max(0.0, min(MAX_HOLD, float(a.get(name) or 0)))
+    except (TypeError, ValueError):
+        raise ToolError(f"{name} must be a number of seconds.")
+
+
+def _key(g, k: str, up: bool):
+    if WINDOWS:
+        winput.key(k, up)
+    else:
+        (g.keyUp if up else g.keyDown)(k)
+
+
+def _button(g, b: str, up: bool):
+    if WINDOWS:
+        winput.button(b, up)
+    else:
+        (g.mouseUp if up else g.mouseDown)(button=b)
+
+
+def _wait_held(ctx: ToolContext, g, seconds: float):
+    """Keep what is pressed down for a while; the corner and Stop still end it."""
+    end = time.time() + seconds
+    while True:
+        check = getattr(g, "failSafeCheck", None)
+        if check:
+            check()
+        left = end - time.time()
+        if left <= 0 or ctx.stop.is_set():
+            return
+        time.sleep(min(0.05, left))
+
+
+def _press(ctx: ToolContext, g, keys: list[str], hold: float):
+    """Down in order, held (a few frames at least: games miss shorter taps), up in reverse."""
+    down = []
+    try:
+        for k in keys:
+            _key(g, k, False)
+            down.append(k)
+        _wait_held(ctx, g, max(0.05, hold))
+    finally:
+        for k in reversed(down):
+            _key(g, k, True)
+        time.sleep(0.03)
+
+
+def _click_here(ctx: ToolContext, g, b: str, clicks: int, hold: float):
+    for i in range(clicks):
+        if i:
+            time.sleep(0.08)
+        _button(g, b, False)
+        try:
+            _wait_held(ctx, g, max(0.05, hold))
+        finally:
+            _button(g, b, True)
+
+
+def _to_front(px: int, py: int) -> str:
+    """Clicks go to the window under the point, but a game that isn't in front often eats the first
+    click to come to the front (or doesn't come at all): bring it there first."""
+    if not WINDOWS:
+        return ""
+    try:
+        root, front, title = winput.window_at(px, py)
+        if not root or root == front:
+            return ""
+        winput.bring_to_front(root)
+        time.sleep(0.3)
+        return f" ('{title}' was brought to the front first.)" if title else ""
+    except Exception:  # noqa: BLE001 - clicking still works without it
+        return ""
+
+
+@tool("click", """
+Click at a point on the screen (coordinates of the last screenshot). The window there comes to
+the front first. In a game, hold_seconds keeps the button down (e.g. 1.5 to keep firing).""",
       {"x": {"type": "number"}, "y": {"type": "number"},
        "button": {"type": "string", "enum": ["left", "right", "middle"]},
-       "clicks": {"type": "integer", "description": "2 for double-click"}},
+       "clicks": {"type": "integer", "description": "2 for double-click"},
+       "hold_seconds": {"type": "number", "description": "Keep the button down this long (up to 10)"}},
       required=["x", "y"], risk=CONTROL, group="control",
-      describe=lambda a: f"{a.get('button', 'left')} click x{a.get('clicks', 1)} at {_where(a)}")
+      describe=lambda a: f"{a.get('button', 'left')} click x{a.get('clicks', 1)} at {_where(a)}"
+      + (f", held {a['hold_seconds']}s" if a.get("hold_seconds") else ""))
 def click(ctx: ToolContext, a: dict):
     g = _gui()
     px, py = to_screen(ctx, a["x"], a["y"])
-    g.click(px, py, clicks=int(a.get("clicks") or 1), interval=0.08, button=a.get("button") or "left")
-    return after_action(ctx, f"Clicked at {_where(a)}.")
+    hold = _seconds(a)
+    g.moveTo(px, py)
+    note = _to_front(px, py)
+    _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), hold)
+    return after_action(ctx, f"Clicked at {_where(a)}" + (f", held {hold:g}s" if hold else "") + "." + note)
 
 
 @tool("move_mouse", "Move the mouse pointer without clicking (for hover menus and tooltips).",
@@ -272,6 +372,36 @@ def move_mouse(ctx: ToolContext, a: dict):
     g = _gui()
     g.moveTo(*to_screen(ctx, a["x"], a["y"]), duration=0.15)
     return after_action(ctx, f"Mouse moved to {_where(a)}.")
+
+
+@tool("move_mouse_by", """
+Move the mouse by an amount instead of to a point. In games that hide the pointer, this is what
+turns the camera (move_mouse and click positions don't): dx > 0 turns right, dy > 0 looks down.
+The amount is in mouse counts, not screen coordinates; how far that turns depends on the game's
+sensitivity, so start with about 100-300 and look at the result.""",
+      {"dx": {"type": "integer"}, "dy": {"type": "integer"},
+       "seconds": {"type": "number", "description": "Spread the move over this long (default 0.2)"}},
+      risk=CONTROL, group="control", describe=lambda a: f"Move mouse by ({a.get('dx', 0)}, {a.get('dy', 0)})")
+def move_mouse_by(ctx: ToolContext, a: dict):
+    g = _gui()
+    try:
+        dx, dy = int(a.get("dx") or 0), int(a.get("dy") or 0)
+    except (TypeError, ValueError):
+        raise ToolError("dx and dy must be whole numbers.")
+    seconds = _seconds(a, "seconds") if a.get("seconds") is not None else 0.2
+    steps = max(1, min(60, int(seconds / 0.01)))     # small steps: one big jump looks like a glitch to some games
+    done_x = done_y = 0
+    for i in range(1, steps + 1):
+        if ctx.stop.is_set():
+            break
+        sx, sy = round(dx * i / steps) - done_x, round(dy * i / steps) - done_y
+        if WINDOWS:
+            winput.move_by(sx, sy)
+        else:
+            g.moveRel(sx, sy)
+        done_x, done_y = done_x + sx, done_y + sy
+        time.sleep(seconds / steps)
+    return after_action(ctx, f"Moved the mouse by ({done_x}, {done_y}).")
 
 
 @tool("drag", "Drag with the left mouse button from one point to another.",
@@ -284,9 +414,12 @@ def drag(ctx: ToolContext, a: dict):
     x1, y1 = to_screen(ctx, a["from_x"], a["from_y"])
     x2, y2 = to_screen(ctx, a["to_x"], a["to_y"])
     g.moveTo(x1, y1, duration=0.1)
-    g.mouseDown()
-    g.moveTo(x2, y2, duration=0.4)
-    g.mouseUp()
+    _button(g, "left", False)
+    try:
+        time.sleep(0.05)
+        g.moveTo(x2, y2, duration=0.4)
+    finally:
+        _button(g, "left", True)
     return after_action(ctx, "Dragged.")
 
 
@@ -353,19 +486,27 @@ def parse_keys(keys) -> list[str]:
 
 @tool("press_keys", """
 Press a key or a shortcut, e.g. "enter", "ctrl+s", "alt+tab", "win+r", "ctrl+shift+esc".
-Use repeat to press it several times.""",
-      {"keys": {"type": "string"}, "repeat": {"type": "integer"}},
+Use repeat to press it several times. In a game, hold_seconds keeps the keys down: "w" with
+hold_seconds 2 walks forward for 2 seconds, "w+shift" runs, "w+d" goes forward and right.""",
+      {"keys": {"type": "string"}, "repeat": {"type": "integer"},
+       "hold_seconds": {"type": "number", "description": "Keep the keys down this long (up to 10)"}},
       required=["keys"], risk=CONTROL, group="control",
-      describe=lambda a: f"Press {a.get('keys')}" + (f" x{a['repeat']}" if a.get("repeat") else ""))
+      describe=lambda a: f"Press {a.get('keys')}" + (f" x{a['repeat']}" if a.get("repeat") else "")
+      + (f", held {a['hold_seconds']}s" if a.get("hold_seconds") else ""))
 def press_keys(ctx: ToolContext, a: dict):
     g = _gui()
     keys = parse_keys(a["keys"])
-    bad = [k for k in keys if k not in g.KEYBOARD_KEYS]
+    known = (lambda k: winput.vk_code(k) is not None) if WINDOWS else (lambda k: k in g.KEYBOARD_KEYS)
+    bad = [k for k in keys if not known(k)]
     if bad:
-        raise ToolError(f"Unknown key name(s): {bad}. Examples: ctrl, alt, shift, win, enter, esc, tab, f5, up.")
-    for _ in range(max(1, min(50, int(a.get("repeat") or 1)))):
-        g.hotkey(*keys) if len(keys) > 1 else g.press(keys[0])
-    return after_action(ctx, f"Pressed {'+'.join(keys)}.")
+        raise ToolError(f"Unknown key name(s): {bad}. Examples: w, a, s, d, space, ctrl, alt, shift, win, enter, "
+                        "esc, tab, f5, up.")
+    hold = _seconds(a)
+    for i in range(max(1, min(50, int(a.get("repeat") or 1)))):
+        if ctx.stop.is_set():
+            break
+        _press(ctx, g, keys, hold)
+    return after_action(ctx, f"Pressed {'+'.join(keys)}" + (f", held {hold:g}s" if hold else "") + ".")
 
 
 # ------------------------------------------------------------------ windows and apps
@@ -531,7 +672,9 @@ def click_element(ctx: ToolContext, a: dict):
     if not 0 <= i < len(ctx.ui_cache):
         raise ToolError("No such index. Run ui_elements first.")
     ctype, name, (px, py) = ctx.ui_cache[i]
-    _gui().click(px, py, clicks=int(a.get("clicks") or 1), button=a.get("button") or "left")
+    g = _gui()
+    g.moveTo(px, py)
+    _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), 0)
     return after_action(ctx, f"Clicked {ctype} '{name}'.")
 
 

@@ -114,8 +114,12 @@ NO_SCREEN = """- You can't see or use the user's screen, mouse or keyboard: test
 SCREEN = ("Computer use is on: screenshot shows the user's screen, and click, type_text, press_keys, "
           "scroll, drag and open use their mouse and keyboard. Prefer files, commands and keyboard shortcuts "
           "when they do the job; use the screen for what only works by hand. {ui}Take a screenshot first, and "
-          "after each action look at the screenshot it returns before the next step. {coords}The user can stop "
-          "you by moving the mouse into a screen corner.")
+          "after each action look at the screenshot it returns before the next step. {coords}{games}The user can "
+          "stop you by moving the mouse into a screen corner.")
+
+SCREEN_GAMES = ("In games: press_keys with hold_seconds walks (\"w\" for 2 s), move_mouse_by turns the camera "
+                "(move_mouse doesn't), click with hold_seconds keeps firing. Games don't wait for you, so keep "
+                "your thinking between actions short and act in small bursts. ")
 
 BACKGROUND = """- Programs that keep running (servers, games, watchers): run_command with background=true, read
   their output with check_process, and stop_process when done.
@@ -152,7 +156,8 @@ def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mod
     if "screenshot" in names:
         ui = ("In a Windows app, ui_elements + click_element hit buttons more reliably than coordinates. "
               if "ui_elements" in names else "")
-        screen = textwrap.fill(SCREEN.format(ui=ui, coords=coords + " " if coords else ""), 98,
+        games = SCREEN_GAMES if "move_mouse_by" in names else ""
+        screen = textwrap.fill(SCREEN.format(ui=ui, coords=coords + " " if coords else "", games=games), 98,
                                initial_indent="- ", subsequent_indent="  ") + "\n"
     if "start_coding_task" in names:
         review = (REVIEW_PUBLISH if "git_push" in names else REVIEW_LOCAL if "git_commit" in names
