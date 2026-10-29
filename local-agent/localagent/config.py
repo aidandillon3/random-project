@@ -81,6 +81,7 @@ class Settings:
     # toggle next to the message box is turned on; while on, clicks and keys never ask.
     computer_use: bool = False
     monitor: int = 1                   # the screen it looks at first: 1, 2, 3...
+    screen_max_side: int = 1920        # its screenshots (bigger aims better at small things, costs more tokens)
     coord_mode: str = "auto"           # auto | pixels | normalized (0-1000)
     grid_overlay: bool = False
     screenshot_after_action: bool = True

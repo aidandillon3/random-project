@@ -58,12 +58,19 @@ def coord_help(ctx: ToolContext) -> str:
             "not real screen pixels; they are converted for you.")
 
 
-def to_screen(ctx: ToolContext, x: float, y: float) -> tuple[int, int]:
+def to_screen(ctx: ToolContext, x: float, y: float, in_zoom: bool = False) -> tuple[int, int]:
+    """A position the model gave, in real screen pixels. in_zoom: it is a position in the last
+    zoomed view, which is much easier to aim at small things in than the whole screenshot."""
     s = ctx.screen
     if "img_w" not in s:       # no screenshot yet (it may hold only the model's name)
         _shot(ctx)  # take one so we know the geometry
         s = ctx.screen
-    lim_x, lim_y = _limits(ctx)
+    screen = s
+    if in_zoom:
+        if not s.get("zoom"):
+            raise ToolError("There is no zoomed view yet: use zoom first, or leave out in_zoom.")
+        s = s["zoom"]
+    lim_x, lim_y = _limits(ctx, s)
     x, y = float(x), float(y)
     if not (-5 <= x <= lim_x + 5 and -5 <= y <= lim_y + 5):
         # a silent clamp to the edge would click somewhere else; say what the numbers mean instead
@@ -71,17 +78,18 @@ def to_screen(ctx: ToolContext, x: float, y: float) -> tuple[int, int]:
             raise ToolError(f"({x:g}, {y:g}) is off the 0-1000 grid. Positions go from 0 to 1000 across and down "
                             f"the screenshot, whatever its size (it is {s['img_w']}x{s['img_h']} pixels): "
                             f"grid x = pixel x * 1000 / {s['img_w']}, grid y = pixel y * 1000 / {s['img_h']}.")
-        raise ToolError(f"({x:g}, {y:g}) is outside the screenshot, which is {s['img_w']}x{s['img_h']} pixels.")
+        raise ToolError(f"({x:g}, {y:g}) is outside the {'zoomed view' if in_zoom else 'screenshot'}, which is "
+                        f"{s['img_w']}x{s['img_h']} pixels.")
     fx, fy = x / lim_x, y / lim_y
     px, py = int(s["left"] + fx * s["width"]), int(s["top"] + fy * s["height"])
     # Stay 1 pixel off the edges: a corner is pyautogui's emergency stop, and x=0 / x=1000 would land on one.
-    return (min(max(px, s["left"] + 1), s["left"] + s["width"] - 2),
-            min(max(py, s["top"] + 1), s["top"] + s["height"] - 2))
+    return (min(max(px, screen["left"] + 1), screen["left"] + screen["width"] - 2),
+            min(max(py, screen["top"] + 1), screen["top"] + screen["height"] - 2))
 
 
-def _limits(ctx: ToolContext) -> tuple[float, float]:
-    """The right and bottom edges in the coordinates the model uses."""
-    s = ctx.screen
+def _limits(ctx: ToolContext, s: dict | None = None) -> tuple[float, float]:
+    """The right and bottom edges in the coordinates the model uses (of the screenshot, or of s)."""
+    s = ctx.screen if s is None else s
     return (1000.0, 1000.0) if coord_mode(ctx) == "normalized" else (float(s["img_w"]), float(s["img_h"]))
 
 
@@ -164,7 +172,7 @@ def _shot(ctx: ToolContext, monitor: int | None = None) -> bytes:
         cx, cy = cur[0] - mon["left"], cur[1] - mon["top"]
         r = max(6, real_w // 250)
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 0, 0), width=max(2, r // 3))
-    max_side = int(ctx.settings.screenshot_max_side or 1280)
+    max_side = _max_side(ctx)
     scale = min(1.0, max_side / max(real_w, real_h))
     if scale < 1.0:
         img = img.resize((round(real_w * scale), round(real_h * scale)), Image.LANCZOS)
@@ -173,6 +181,10 @@ def _shot(ctx: ToolContext, monitor: int | None = None) -> bytes:
     if ctx.settings.grid_overlay:
         _grid(ctx, img)
     return _png(img)
+
+
+def _max_side(ctx: ToolContext) -> int:
+    return int(getattr(ctx.settings, "screen_max_side", 0) or ctx.settings.screenshot_max_side or 1280)
 
 
 def _grid(ctx: ToolContext, img):
@@ -242,13 +254,16 @@ def zoom(ctx: ToolContext, a: dict):
                        min(lim_y, float(a["y"]) + float(a["height"])))
     if x2 - x1 < 4 or y2 - y1 < 4:
         raise ToolError("That box is too small: give its top-left corner as x, y and its size as width, height.")
-    img, _, _ = _grab(ctx.screen.get("monitor", ctx.settings.monitor),
-                   {"left": x1, "top": y1, "width": x2 - x1, "height": y2 - y1})
-    max_side = int(ctx.settings.screenshot_max_side or 1280)
-    scale = min(3.0, max_side / max(img.size))
+    box = {"left": x1, "top": y1, "width": x2 - x1, "height": y2 - y1}
+    img, _, _ = _grab(ctx.screen.get("monitor", ctx.settings.monitor), box)
+    scale = min(3.0, _max_side(ctx) / max(img.size))
     img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
-    return ToolResult("Zoomed view attached. Keep using the full-screenshot coordinates for clicks.",
-                      images=[_png(img)])
+    ctx.screen["zoom"] = dict(box, img_w=img.width, img_h=img.height)
+    where = ("on a 0-1000 grid over this zoomed image" if coord_mode(ctx) == "normalized" else
+             f"in pixels of this zoomed image ({img.width}x{img.height})")
+    return ToolResult(f"Zoomed view attached. To click or point at something you see in it, give its position "
+                      f"{where} and in_zoom=true: that aims much more precisely. Without in_zoom, positions are "
+                      "on the full screenshot.", images=[_png(img)])
 
 
 # ------------------------------------------------------------------ mouse and keyboard
@@ -359,13 +374,14 @@ the front first. In a game, hold_seconds keeps the button down (e.g. 1.5 to keep
       {"x": {"type": "number"}, "y": {"type": "number"},
        "button": {"type": "string", "enum": ["left", "right", "middle"]},
        "clicks": {"type": "integer", "description": "2 for double-click"},
-       "hold_seconds": {"type": "number", "description": "Keep the button down this long (up to 10)"}},
+       "hold_seconds": {"type": "number", "description": "Keep the button down this long (up to 10)"},
+       "in_zoom": {"type": "boolean", "description": "x, y are in the last zoomed view, not the screenshot"}},
       required=["x", "y"], risk=CONTROL, group="control",
       describe=lambda a: f"{a.get('button', 'left')} click x{a.get('clicks', 1)} at {_where(a)}"
       + (f", held {a['hold_seconds']}s" if a.get("hold_seconds") else ""))
 def click(ctx: ToolContext, a: dict):
     g = _gui()
-    px, py = to_screen(ctx, a["x"], a["y"])
+    px, py = to_screen(ctx, a["x"], a["y"], bool(a.get("in_zoom")))
     hold = _seconds(a)
     _move_to(g, px, py)
     note = _to_front(px, py)
@@ -374,11 +390,13 @@ def click(ctx: ToolContext, a: dict):
 
 
 @tool("move_mouse", "Move the mouse pointer without clicking (for hover menus and tooltips).",
-      {"x": {"type": "number"}, "y": {"type": "number"}}, required=["x", "y"], risk=CONTROL,
+      {"x": {"type": "number"}, "y": {"type": "number"},
+       "in_zoom": {"type": "boolean", "description": "x, y are in the last zoomed view, not the screenshot"}},
+      required=["x", "y"], risk=CONTROL,
       group="control", describe=lambda a: f"Move mouse to {_where(a)}")
 def move_mouse(ctx: ToolContext, a: dict):
     g = _gui()
-    _move_to(g, *to_screen(ctx, a["x"], a["y"]), 0.15)
+    _move_to(g, *to_screen(ctx, a["x"], a["y"], bool(a.get("in_zoom"))), 0.15)
     return after_action(ctx, f"Mouse moved to {_where(a)}.")
 
 

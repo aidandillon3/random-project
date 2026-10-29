@@ -2956,6 +2956,10 @@ class SettingsPage(QWidget):
         self._fill_monitors()
         self.monitor.currentIndexChanged.connect(self._save)
         f.addRow("Screen it looks at first:", self.monitor)
+        self.screen_side = self._spin(s.screen_max_side, 640, 3840)
+        self.screen_side.setToolTip("Bigger helps it aim at small things (game tiles, tiny buttons); each screenshot "
+                                    "costs more tokens and takes longer to read")
+        f.addRow("Its screenshots (longest side, pixels):", self.screen_side)
         self.coords = self._combo([("auto", "Automatic by model"), ("pixels", "Screenshot pixels"),
                                    ("normalized", "0-1000 grid (Qwen vision models)")], s.coord_mode)
         f.addRow("Click coordinates:", self.coords)
@@ -3263,6 +3267,7 @@ class SettingsPage(QWidget):
         s.github_token = self.gh_token.text().strip()
         s.screenshot_max_side = self.max_side.value()
         s.monitor = int(self.monitor.currentData() or 1)
+        s.screen_max_side = self.screen_side.value()
         s.coord_mode = self.coords.currentData()
         s.screenshot_after_action, s.grid_overlay = self.after.isChecked(), self.grid.isChecked()
         s.extra["minimize_during_control"] = self.minimize.isChecked()

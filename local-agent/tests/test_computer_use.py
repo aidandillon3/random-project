@@ -199,6 +199,18 @@ class ComputerUseTest(unittest.TestCase):
         self.assertEqual((sum(m[1] for m in moves), sum(m[2] for m in moves)), (300, -45))
         self.assertIn("(300, -45)", out.text)
 
+    def test_click_inside_the_zoomed_view(self):
+        ctx = self.ctx(screenshot_after_action=False)
+        with self.assertRaises(Exception):
+            REGISTRY["click"].func(ctx, {"x": 1, "y": 1, "in_zoom": True})     # no zoom yet
+        out = REGISTRY["zoom"].func(ctx, {"x": 500, "y": 500, "width": 100, "height": 100})
+        self.assertIn("in_zoom=true", out.text)
+        self.log.clear()
+        REGISTRY["click"].func(ctx, {"x": 500, "y": 500, "in_zoom": True})
+        # the middle of the zoomed box: screen 1 is 1920x1080, the box 960-1152 x 540-648
+        self.assertEqual(self.log[0], ("move", 1056, 594))
+        self.assertEqual(ctx.screen["img_w"], 1920)        # screenshots default to 1920 wide now
+
     def test_off_grid_positions_are_explained_not_clamped(self):
         ctx = self.ctx()
         with self.assertRaises(Exception) as e:
