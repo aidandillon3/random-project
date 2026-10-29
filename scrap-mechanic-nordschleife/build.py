@@ -29,9 +29,10 @@ import track
 
 ROAD_WIDTH = 20.0      # metres (Scrap Mechanic cars are ~3x real size)
 PIECE_SIZE = 32.0      # Blank Road (Matte) mesh is 32 x 32 m at scale 1 (collision .obj)
-THICK_SCALE = 0.5      # mesh is 0.5 m thick at scale 1, so the road slab is 0.25 m
+THICK_SCALE = 0.5      # mesh is 0.5 m thick at scale 1 (local z 0..0.5), so the slab is 0.25 m
+ROAD_SINK = 0.15       # slab bottom sits this far below the road profile, top 0.10 above
 STEP = 8.0             # metres of centre line per road piece
-GROUND_UNDER = 0.3     # ground sits this far below the road pieces' origin
+GROUND_UNDER = 0.05    # ground sits this far below the road profile (inside the slab)
 FLAT_EDGE = ROAD_WIDTH / 2 + 2.0   # ground is flat at road height out to here ...
 BLEND_EDGE = 45.0                  # ... and back to the real hillside by here
 PROFILE_SMOOTH = 60.0  # metres either side used to smooth the road's height profile
@@ -51,12 +52,17 @@ def qmul(a, b):
 
 
 def road_rotation(yaw, pitch):
-    """Rz(yaw) * Ry(-pitch) * Rx(90): the mesh is Y-up, the editor stands it up with X = 90.
-    Editor angles for the same rotation are (90, yaw, pitch)."""
+    """Rz(yaw) * Ry(-pitch). The mesh lies flat as it is: local x along the road,
+    y across, z up (0..0.5 m)."""
     qz = (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))
     qy = (0.0, math.sin(-pitch / 2), 0.0, math.cos(-pitch / 2))
-    qx = (math.sin(math.pi / 4), 0.0, 0.0, math.cos(math.pi / 4))
-    return qmul(qmul(qz, qy), qx)
+    return qmul(qz, qy)
+
+
+def editor_angles(q):
+    """The Tile Editor's (.tileson) rotation: intrinsic X-Y-Z Euler angles in degrees."""
+    from scipy.spatial.transform import Rotation
+    return [float(a) for a in Rotation.from_quat(q).as_euler("XYZ", degrees=True)]
 
 
 def smooth_closed(values, half_window):
@@ -155,7 +161,8 @@ def main():
         tx, ty = math.floor(lx / TILE_SIZE), math.floor(ly / TILE_SIZE)
         px, py = lx - tx * TILE_SIZE, ly - ty * TILE_SIZE
         cx, cy = int(px // smtile.CELL_SIZE), int(py // smtile.CELL_SIZE)
-        scale = (length / PIECE_SIZE, THICK_SCALE, ROAD_WIDTH / PIECE_SIZE)
+        scale = (length / PIECE_SIZE, ROAD_WIDTH / PIECE_SIZE, THICK_SCALE)
+        z -= ROAD_SINK
         a = copy.deepcopy(road)
         a.pos = (px - cx * smtile.CELL_SIZE, py - cy * smtile.CELL_SIZE, z)
         a.rot = road_rotation(yaw, pitch)
@@ -163,7 +170,7 @@ def main():
         j = copy.deepcopy(road_json)
         j["guid"] = str(uuid.uuid4())
         j["transform"] = {"position": [px, py, z],
-                          "rotation": [90.0, math.degrees(yaw), math.degrees(pitch)],
+                          "rotation": editor_angles(a.rot),
                           "scale": list(scale)}
         tiles.setdefault((tx, ty), {}).setdefault((cx, cy), []).append((a, j))
 
@@ -178,7 +185,9 @@ def main():
         for tx in range(tw):
             cells = tiles.get((tx, ty), {})
             name = f"{args.name} {tx:02d}-{ty:02d}"
-            local_id, tile_uuid = uuid.uuid4(), uuid.uuid4()
+            # Stable ids, so a rebuilt tile replaces the old one in existing saves.
+            local_id = uuid.uuid5(uuid.NAMESPACE_URL, f"nordschleife/{name}/local")
+            tile_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"nordschleife/{name}/tile")
             folder = tiles_out if args.mod else os.path.join(tiles_out, str(local_id))
             os.makedirs(folder, exist_ok=True)
 
