@@ -1,0 +1,6 @@
+{
+	"scriptableObjectSetList": [
+		{ "scriptableObjectSet": "$GAME_DATA/ScriptableObjects/scriptableObjectSets/sob_managers.sobset" },
+		{ "scriptableObjectSet": "$GAME_DATA/ScriptableObjects/scriptableObjectSets/sob_gameobjects.sobset" }
+	]
+}
