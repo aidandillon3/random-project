@@ -21,10 +21,11 @@ CELL_SIZE = 64.0
 ASSET_COUNT, ASSET_INDEX, ASSET_CSIZE, ASSET_SIZE = 0x54 // 4, 0x64 // 4, 0x74 // 4, 0x84 // 4
 
 
-def pack_mips(heights, template_mips):
+def pack_mips(heights, template_mips, colours=None):
     """Terrain blocks for one 64 m cell. heights: (33, 33) array, [row y][column x], metres,
     one vertex every 2 m. Mip m keeps every 2**m-th vertex ((32 >> m) + 1 per side) with
-    white vertex colour; the ground material part is copied from the template's blocks."""
+    white vertex colour (or colours, a (33, 33) uint32 array); the ground material part is
+    copied from the template's blocks."""
     out = []
     for m in range(6):
         n = (32 >> m) + 1
@@ -32,7 +33,7 @@ def pack_mips(heights, template_mips):
         assert hv.shape == (n, n)
         rec = np.zeros((n * n, 2), dtype=np.uint32)
         rec[:, 0] = hv.reshape(-1).view(np.uint32)
-        rec[:, 1] = 0xFFFFFFFF
+        rec[:, 1] = 0xFFFFFFFF if colours is None else np.asarray(colours, dtype=np.uint32)[::1 << m, ::1 << m].reshape(-1)
         out.append(rec.tobytes() + bytes(template_mips[m][n * n * 8:]))
     return out
 

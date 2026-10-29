@@ -59,7 +59,13 @@ TREES = [  # (uuid, {colour name: RRGGBB}, how often)
 ]
 TREE_CLEAR = 32.0      # no trees closer than this to the centre line (22 m of grass beside the road)
 TREE_BAND = 170.0      # ... or further than this (keeps the tree count, and load time, down)
-TREE_SPACING = 13.0    # metres between trees in the forest (jittered grid)
+TREE_SPACING = 20.0    # metres between trees in the forest (jittered grid)
+# Ground tint (vertex colour, multiplies the grass texture; R = B so byte order can't matter).
+# The plain texture is a bright lime; this takes it toward a darker, olive Eifel green.
+TINT_MEADOW = 0.74
+TINT_GREEN = 0.68     # green channel, a bit lower than red/blue so it's less lime
+TINT_FOREST = 0.80    # extra darkening on the forest floor (within FOREST_FLOOR of a tree)
+FOREST_FLOOR = 11.0
 FOREST_SHARE = 0.7     # roughly this much of the band is forest, the rest open meadow
 KERB_RADIUS = 200.0    # red and white kerbs on both sides of bends tighter than this
 KERB_WIDTH = 1.5
@@ -271,8 +277,9 @@ def main():
               (length / PIECE_SIZE, ROAD_WIDTH / PIECE_SIZE, THICK_SCALE))
     start_line(place, pieces[START_AHEAD])
     kerbs(place, pieces)
+    tint = None
     if not args.flat:
-        trees(place, pts, ground, vx, vy)
+        tint = ground_tint(trees(place, pts, ground, vx, vy), vx, vy)
     spawn_yaw = pieces[0][3]
 
     if args.mod:
@@ -297,7 +304,8 @@ def main():
                 for cx in range(TILE_CELLS):
                     r0 = (ty * TILE_CELLS + cy) * 32
                     c0 = (tx * TILE_CELLS + cx) * 32
-                    mips[(cx, cy)] = smtile.pack_mips(ground[r0:r0 + 33, c0:c0 + 33], template_mips)
+                    mips[(cx, cy)] = smtile.pack_mips(ground[r0:r0 + 33, c0:c0 + 33], template_mips,
+                                                     None if tint is None else tint[r0:r0 + 33, c0:c0 + 33])
             t = smtile.Tile(bytes(template.data))
             t.rebuild({k: [a for a, _ in v] for k, v in cells.items()}, ASSET_LIST, mips)
             t.set_uuid(tile_uuid)
@@ -368,6 +376,29 @@ def kerbs(place, pieces):
 STAND_UP = (math.sin(math.pi / 4), 0.0, 0.0, math.cos(math.pi / 4))  # Rx(90)
 
 
+def ground_tint(tree_xy, vx, vy):
+    """Vertex colour for every ground vertex: an olive tint everywhere, darker on the forest
+    floor, with a gentle large-scale variation so the meadows aren't one flat colour."""
+    rng = np.random.default_rng(7)
+    shade = np.full((len(vy), len(vx)), TINT_MEADOW)
+    gxx, gyy = np.meshgrid(vx, vy)
+    pts = np.column_stack([gxx.ravel(), gyy.ravel()])
+    dist, _ = cKDTree(tree_xy).query(pts, distance_upper_bound=FOREST_FLOOR * 1.6)
+    t = np.clip((dist.reshape(shade.shape) - FOREST_FLOOR * 0.6) / FOREST_FLOOR, 0, 1)
+    shade *= TINT_FOREST + (1 - TINT_FOREST) * t
+    # +-6% variation on a ~200 m scale (bilinear value noise).
+    cs = 200.0
+    lat = rng.uniform(-0.06, 0.06, (int((vy[-1] - vy[0]) / cs) + 3, int((vx[-1] - vx[0]) / cs) + 3))
+    fx, fy = (gxx - vx[0]) / cs, (gyy - vy[0]) / cs
+    ix, iy = fx.astype(int), fy.astype(int)
+    tx, ty = fx - ix, fy - iy
+    shade *= 1 + ((lat[iy, ix] * (1 - tx) + lat[iy, ix + 1] * tx) * (1 - ty)
+                  + (lat[iy + 1, ix] * (1 - tx) + lat[iy + 1, ix + 1] * tx) * ty)
+    rb = np.clip(shade * 255, 0, 255).astype(np.uint32)
+    g = np.clip(shade * (TINT_GREEN / TINT_MEADOW) * 255, 0, 255).astype(np.uint32)
+    return 0xFF000000 | rb << 16 | g << 8 | rb
+
+
 def trees(place, pts, ground, vx, vy):
     """Forest beside the track: a jittered grid of the game's trees in a band beside the
     road, with open meadows where a smooth noise field is low. Same trees every build."""
@@ -410,6 +441,7 @@ def trees(place, pts, ground, vx, vy):
         place(x, y, z - 0.3, rot, (s, s, s),
               {name: hex_colour(c) for name, c in cols.items()}, asset_uuid=u)
     print(f"{len(cand)} trees")
+    return cand
 
 
 def start_line(place, piece):
