@@ -162,7 +162,10 @@ def _png(img) -> bytes:
     return buf.getvalue()
 
 
-def _shot(ctx: ToolContext, monitor: int | None = None, marks: bool = False, squares: int | None = None) -> bytes:
+def _shot(ctx: ToolContext, monitor: int | None = None, marks: bool = False, squares: int | None = None,
+          ring: bool = True) -> bytes:
+    """ring=False: the pointer's place is noted but not drawn (watch mode: a small model took the ring for the
+    round target it was told to click, and clicked it again and again)."""
     from PIL import Image
 
     monitor = ctx.settings.monitor if monitor is None else monitor
@@ -183,7 +186,9 @@ def _shot(ctx: ToolContext, monitor: int | None = None, marks: bool = False, squ
         cx = (cur[0] - mon["left"]) * img.width / real_w
         cy = (cur[1] - mon["top"]) * img.height / real_h
         ctx.screen["pointer"] = (cx, cy)
-        _draw_pointer(img, cx, cy)
+        ctx.screen["ring"] = ring
+        if ring:
+            _draw_pointer(img, cx, cy)
     if ctx.settings.grid_overlay:
         _grid(ctx, img)
     if found is not None:
@@ -363,7 +368,7 @@ def _pointer_note(ctx: ToolContext) -> str:
     x, y = s["pointer"]
     if coord_mode(ctx) == "normalized":
         x, y = x * 1000 / s["img_w"], y * 1000 / s["img_h"]
-    return f" Mouse pointer (magenta ring): {x:.0f}, {y:.0f}."
+    return f" Mouse pointer{' (magenta ring)' if s.get('ring', True) else ''}: {x:.0f}, {y:.0f}."
 
 
 def _settle(monitor, least: float = 0.12, most: float = 0.6):

@@ -84,6 +84,9 @@ class WatchModeTest(unittest.TestCase):
         self.assertIn("- clicked 500 500; pressed w (held 0.2s); the screen looks the same as before it\n",
                       watch[1]["messages"][-1]["content"][0]["text"] + "\n")
         self.assertIn("- moved to 250 250", watch[2]["messages"][-1]["content"][0]["text"])
+        # the pointer is said, not drawn: a ring looked like the round target to a small model
+        self.assertIn("Mouse pointer: ", watch[0]["messages"][-1]["content"][-1]["text"])
+        self.assertNotIn("magenta", json.dumps(watch[0]["messages"]))
         self.assertTrue(watch[2]["messages"][-1]["content"][0]["text"].startswith("Goal: hit the target"))
         name, result = ui.results[-1]
         self.assertEqual(name, "watch_mode")

@@ -583,7 +583,12 @@ def make_window(monitor: int):
                 def mousePressEvent(self, e):
                     if st["at"] is None:
                         return
-                    d = math.dist((e.position().x(), e.position().y()), (st["at"].x(), st["at"].y()))
+                    x, y, tx, ty = e.position().x(), e.position().y(), st["at"].x(), st["at"].y()
+                    d = math.dist((x, y), (tx, ty))
+                    # every click against where the target was, in this field's pixels (of w x h): a scale or
+                    # offset mistake shows as a pattern, slowness as clicks on old places
+                    st.setdefault("clicks", []).append(f"{x:.0f},{y:.0f}->{tx:.0f},{ty:.0f}@{time.time() - st['moved']:.1f}")
+                    win.state["presses"] = f"field {self.width()}x{self.height()}: " + " ".join(st["clicks"][-20:])
                     if d <= R + 3:
                         st["hits"] += 1
                         if st["hits"] >= NEED:
@@ -773,7 +778,9 @@ def summary_text(out: dict) -> str:
             mark = "✓" if r["ok"] else "✗"
             why = "" if r["ok"] else (" (out of time)" if r["timed_out"] else f" ({r['error']})" if r["error"] else "")
             extra = f", {r['wrong']} wrong: {r['note']}" if r["wrong"] else ""
-            if r.get("presses") and not r["ok"]:
+            if r.get("presses") and r.get("task") == "chase":
+                extra += f" (clicks -> target @ s since it jumped: {r['presses']})"
+            elif r.get("presses") and not r["ok"]:
                 extra += f" (presses at s+held: {r['presses']})"
             lines.append(f"  {mark} {r['label']}: {r['seconds']} s, {r['steps']} steps{extra}{why}")
     return "\n".join(lines)

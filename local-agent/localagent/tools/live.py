@@ -52,8 +52,7 @@ wait S               do nothing for S seconds (only when something needs time: t
 done WHAT            the goal is reached: say what on the screen shows it
 stop WHY             you can't go on: say why
 
-{coords} The magenta ring is the mouse pointer: if it isn't on what you aimed at, correct by the gap. At \
-most {most} actions per reply; when unsure, give one and look. Things keep moving while you answer, so aim at \
+{coords} Each look says where the mouse pointer is (it isn't drawn). At most {most} actions per reply; when unsure, give one and look. Things keep moving while you answer, so aim at \
 where they are in the newest screenshot. {games}Say done only when the newest screenshot shows the goal \
 reached."""
 
@@ -209,7 +208,7 @@ class _Frames:
 
 
 def _frame(ctx: ToolContext, squares: int) -> bytes:
-    return screen._shot(ctx, ctx.screen.get("monitor"), squares=squares)
+    return screen._shot(ctx, ctx.screen.get("monitor"), squares=squares, ring=False)
 
 
 def _older(ctx: ToolContext, frames: _Frames | None, n: int) -> list[bytes]:
