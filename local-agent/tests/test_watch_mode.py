@@ -173,6 +173,15 @@ class WatchModeTest(unittest.TestCase):
         self.assertEqual(live._let_go("Clicked. But Windows says the button was let go after 0.4 s of the 3 s hold"),
                          " but it was let go after 0.4s")
 
+    def test_when_a_game_holds_the_mouse_clicks_stay_at_the_crosshair(self):
+        agent, ui, srv = self.agent([calls(("watch_mode", {"goal": "mine 10 logs"})), text("click 500 280"),
+                                     text("done"), text("Ok.")])
+        with mock.patch.object(live, "_captured", lambda: True):
+            agent.run("go")
+        self.assertEqual([x for x in self.log if x[0] == "move"], [])
+        self.assertIn("clicks happen at the crosshair", srv.requests[1]["messages"][-1]["content"][-1]["text"])
+        self.assertNotIn("Positions in this goal", srv.requests[1]["messages"][-1]["content"][0]["text"])
+
     def test_bad_lines_are_reported_and_replies_without_actions_end_it(self):
         agent, ui, srv = self.agent([
             calls(("watch_mode", {"goal": "do it"})),

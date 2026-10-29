@@ -107,6 +107,12 @@ def _hold(rest: str) -> float:
     return float(m.group(1)) if m else 0.0
 
 
+def _captured() -> bool:
+    from . import winput
+
+    return screen.WINDOWS and winput.pointer_hidden()
+
+
 def _let_go(note) -> str:
     m = re.search(r"let go after (" + _NUM + r") s", str(note or ""))
     return f" but it was let go after {m.group(1)}s" if m else ""
@@ -137,7 +143,8 @@ def run_action(ctx: ToolContext, action: str, rest: str) -> str:
         button = "right" if "right" in low else "middle" if "middle" in low else "left"
         clicks, hold = 2 if "double" in low else 1, _hold(low)
         held = f" (held {hold:g}s)" if hold else ""
-        if not re.findall(_NUM, re.sub(_HOLD, "", low)):      # no position: where the mouse is
+        if not re.findall(_NUM, re.sub(_HOLD, "", low)) or _captured():
+            # no position, or a first-person game holds the mouse (moving it would turn the camera): click in place
             note = screen._click_here(ctx, screen._gui(), button, clicks, hold)
             return f"clicked here{' ' + button if button != 'left' else ''}{held}{_let_go(note)}"
         x, y = _numbers(re.sub(_HOLD, "", low), 2, "click")
@@ -250,8 +257,9 @@ def _history_line(reply: str, did: list[str]) -> str:
 
 def _look_text(ctx: ToolContext, left: float, older: int) -> str:
     frames = f" Frames {FRAME_GAP * older:g} s apart, the last is now." if older else ""
-    return (f"{left:.0f} s left. Screenshot {ctx.screen['img_w']}x{ctx.screen['img_h']}."
-            f"{screen._pointer_note(ctx)}{frames}")
+    where = (" The game has the mouse (no pointer): the crosshair in the middle is where you aim; turn to aim "
+             "(DY > 0 looks down), and clicks happen at the crosshair." if _captured() else screen._pointer_note(ctx))
+    return f"{left:.0f} s left. Screenshot {ctx.screen['img_w']}x{ctx.screen['img_h']}.{where}{frames}"
 
 
 def _short_wait(action: str, rest: str) -> bool:
@@ -302,7 +310,7 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
         older = _older(ctx, frames, per_look)
         history: list[str] = []
         keep = HISTORY
-        has_positions = bool(re.search(r"\d{2,}", goal))
+        has_positions = bool(re.search(r"\d+\s*[, ]\s*\d+\)|\b[xy]\s*[=≈~]\s*\d", goal))
         if chat_size[0] and has_positions and chat_coords == "pixels" and screen.coord_mode(ctx) == "normalized":
             goal += (f"\n(Positions in this goal are pixels of a {chat_size[0]}x{chat_size[1]} screenshot, not "
                      "your 0-1000 grid: aim at what you see.)")

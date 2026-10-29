@@ -166,3 +166,26 @@ def bring_to_front(hwnd) -> None:
     finally:
         if attached:
             user32.AttachThreadInput(mine, theirs, False)
+
+
+def pointer_hidden() -> bool:
+    """The mouse pointer is hidden: a first-person game has taken the mouse (Minecraft, shooters), so a mouse
+    move turns the camera instead of moving a pointer. False when it can't tell."""
+    if not WINDOWS:
+        return False
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+    class CURSORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("flags", ctypes.c_uint), ("hCursor", ctypes.c_void_p),
+                    ("ptScreenPos", POINT)]
+
+    info = CURSORINFO()
+    info.cbSize = ctypes.sizeof(CURSORINFO)
+    try:
+        if not ctypes.windll.user32.GetCursorInfo(ctypes.byref(info)):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    return not (info.flags & 0x1)      # CURSOR_SHOWING
