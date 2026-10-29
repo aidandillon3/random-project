@@ -4,10 +4,12 @@ call per action and no thinking, so a step costs about one picture read plus a f
 way (a tool call, a screenshot after it, thinking between) took about 3 s a step in the computer use
 test. For games and anything that moves, or many quick steps on one screen.
 
-It runs as a side conversation of its own: a short prompt, the goal, the action lines and their
-results as text, and only the newest screenshot(s): older ones are replaced with a word, so the
-server reads about one picture per step and the context doesn't fill. The chat gets back what was
-done and the last screenshot.
+It runs as a side conversation of its own, sent fresh each look: a short prompt, the goal, the last
+few looks' action lines and results as text, and only the newest screenshot(s). So the server reads
+about the same small amount every look (keeping the whole conversation, with older pictures turned
+into a word, made it re-read more text each look: 1.0 s of reading at the first look, 1.45 s by the
+third, in the computer use test), and the context doesn't fill. The chat gets back what was done and
+the last screenshot.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ MAX_ACTIONS = 6          # action lines run from one reply
 REPLY_TOKENS = 160       # a reply is a few short lines
 NO_ACTIONS_LIMIT = 3     # replies in a row without an action line before it gives up
 FRAME_GAP = 0.5          # seconds between the frames of one look when it is shown more than one
+HISTORY = 4              # earlier looks it is told about, as text
+SHORT_WAIT = 0.5         # a wait this short at the end of a reply is left out: the next look takes longer anyway
 SIZES = {"small": 256, "normal": screen.AUTO_SQUARES, "sharp": screen.VISION_SQUARES}   # 32x32 squares a frame
 
 PROMPT = """You are using the user's computer in watch mode. You are shown the newest screenshot about once a \
@@ -181,20 +185,33 @@ def _image_parts(pngs: list[bytes]) -> list[dict]:
     return [png_part(p) for p in pngs]
 
 
-def _drop_old_frames(messages: list[dict]):
-    """Older screenshots become a word: the server re-reads only from the newest one on."""
-    for m in messages:
-        c = m.get("content")
-        if isinstance(c, list):
-            for i, p in enumerate(c):
-                if p.get("type") == "image_url":
-                    c[i] = {"type": "text", "text": "[older screenshot]"}
+def _messages(system: str, goal: str, history: list[str], pngs: list[bytes], text: str) -> list[dict]:
+    """One look: the prompt, the goal, the last few looks as text, the screenshot(s), then how things stand.
+    Everything after the goal changes every look, so it is kept short."""
+    head = f"Goal: {goal}"
+    if history:
+        head += "\nYour last looks, oldest first:\n" + "\n".join(history[-HISTORY:])
+    return [{"role": "system", "content": system},
+            {"role": "user", "content": [{"type": "text", "text": head}] + _image_parts(pngs)
+             + [{"type": "text", "text": text}]}]
 
 
-def _look_text(ctx: ToolContext, did: list[str], left: float, older: int) -> str:
+def _history_line(reply: str, did: list[str]) -> str:
+    said = " / ".join(ln.strip() for ln in reply.splitlines() if ln.strip())
+    return f"- you: {said[:120] or '(nothing)'} -> {'; '.join(did)[:160] or 'nothing done'}"
+
+
+def _look_text(ctx: ToolContext, left: float, older: int) -> str:
     frames = f" Frames {FRAME_GAP * older:g} s apart, the last is now." if older else ""
-    return (f"{'; '.join(did) or 'Nothing done.'} {left:.0f} s left. Screenshot {ctx.screen['img_w']}x"
-            f"{ctx.screen['img_h']}.{screen._pointer_note(ctx)}{frames}")
+    return (f"{left:.0f} s left. Screenshot {ctx.screen['img_w']}x{ctx.screen['img_h']}."
+            f"{screen._pointer_note(ctx)}{frames}")
+
+
+def _short_wait(action: str, rest: str) -> bool:
+    if action != "wait":
+        return False
+    found = re.findall(_NUM, rest)
+    return bool(found) and float(found[0]) <= SHORT_WAIT
 
 
 def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
@@ -220,9 +237,8 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
             time.sleep(FRAME_GAP * (per_look - 1))      # earlier frames to show with the first look
         last_png = _frame(ctx, squares)
         older = _older(ctx, frames, per_look)
-        first = (f"Goal: {goal}\n" + _look_text(ctx, [], seconds, len(older)).replace("Nothing done. ", ""))
-        messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": [{"type": "text", "text": first}] + _image_parts(older + [last_png])}]
+        history: list[str] = []
+        messages = _messages(system, goal, history, older + [last_png], _look_text(ctx, seconds, len(older)))
         while True:
             left = seconds - (time.time() - start)
             if left <= 0:
@@ -241,10 +257,11 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
                 ended_by = "stopped"
                 break
             reply = (turn.content or "").strip()
-            messages.append({"role": "assistant", "content": reply})
             actions = parse(reply)[:MAX_ACTIONS]
             did, t1 = [], time.time()
-            for action, rest in actions:
+            for i, (action, rest) in enumerate(actions):
+                if i == len(actions) - 1 and _short_wait(action, rest):
+                    break
                 if action in ("done", "stop"):
                     end, ended_by = rest or action, action
                     break
@@ -262,8 +279,10 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
                     did.append(f"'{action} {rest}' failed: {type(e).__name__}: {e}")
             act_s = time.time() - t1
             did_all += did
+            usage = turn.usage or {}
             log.append(dict(t=round(t0 - start, 2), model_s=round(model_s, 2), act_s=round(act_s, 2),
-                            prompt_ms=(turn.usage or {}).get("prompt_ms"), reply=reply[:300], did=did))
+                            prompt_ms=usage.get("prompt_ms"), prompt_n=usage.get("prompt_n"),
+                            cache_n=usage.get("cache_n"), reply=reply[:300], did=did))
             if did:
                 ctx.agent.ui.status("Watch mode: " + "; ".join(did)[:150])
             if ended_by in ("done", "stop") or ended_by.startswith("emergency"):
@@ -277,14 +296,13 @@ def watch(ctx: ToolContext, goal: str, seconds: float) -> ToolResult:
                 break
             if did:
                 screen._settle(monitor, least=0.05, most=0.3)
+            history.append(_history_line(reply, did))
             last_png = _frame(ctx, squares)
             older = _older(ctx, frames, per_look)
-            text = _look_text(ctx, did, seconds - (time.time() - start), len(older))
+            text = _look_text(ctx, seconds - (time.time() - start), len(older))
             if not actions:
-                text = "No action lines in your reply: answer only with action lines. " + text
-            _drop_old_frames(messages)
-            messages.append({"role": "user", "content": [{"type": "text", "text": text}]
-                             + _image_parts(older + [last_png])})
+                text = "No action lines in your last reply: answer only with action lines. " + text
+            messages = _messages(system, goal, history, older + [last_png], text)
     finally:
         ctx.capture_after = capture_after
         if frames:

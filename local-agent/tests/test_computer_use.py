@@ -340,5 +340,42 @@ class ComputerUseTest(unittest.TestCase):
         self.assertNotIn("let go", out.text)
 
 
+    def test_set_slider_sets_the_value_through_accessibility(self):
+        from localagent.tools import screen
+
+        class RV:
+            CurrentMinimum, CurrentMaximum, CurrentValue, CurrentIsReadOnly = 0, 100, 27, False
+
+            def SetValue(self, v):
+                self.CurrentValue = v
+
+        class Info:
+            def __init__(self, ctype, name):
+                self.control_type, self.name = ctype, name
+
+        slider = types.SimpleNamespace(element_info=Info("Slider", "Volume"), iface_range_value=RV())
+        thumb = types.SimpleNamespace(element_info=Info("Thumb", ""), parent=lambda: slider)
+        at = []
+
+        class Desktop:
+            def __init__(self, backend):
+                pass
+
+            def from_point(self, x, y):
+                at.append((x, y))
+                return thumb if x < 1000 else None
+
+        ctx = self.ctx(screenshot_after_action=False)
+        with mock.patch.object(screen, "WINDOWS", True), \
+                mock.patch.dict(sys.modules, {"pywinauto": types.SimpleNamespace(Desktop=Desktop)}):
+            out = REGISTRY["set_slider"].func(ctx, {"x": 100, "y": 100, "value": 70})
+            self.assertIn("Set the slider 'Volume' from 27 to 70 (it goes 0 to 100).", out.text)
+            out = REGISTRY["set_slider"].func(ctx, {"x": 100, "y": 100, "value": 150})
+            self.assertIn("150 is outside that, so it got 100", out.text)
+            with self.assertRaises(Exception) as e:
+                REGISTRY["set_slider"].func(ctx, {"x": 900, "y": 100, "value": 70})
+            self.assertIn("sees no slider there", str(e.exception))
+        self.assertEqual(len(at), 3)
+
 if __name__ == "__main__":
     unittest.main()

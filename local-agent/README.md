@@ -268,12 +268,14 @@ Running `setup.bat` again does the same.
 ### The computer use test
 
 Settings > Computer use > **Run the computer use test** (or `computer-use-test.bat`) has the
-model do 9 small tasks with your real mouse and keyboard, in a window that fills its screen:
+model do 10 small tasks with your real mouse and keyboard, in a window that fills its screen:
 click a button by its words, click a tiny dot, type into a box, press a button in a painted
 game-style menu, set a slider, drag a box, hold a key, chop a thin tree next to your character
-in a side-view game (a miss says how many pixels off it was), and fill in a web form. Each task checks
-itself and has 150 seconds. It can also run everything again with the new helpers off, with
-thinking on Low, with bigger screenshots, or with click positions on a 0-1000 grid, to compare. The summary shows what worked and how long the model and the tools
+in a side-view game (a miss says how many pixels off it was), hit a target that jumps every 2.5
+seconds, and fill in a web form. Each task checks itself and has 150 seconds. It can also run
+everything again with the new helpers off, with thinking on Low, with bigger screenshots, with
+click positions on a 0-1000 grid, with watch mode off, or with small watch mode screenshots, to compare.
+Watch mode's own log (each look's reading, answer and action times) is `data/watch/latest.json`. The summary shows what worked and how long the model and the tools
 took; every step (thinking, calls, timings, tokens) is saved in `data/bench/` to find what's slow.
 Don't touch the mouse while it runs; push it into a screen corner to stop.
 

@@ -63,7 +63,7 @@ class WatchModeTest(unittest.TestCase):
     def test_it_acts_from_short_lines_and_keeps_only_the_newest_picture(self):
         agent, ui, srv = self.agent([
             calls(("watch_mode", {"goal": "hit the target", "seconds": 30})),
-            text("click 500 500\nkey w hold 0.2"),
+            text("click 500 500\nkey w hold 0.2\nwait 0.2"),
             text("move 250 250\nclick 600 200 right"),
             text("done the target is gone"),
             text("Finished.")])
@@ -77,9 +77,13 @@ class WatchModeTest(unittest.TestCase):
             self.assertNotIn("tools", r)                                  # plain lines, no tool calls
             self.assertFalse(r["chat_template_kwargs"]["enable_thinking"])
             self.assertIn("watch mode", r["messages"][0]["content"])
-            self.assertEqual(sum(images(m) for m in r["messages"]), 1)  # older pictures became a word
-        self.assertIn("clicked 500 500; pressed w (held 0.2s)", watch[1]["messages"][-1]["content"][0]["text"])
-        self.assertIn("[older screenshot]", json.dumps(watch[2]["messages"]))
+            self.assertEqual(len(r["messages"]), 2)                     # sent fresh each look
+            self.assertEqual(sum(images(m) for m in r["messages"]), 1)  # only the newest picture
+        # earlier looks come as text; the short wait at the end was left out
+        self.assertIn("- you: click 500 500 / key w hold 0.2 / wait 0.2 -> clicked 500 500; pressed w (held 0.2s)\n",
+                      watch[1]["messages"][-1]["content"][0]["text"] + "\n")
+        self.assertIn("move 250 250", watch[2]["messages"][-1]["content"][0]["text"])
+        self.assertTrue(watch[2]["messages"][-1]["content"][0]["text"].startswith("Goal: hit the target"))
         name, result = ui.results[-1]
         self.assertEqual(name, "watch_mode")
         self.assertIn("the goal is reached: the target is gone", result.text)
@@ -96,7 +100,7 @@ class WatchModeTest(unittest.TestCase):
             text("click here"), text("I am not sure"), text("hmm"), text("Ok."), text("Ok.")])
         agent.run("go")
         self.assertIn("'click here' failed: click needs 2 number(s)", srv.requests[2]["messages"][-1]["content"][0]["text"])
-        self.assertIn("No action lines in your reply", srv.requests[3]["messages"][-1]["content"][0]["text"])
+        self.assertIn("No action lines in your last reply", srv.requests[3]["messages"][-1]["content"][-1]["text"])
         result = dict(ui.results)["watch_mode"]
         self.assertIn("gave no actions three times", result.text)
         self.assertFalse(result.ok)

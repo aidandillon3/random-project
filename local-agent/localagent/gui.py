@@ -3841,6 +3841,7 @@ class MainWindow(QMainWindow):
         small = QCheckBox("Also run it with bigger screenshots (1344 wide: sharper, slower to read), to compare")
         grid = QCheckBox("Also run it with click positions on a 0-1000 grid, to compare")
         nowatch = QCheckBox("Also run it with watch mode off, to compare")
+        watchsmall = QCheckBox("Also run it with small watch mode screenshots (faster looks, less sharp), to compare")
         holder = QWidget()
         v = QVBoxLayout(holder)
         v.setContentsMargins(0, 0, 0, 0)
@@ -3849,6 +3850,7 @@ class MainWindow(QMainWindow):
         v.addWidget(small)
         v.addWidget(grid)
         v.addWidget(nowatch)
+        v.addWidget(watchsmall)
         box.layout().addWidget(holder, box.layout().rowCount(), 0, 1, box.layout().columnCount())
         start = box.addButton("Start", QMessageBox.AcceptRole)
         box.addButton(QMessageBox.Cancel)
@@ -3857,7 +3859,8 @@ class MainWindow(QMainWindow):
             return
         variants = ["as set"] + (["helpers off"] if compare.isChecked() else []) + \
             (["thinking low"] if think.isChecked() else []) + (["big screenshots"] if small.isChecked() else []) + \
-            (["0-1000 grid"] if grid.isChecked() else []) + (["watch mode off"] if nowatch.isChecked() else [])
+            (["0-1000 grid"] if grid.isChecked() else []) + (["watch mode off"] if nowatch.isChecked() else []) + \
+            (["small watch screenshots"] if watchsmall.isChecked() else [])
         win = cubench.make_window(int(self.settings.monitor or 1))
         self._bench_window = win
         self.showMinimized()

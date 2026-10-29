@@ -118,8 +118,7 @@ SCREEN = ("Computer use is on: screenshot shows the user's screen, and click, ty
           "on it and click with in_zoom=true and its position in the zoomed view. When the next few actions are sure "
           "(a click, typing, then Enter), make them together in one reply: only the last one sends back a "
           "screenshot, which saves time. Say an action worked only when the newest screenshot shows it did; "
-          "if nothing changed, zoom in and check where things really are before trying again. To set a slider, click its "
-          "handle, then move it with the arrow keys while watching its value. The magenta ring is where "
+          "if nothing changed, zoom in and check where things really are before trying again. {slider}The magenta ring is where "
           "the mouse really is: when it isn't on what you aimed at, move by the gap you see between them and look "
           "again. {coords}{games}The user can "
           "stop you by moving the mouse into a screen corner.")
@@ -181,7 +180,11 @@ def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mod
         if "watch_mode" in names:
             ui += WATCH
         games = SCREEN_GAMES if "move_mouse_by" in names else ""
-        screen = textwrap.fill(SCREEN.format(ui=ui, coords=coords + " " if coords else "", games=games), 98,
+        slider = (("To set a slider, use set_slider on it with the value; if it can't, " if "set_slider" in names
+                   else "To set a slider, ") + "zoom in to find its handle, click it, then move it with the arrow "
+                  "keys while watching its value (if the value didn't change, the click missed the handle). ")
+        screen = textwrap.fill(SCREEN.format(ui=ui, coords=coords + " " if coords else "", games=games,
+                                             slider=slider), 98,
                                initial_indent="- ", subsequent_indent="  ") + "\n"
     if "start_coding_task" in names:
         review = (REVIEW_PUBLISH if "git_push" in names else REVIEW_LOCAL if "git_commit" in names

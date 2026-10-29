@@ -90,7 +90,7 @@ class AgentUI:
 # Screen tools that end with a picture of the screen (list_windows, ui_elements and the clipboard
 # only read): of several in one step, only the last one waits for the screen and takes it.
 SHOWS_SCREEN = {"click", "move_mouse", "move_mouse_by", "drag", "scroll", "type_text", "press_keys", "focus_window",
-                "open", "click_element", "click_text", "screenshot", "zoom"}
+                "open", "click_element", "click_text", "set_slider", "screenshot", "zoom"}
 
 
 def png_part(png: bytes) -> dict:

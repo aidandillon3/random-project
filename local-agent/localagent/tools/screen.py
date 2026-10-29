@@ -939,7 +939,7 @@ def open_target(ctx: ToolContext, a: dict):
 
 # ------------------------------------------------------------------ UI elements (Windows accessibility)
 CLICKABLE = {"Button", "MenuItem", "Hyperlink", "ListItem", "TabItem", "CheckBox", "RadioButton",
-             "ComboBox", "Edit", "TreeItem", "SplitButton", "DataItem", "Document", "Text"}
+             "ComboBox", "Edit", "TreeItem", "SplitButton", "DataItem", "Document", "Text", "Slider"}
 
 
 def _uia_window(title: str | None = None):
@@ -976,8 +976,13 @@ def _uia_items(win, flt: str, limit: int, seconds: float) -> list[tuple[str, str
             info = e.element_info
             name = (info.name or "").strip()
             ctype = info.control_type or ""
-            if ctype not in CLICKABLE or not (name or ctype == "Edit"):
+            if ctype not in CLICKABLE or not (name or ctype in ("Edit", "Slider")):
                 continue
+            if ctype == "Slider":      # its value, for set_slider
+                try:
+                    name = f"{name or 'slider'} = {e.iface_range_value.CurrentValue:g}"
+                except Exception:  # noqa: BLE001 - listed without it
+                    pass
             if flt and flt not in name.lower():
                 continue
             r = e.rectangle()
@@ -1049,6 +1054,64 @@ def click_element(ctx: ToolContext, a: dict):
     _move_to(g, px, py)
     _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), 0)
     return after_action(ctx, f"Clicked {ctype} '{name}'.")
+
+
+def _slider_at(px: int, py: int):
+    """The accessibility slider at a screen point (its handle or track counts), or None."""
+    from pywinauto import Desktop
+
+    e = Desktop(backend="uia").from_point(px, py)
+    for _ in range(4):
+        if e is None:
+            return None
+        if (e.element_info.control_type or "") == "Slider":
+            return e
+        e = e.parent()
+    return None
+
+
+@tool("set_slider", """
+Set a slider to a value directly, without dragging: point at it (x, y of the screenshot, a mark, or
+an index from ui_elements) and give the value. Works for sliders Windows accessibility knows (most
+apps and settings); in games and custom-drawn sliders it can't, then click the handle and use the
+arrow keys.""",
+      {"x": {"type": "number"}, "y": {"type": "number"},
+       "mark": {"type": "integer", "description": "A number from the last screenshot with marks=true, instead of x, y"},
+       "index": {"type": "integer", "description": "An index from the last ui_elements list, instead of x, y"},
+       "in_zoom": {"type": "boolean"}, "value": {"type": "number"}},
+      required=["value"], risk=CONTROL, group="control",
+      describe=lambda a: f"Set the slider at {_where(a)} to {a.get('value')}")
+def set_slider(ctx: ToolContext, a: dict):
+    if not WINDOWS:
+        raise ToolError("set_slider works on Windows only.")
+    try:
+        import pywinauto  # noqa: F401
+    except ImportError:
+        raise ToolError("pywinauto is not installed. Run setup.bat again.")
+    if a.get("index") is not None:
+        i = int(a["index"])
+        if not 0 <= i < len(ctx.ui_cache):
+            raise ToolError("No such index. Run ui_elements first.")
+        px, py = ctx.ui_cache[i][2]
+    else:
+        px, py = _point(ctx, a)
+    e = _slider_at(px, py)
+    if e is None:
+        raise ToolError("Windows accessibility sees no slider there (games and custom-drawn sliders hide "
+                        "theirs, or the point is off it): zoom in to find its handle, click it and use the "
+                        "arrow keys, or drag the handle.")
+    rv = e.iface_range_value
+    lo, hi, was = float(rv.CurrentMinimum), float(rv.CurrentMaximum), float(rv.CurrentValue)
+    if rv.CurrentIsReadOnly:
+        raise ToolError("That slider is read-only.")
+    want = min(hi, max(lo, float(a["value"])))
+    rv.SetValue(want)
+    now = float(rv.CurrentValue)
+    name = (e.element_info.name or "").strip()
+    text = f"Set the slider{f' {name!r}' if name else ''} from {was:g} to {now:g} (it goes {lo:g} to {hi:g})."
+    if want != float(a["value"]):
+        text += f" {float(a['value']):g} is outside that, so it got {want:g}."
+    return after_action(ctx, text)
 
 
 # ------------------------------------------------------------------ clipboard
