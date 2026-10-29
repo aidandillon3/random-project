@@ -183,7 +183,10 @@ def _shot(ctx: ToolContext, monitor: int | None = None, marks: bool = False, squ
     ctx.screen.update(left=mon["left"], top=mon["top"], width=real_w, height=real_h,
                       img_w=img.size[0], img_h=img.size[1], monitor=monitor)
     ctx.screen.pop("pointer", None)
-    if cur and mon["left"] <= cur[0] < mon["left"] + real_w and mon["top"] <= cur[1] < mon["top"] + real_h:
+    ctx.screen["captured"] = captured = _captured()
+    if captured:
+        pass      # no pointer to show: the game's crosshair is the aim (see _pointer_note)
+    elif cur and mon["left"] <= cur[0] < mon["left"] + real_w and mon["top"] <= cur[1] < mon["top"] + real_h:
         # drawn after shrinking, so it is as easy to see at any size: a magenta ring around the exact
         # point with ticks outside it (the point itself stays visible). Games draw their own pointer,
         # often not where the real one is, so this is the one to aim with.
@@ -367,6 +370,8 @@ def _pointer_note(ctx: ToolContext) -> str:
     """Where the mouse is, in the coordinates the model gives: with the ring on the picture it can see
     how far the pointer is from what it meant to hit, and correct by that much."""
     s = ctx.screen
+    if s.get("captured"):
+        return " The game has the mouse (no pointer): aim at the crosshair in the middle with move_mouse_by."
     if "pointer" not in s:
         return ""
     x, y = s["pointer"]
@@ -586,6 +591,19 @@ def _to_front(px: int, py: int) -> str:
         return ""
 
 
+def _captured() -> bool:
+    """A first-person game has the mouse (the pointer is hidden): moving the mouse to a point turns its camera."""
+    if not WINDOWS:
+        return False
+    from . import winput
+
+    return winput.pointer_hidden()
+
+
+CAPTURED = ("The game has the mouse (no pointer), so moving it to a point would turn the camera: aim with "
+            "move_mouse_by (dy > 0 looks down) and click without moving, at the crosshair in the middle.")
+
+
 @tool("click", """
 Click at a point on the screen (coordinates of the last screenshot), or on a mark of the last
 marked screenshot. The window there comes to the front first. In a game, hold_seconds keeps the
@@ -601,8 +619,12 @@ button down (e.g. 1.5 to keep firing).""",
       + (f", held {a['hold_seconds']}s" if a.get("hold_seconds") else ""))
 def click(ctx: ToolContext, a: dict):
     g = _gui()
-    px, py = _point(ctx, a)
     hold = _seconds(a)
+    if _captured():
+        note = _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), hold)
+        return after_action(ctx, "Clicked at the crosshair, not at that position" + (f", held {hold:g}s" if hold else "")
+                            + ". " + CAPTURED + note)
+    px, py = _point(ctx, a)
     _move_to(g, px, py)
     note = _to_front(px, py)
     note += _click_here(ctx, g, a.get("button") or "left", max(1, min(5, int(a.get("clicks") or 1))), hold)
@@ -686,6 +708,8 @@ def click_text(ctx: ToolContext, a: dict):
        "in_zoom": {"type": "boolean", "description": "x, y are in the last zoomed view, not the screenshot"}},
       risk=CONTROL, group="control", describe=lambda a: f"Move mouse to {_where(a)}")
 def move_mouse(ctx: ToolContext, a: dict):
+    if _captured():
+        raise ToolError(CAPTURED)
     g = _gui()
     _move_to(g, *_point(ctx, a), 0.15)
     return after_action(ctx, f"Mouse moved to {_where(a)}.")
@@ -728,6 +752,8 @@ def move_mouse_by(ctx: ToolContext, a: dict):
       risk=CONTROL, group="control",
       describe=lambda a: f"Drag from ({a.get('from_x')}, {a.get('from_y')}) to ({a.get('to_x')}, {a.get('to_y')})")
 def drag(ctx: ToolContext, a: dict):
+    if _captured():
+        raise ToolError(CAPTURED)
     g = _gui()
     x1, y1 = _point(ctx, {**a, "in_zoom": False}, "from_x", "from_y", "from_mark")
     x2, y2 = _point(ctx, {**a, "in_zoom": False}, "to_x", "to_y", "to_mark")

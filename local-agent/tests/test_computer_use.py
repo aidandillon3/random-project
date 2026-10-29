@@ -340,6 +340,20 @@ class ComputerUseTest(unittest.TestCase):
         self.assertNotIn("let go", out.text)
 
 
+    def test_when_a_game_holds_the_mouse_clicks_stay_at_the_crosshair(self):
+        from localagent.tools import screen
+
+        ctx = self.ctx(screenshot_after_action=False)
+        with mock.patch.object(screen, "_captured", lambda: True):
+            out = REGISTRY["click"].func(ctx, {"x": 500, "y": 200, "hold_seconds": 0.1})
+            with self.assertRaises(Exception) as e:
+                REGISTRY["move_mouse"].func(ctx, {"x": 500, "y": 900})
+            shot = REGISTRY["screenshot"].func(ctx, {})
+        self.assertEqual([x for x in self.log if x[0] == "move"], [])
+        self.assertIn("Clicked at the crosshair", out.text)
+        self.assertIn("move_mouse_by", str(e.exception))
+        self.assertIn("The game has the mouse", shot.text)
+
     def test_swift_models_get_pixels_other_qwen3_models_the_grid(self):
         from localagent.tools import screen
 
