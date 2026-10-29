@@ -280,7 +280,7 @@ class ComputerUseTest(unittest.TestCase):
             REGISTRY["move_mouse_by"].func(ctx, {"dx": 10, "dy": 0, "seconds": 0})
             with self.assertRaises(Exception) as e:
                 REGISTRY["press_keys"].func(ctx, {"keys": "notakey"})
-        self.assertEqual(sent, [("to", 960, 540), ("front", 2), ("button", "left", False), ("button", "left", True),
+        self.assertEqual(sent, [("to", 960, 540), ("to", 961, 540), ("to", 960, 540), ("front", 2), ("button", "left", False), ("button", "left", True),
                                 ("key", "w", False), ("key", "w", True), ("by", 10, 0)])
         self.assertIn("'Rainbow Six' was brought to the front first", out.text)
         self.assertIn("Unknown key", str(e.exception))

@@ -371,9 +371,15 @@ def _click_here(ctx: ToolContext, g, b: str, clicks: int, hold: float):
 def _move_to(g, px: int, py: int, seconds: float = 0.05):
     if WINDOWS:
         winput.move_to(px, py, seconds)
+        # then a 1-pixel wiggle on the spot: some games (Roblox) only take a click on a button once the
+        # pointer has moved over it in a frame of their own; a pointer that just arrived doesn't count
+        time.sleep(0.02)
+        winput.move_to(px + 1, py)
+        time.sleep(0.02)
+        winput.move_to(px, py)
     else:
         g.moveTo(px, py, duration=seconds)
-    time.sleep(0.03)      # a game frame or two to see where the pointer is before a click
+    time.sleep(0.05)      # a game frame or two to see where the pointer is before a click
 
 
 def _to_front(px: int, py: int) -> str:
