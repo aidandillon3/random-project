@@ -429,6 +429,7 @@ start. Sampling follows the model maker's recommended values by itself (Settings
 ## Other ways to run it
 
 - **`run-terminal.bat`**: the same agent in a terminal window.
+- **`pi-local.bat`**: the [pi](https://pi.dev) coding agent with this app's llama.cpp models, without the app. It starts llama.cpp in router mode with each model the app has on the PC (the same options as the Model server page), then pi; `/model` in pi picks one and it loads then. Strata modes (Flash Next) run only in the app. Needs pi (`npm install -g @earendil-works/pi-coding-agent`).
 - **`get-llama-cpp.bat`**: download llama.cpp without opening the app.
 - Your settings, chats and memory live in the `data` folder here; delete it to start fresh.
 

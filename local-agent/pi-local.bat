@@ -1,7 +1,12 @@
 @echo off
-rem Opens the pi coding agent (pi.dev) on the model the Local Agent app is serving.
-rem Start the model in the app first (Model server page). The port in pi\models.json must match the app's.
-rem pi keeps its settings and sessions for this in the pi folder next to this file.
-set "PI_CODING_AGENT_DIR=%~dp0pi"
-where pi >nul 2>nul || (echo pi isn't installed. Install it with: npm install -g @earendil-works/pi-coding-agent & pause & exit /b 1)
-pi --model local-agent/local %*
+rem The pi coding agent (pi.dev) with this app's models, without the app: starts llama.cpp with every
+rem llama.cpp model the app has on this PC, then pi. Pick a model with /model in pi; it loads when picked.
+rem Strata modes (Flash Next) run only in the app.
+cd /d "%~dp0"
+if not exist .venv\Scripts\python.exe (
+  echo Run setup.bat first.
+  pause
+  exit /b 1
+)
+.venv\Scripts\python -m localagent.pi_router %*
+if errorlevel 1 pause
