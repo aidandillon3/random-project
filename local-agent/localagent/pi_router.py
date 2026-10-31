@@ -88,14 +88,37 @@ def _label(gpu) -> str:
     return (m.group(1) + (m.group(2) or "")).lower() if m else f"gpu{gpu.index}"
 
 
-def per_gpu(items: list[tuple[str, list[str]]], gpus) -> list[tuple[str, list[str]]]:
+def device_names(list_devices_out: str) -> dict[str, str]:
+    """llama.cpp's own device names by card name, from `llama-server --list-devices`
+    ("  CUDA0: NVIDIA GeForce RTX 3080 Ti (12287 MiB, 11000 MiB free)"). Its CUDA numbers needn't match
+    nvidia-smi's (on Aidan's PC CUDA0 was the 3080 Ti, so "-5080" ran on the 3080 Ti)."""
+    return {m.group(2).strip(): m.group(1) for m in re.finditer(r"^\s*(CUDA\d+):\s*([^(\n]+)", list_devices_out, re.M)}
+
+
+def _device(gpu, names: dict[str, str]) -> str:
+    hits = [dev for name, dev in names.items() if name == gpu.name.strip()]
+    return hits[0] if len(hits) == 1 else f"CUDA{gpu.index}"     # two cards of one kind: nvidia-smi's order
+
+
+def per_gpu(items: list[tuple[str, list[str]]], gpus, names: dict[str, str] | None = None
+            ) -> list[tuple[str, list[str]]]:
     """Each model once per GPU and once on all of them (pi has no GPU picker, so the name picks it):
-    swift-27b-5080, swift-27b-3080ti, swift-27b-both. One GPU: the names as they are."""
+    swift-27b-5080, swift-27b-3080ti, swift-27b-both. One GPU: the names as they are. names: device_names()."""
     if len(gpus) < 2:
         return items
+    names = names or {}
     choices = [(_label(g), [g]) for g in strongest(gpus)] + [("both" if len(gpus) == 2 else "all", strongest(gpus))]
-    return [(f"{name}-{label}", [*lines, "device = " + ",".join(f"CUDA{g.index}" for g in use)])
+    return [(f"{name}-{label}", [*lines, "device = " + ",".join(_device(g, names) for g in use)])
             for name, lines in items for label, use in choices]
+
+
+def list_devices(exe: Path, env: dict) -> str:
+    try:
+        r = subprocess.run([str(exe), "--list-devices"], capture_output=True, text=True, timeout=60, env=env,
+                           cwd=str(exe.parent), creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        return (r.stdout or "") + (r.stderr or "")
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def write_ini(items: list[tuple[str, list[str]]], path: Path) -> Path:
@@ -121,7 +144,9 @@ def main(argv: list[str]) -> int:
     if pi is None:
         print("pi isn't installed. Install it with: npm install -g @earendil-works/pi-coding-agent")
         return 1
-    items = per_gpu(entries(settings, exe, help_text), list_gpus())
+    env = {**os.environ}
+    env.pop("CUDA_VISIBLE_DEVICES", None)
+    items = per_gpu(entries(settings, exe, help_text), list_gpus(), device_names(list_devices(exe, env)))
     if not items:
         print("None of the app's llama.cpp models is on this PC yet (Strata modes run only in the app).")
         return 1
@@ -134,8 +159,6 @@ def main(argv: list[str]) -> int:
         for pid in launcher.port_owners(port):      # a router left from an earlier run
             launcher.kill_tree(pid)
         time.sleep(1)
-    env = {**os.environ, "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}     # CUDA0/1 = nvidia-smi's numbers
-    env.pop("CUDA_VISIBLE_DEVICES", None)
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     log = open(DATA_DIR / "pi-router.log", "w", encoding="utf-8", errors="replace")
     router = subprocess.Popen([str(exe), "--models-preset", str(ini), "--models-max", "1",

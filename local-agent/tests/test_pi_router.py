@@ -51,6 +51,13 @@ class PiRouterTest(unittest.TestCase):
                                  ("swift-27b-3080ti", ["ctx-size = 49152", "device = CUDA1"]),
                                  ("swift-27b-both", ["ctx-size = 49152", "device = CUDA0,CUDA1"])])
         self.assertEqual(pi_router.per_gpu([("m", [])], gpus[:1]), [("m", [])])
+        # llama.cpp numbers the cards its own way: its names win
+        names = pi_router.device_names("Available devices:\n  CUDA0: NVIDIA GeForce RTX 3080 Ti (12287 MiB, 11000 MiB "
+                                       "free)\n  CUDA1: NVIDIA GeForce RTX 5080 (16302 MiB, 15000 MiB free)\n")
+        self.assertEqual(names, {"NVIDIA GeForce RTX 3080 Ti": "CUDA0", "NVIDIA GeForce RTX 5080": "CUDA1"})
+        items = pi_router.per_gpu([("m", [])], gpus, names)
+        self.assertEqual(items, [("m-5080", ["device = CUDA1"]), ("m-3080ti", ["device = CUDA0"]),
+                                 ("m-both", ["device = CUDA1,CUDA0"])])
 
 
 if __name__ == "__main__":
