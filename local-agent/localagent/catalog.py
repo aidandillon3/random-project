@@ -114,6 +114,22 @@ PRESETS = [
                "mmproj-Qwen3.8-27B-Q8_0.gguf": 629247008},
         launch={"ctx_size": 49152, "kv_type": "q8_0", "speedup": "mtp", "placement": "auto", "use_vision": True},
     ),
+    Preset(
+        key="swift-27b-iq3s",
+        title="Swift 1.5 Qwen3.8 27B IQ3_S (smarter, needs a free 16 GB GPU)",
+        family=FAMILY_27B, variant="IQ3_S (smarter, needs a free 16 GB GPU)",
+        blurb="The same dense 27B at IQ3_S with MTP layers: about half the drift from the full model of IQ3_XXS "
+              "(KLD 0.051 vs 0.098 by its makers' tests) and about 15% slower. Its 12.1 GB plus the vision file "
+              "fill most of a 16 GB card, so it suits a GPU that drives no monitors; with less free VRAM llama.cpp "
+              "moves some layers to RAM, which is much slower. Shares the folder and vision file with IQ3_XXS.",
+        repo="ukisai/Swift-1.5-Qwen3.8-27B-GSQ-RCO-GGUF",
+        files=["Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"],
+        mmproj=("ggml-org/Qwen3.8-27B-GGUF", "mmproj-Qwen3.8-27B-Q8_0.gguf"),
+        folder="Swift-1.5-Qwen3.8-27B",
+        sizes={"Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf": 12120016896,
+               "mmproj-Qwen3.8-27B-Q8_0.gguf": 629247008},
+        launch={"ctx_size": 49152, "kv_type": "q8_0", "speedup": "mtp", "placement": "auto", "use_vision": True},
+    ),
     _flash_next(
         "swift-flash-next", "IQ2_XS", "smart, uses RAM",
         "125B MoE with 6B active per token, IQ2_XS. The experts sit in RAM and the 28 GB "
@@ -246,6 +262,27 @@ PRESETS = [
         "it is the most a 64 GB PC with 16 GB of VRAM can take: close other programs while it runs.",
         {"Ornith-1.5-122B.Q3_K_L.gguf": 64661782528}, subdir="Q3_K_L", repo="prithivMLmods/Ornith-1.5-122B-MTP-GGUF",
         speedup="mtp"),
+    # GLM-5.3-Flash (Z.ai, 2026; Unsloth's GGUFs): 320B MoE, 18B active. At 102 GB it is bigger than this PC's
+    # RAM + VRAM, so llama.cpp maps the file and Windows reads the experts it lacks from the SSD as they're needed
+    Preset(
+        key="glm53-flash-iq2xxs", title="GLM-5.3-Flash UD-IQ2_XXS (SSD streaming, very slow)",
+        blurb="Z.ai's GLM-5.3-Flash: a 320B MoE (18B active) that Unsloth's page puts near the best closed models "
+              "on coding and agent tests. At 102 GB it doesn't fit in RAM + VRAM, so llama.cpp leaves the file "
+              "on the drive and reads missing experts from the SSD each token: expect a few tokens a second at "
+              "best, and slow prompt reading. It always thinks, so use the Low thinking level. Not measured on "
+              "this PC. Sees images.",
+        repo="unsloth/GLM-5.3-Flash-GGUF", subdir="UD-IQ2_XXS", folder="GLM-5.3-Flash",
+        files=[f"GLM-5.3-Flash-UD-IQ2_XXS-0000{i}-of-00004.gguf" for i in range(1, 5)],
+        mmproj=("unsloth/GLM-5.3-Flash-GGUF", "mmproj-F16.gguf"),
+        sizes={"GLM-5.3-Flash-UD-IQ2_XXS-00001-of-00004.gguf": 9429888,
+               "GLM-5.3-Flash-UD-IQ2_XXS-00002-of-00004.gguf": 49896298080,
+               "GLM-5.3-Flash-UD-IQ2_XXS-00003-of-00004.gguf": 49248507840,
+               "GLM-5.3-Flash-UD-IQ2_XXS-00004-of-00004.gguf": 2690716000,
+               "mmproj-F16.gguf": 1128047296},
+        family="GLM-5.3-Flash", variant="UD-IQ2_XXS (SSD streaming)",
+        # no draft speed-up: checking guesses reads more experts per step, and here every expert read may hit the SSD
+        launch={"ctx_size": 32768, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": True},
+    ),
 ]
 BY_KEY = {p.key: p for p in PRESETS}
 

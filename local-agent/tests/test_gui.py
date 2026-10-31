@@ -137,9 +137,9 @@ class GuiTest(unittest.TestCase):
         w = self.gui.MainWindow(s)
         w.show()
         chat = w.chat
-        # no screen control anywhere: the chat says so, Settings has nothing for it
-        self.assertIn("without touching your mouse, keyboard or screen", chat.welcome_text.text())
-        self.assertFalse(hasattr(w.settings_page, "computer") or hasattr(w.settings_page, "control"))
+        # no screen control unless Computer use is turned on
+        self.assertIn("only uses your mouse, keyboard and screen while Computer use is on", chat.welcome_text.text())
+        self.assertFalse(chat.computer_btn.isChecked())
         # the thinking picker in the chat bar changes the setting straight away
         chat.think.setCurrentIndex(chat.think.findData("low"))
         self.assertEqual(s.thinking, "low")
@@ -341,7 +341,7 @@ class GuiTest(unittest.TestCase):
         page.family_box.setCurrentIndex(page.family_box.findData("Qwen3.8 27B"))
         self.assertEqual(page.preset_box.currentData(), "swift-27b")                         # its first quant
         self.assertEqual([page.quant_box.itemData(i) for i in range(page.quant_box.count())],
-                         ["swift-27b", "qwen27b-1bit-odp"])
+                         ["swift-27b", "swift-27b-iq3s", "qwen27b-1bit-odp"])
         page.family_box.setCurrentIndex(page.family_box.findData(""))
         self.assertEqual(page.preset_box.currentData(), "")
         self.assertTrue(page.quant_box.isHidden())
@@ -584,7 +584,8 @@ class GuiTest(unittest.TestCase):
         w.server._use_preset = lambda: picked.append(w.server.preset_box.currentData())
         chat._fill_model_menu()
         menus = {a.text(): a.menu() for a in chat.model_menu.actions() if a.menu()}
-        self.assertEqual(list(menus), ["Qwen3.8 27B", "Qwen3.8 Flash Next", "Qwen3.6 35B-A3B", "Ornith 1.5 122B"])       # one entry per model
+        self.assertEqual(list(menus), ["Qwen3.8 27B", "Qwen3.8 Flash Next", "Qwen3.6 35B-A3B", "Ornith 1.5 122B",
+                                       "GLM-5.3-Flash"])       # one entry per model
         self.assertEqual([a.text() for a in menus["Qwen3.8 Flash Next"].actions()][-1],
                          "Coder IQ1_M (for coding, less RAM)")                  # and its quants inside
         menus["Qwen3.8 27B"].actions()[0].trigger()
@@ -822,6 +823,77 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(page.gpu.text(), "GPU: RTX 5080, 16.0 GB (3.0 GB in use right now)")
         w.close()
 
+    def test_computer_use_toggle_and_screen_picker(self):
+        import importlib.util
+        from unittest import mock
+
+        from localagent.config import Settings
+
+        screens = [{"left": 0, "top": 0, "width": 1920, "height": 1080},
+                   {"left": 1920, "top": 0, "width": 2560, "height": 1440}]
+        mons = mock.patch.object(self.gui.screen_tools, "monitors", lambda: [dict(m) for m in screens])
+        mons.start()
+        self.addCleanup(mons.stop)
+        s = Settings(base_url="http://127.0.0.1:9/v1")
+        s.extra["autostart_model"] = False
+        w = self.gui.MainWindow(s)
+        w.move(0, 0)
+        w.show()
+        chat = w.chat
+        self.assertFalse(chat.computer_btn.isChecked())
+        # the add-ons missing and the offer declined: it stays off
+        real = importlib.util.find_spec
+        with mock.patch("importlib.util.find_spec", lambda n, *a: None if n == "mss" else real(n, *a)), \
+                mock.patch.object(self.gui.QMessageBox, "question", return_value=self.gui.QMessageBox.No):
+            chat.computer_btn.click()
+        self.assertFalse(chat.computer_btn.isChecked())
+        self.assertFalse(s.computer_use)
+        # installed: one click turns it on (and it's saved), another turns it off
+        with mock.patch("importlib.util.find_spec", lambda n, *a: object()):
+            chat.computer_btn.click()
+            self.assertTrue(chat.computer_btn.isChecked())
+            self.assertTrue(Settings.load().computer_use)
+            chat.computer_btn.click()
+        self.assertFalse(s.computer_use)
+        # the arrow lists the screens; picking one shows in Settings too
+        chat._fill_computer_menu()
+        labels = [a.text() for a in chat.computer_menu.actions() if a.text()]
+        self.assertEqual(labels[:2], ["Look at screen 1: 1920x1080 (main)", "Look at screen 2: 2560x1440"])
+        chat.computer_menu.actions()[1].trigger()
+        self.assertEqual(s.monitor, 2)
+        w.show_settings("computer")
+        self.assertEqual(w.settings_page.monitor.currentText(), "Screen 2: 2560x1440")
+        w.settings_page.monitor.setCurrentIndex(0)
+        self.assertEqual(s.monitor, 1)
+        # the window gets out of the way only of the screen it is on
+        self.assertTrue(self.gui._window_on_monitor(w, 1))
+        self.assertFalse(self.gui._window_on_monitor(w, 2))
+        w.close()
+
+    def test_watch_modes_own_model_is_picked_and_got_ready_in_settings(self):
+        from unittest import mock
+
+        from localagent import eyes
+        from localagent.config import Settings
+
+        s = Settings(models_dir=tempfile.mkdtemp())
+        w = self.gui.MainWindow(s)
+        page = w.settings_page
+        self.assertFalse(page.eyes_btn.isVisibleTo(page))
+        page.watch_model.setCurrentIndex(page.watch_model.findData("eyes"))
+        self.assertEqual(s.watch_model, "eyes")
+        self.assertTrue(page.eyes_btn.isVisibleTo(page))
+        self.assertTrue(self.wait_until(lambda: "Not on this PC yet" in page.eyes_info.text(), 5))
+        got = []
+        with mock.patch.object(eyes, "files", lambda st: (None, None, ["x"])), \
+                mock.patch.object(self.gui.catalog, "download", lambda *a, **k: got.append(a[1])), \
+                mock.patch.object(eyes.EYES, "client", lambda *a, **k: None):
+            page.eyes_btn.click()
+            self.assertTrue(self.wait_until(lambda: page._eyes_job is None, 5))
+        self.assertEqual(got, [Path(s.models_dir) / "Qwen3.5-4B"])
+        self.assertIn("watch mode will look with it", page.eyes_info.text())
+        w.close()
+
     def test_one_llama_download_at_a_time(self):
         import threading
 
@@ -903,13 +975,64 @@ class GuiTest(unittest.TestCase):
         page.stop()
         w.close()
 
+    def test_steps_show_like_pi(self):
+        from localagent.config import Settings
+        from localagent.tools import ToolResult
+
+        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1"))
+        chat = w.chat
+        self.assertTrue(chat.pi_view())                                          # the default
+        code = "\n".join(f"print({i})" for i in range(25))
+        chat._on_tool_start("1", "write_file", {"path": "a.py", "content": code}, "Write a.py")
+        group = chat.group
+        self.assertTrue(group.body.isVisibleTo(group))                           # no folded line
+        self.assertFalse(group.head.isVisibleTo(group))
+        card = group.rows.itemAt(0).widget()
+        self.assertIsInstance(card, self.gui.PiCard)
+        self.assertIn("<b>write</b> a.py", card.title.text())
+        self.assertIn("print(9)", card.view.text())
+        self.assertNotIn("print(10)", card.view.text())                          # first 10 lines
+        self.assertEqual(card.more.text(), "... 15 more lines (click to show)")
+        card.toggle()
+        self.assertIn("print(24)", card.view.text())
+        chat._on_tool_end("1", "write_file", ToolResult("Wrote a.py"))
+        chat._on_tool_start("2", "run_command", {"command": "python a.py"}, "Run python a.py")
+        run = group.rows.itemAt(1).widget()
+        self.assertIn("$ python a.py", run.title.text())
+        chat._on_tool_end("2", "run_command", ToolResult("\n".join(str(i) for i in range(25))))
+        self.assertIn("24", run.view.text())                                     # the end of the output
+        self.assertNotIn(">14<", run.view.text())
+        self.assertIn("15 earlier lines", run.more.text())
+        chat._on_tool_start("3", "edit_file", {"path": "a.py", "old_text": "print(1)", "new_text": "print(2)"}, "")
+        edit = group.rows.itemAt(2).widget()
+        self.assertIn("- print(1)", edit.view.text())
+        self.assertIn("+ print(2)", edit.view.text())
+        chat._on_tool_end("3", "edit_file", ToolResult("No match", ok=False))
+        self.assertIn("No match", edit.view.text())
+        # a saved chat shows its steps' code too
+        chat.new_chat()
+        chat._ensure_agent()
+        chat.agent.messages = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "a", "type": "function", "function": {"name": "write_file",
+                                                             "arguments": '{"path": "b.py", "content": "x = 1"}'}}]},
+            {"role": "tool", "name": "write_file", "tool_call_id": "a", "content": "Wrote b.py"},
+            {"role": "assistant", "content": "Done."}]
+        chat._render_history()
+        items = [chat.feed.itemAt(i).widget() for i in range(chat.feed.count() - 1)
+                 if chat.feed.itemAt(i).widget() is not chat.welcome]
+        saved = items[1].rows.itemAt(0).widget()
+        self.assertIn("x = 1", saved.view.text())
+        w.close()
+
     def test_steps_fold_into_one_line(self):
         from types import SimpleNamespace
 
         from localagent.config import Settings
         from localagent.tools import ToolResult
 
-        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1"))
+        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1", step_view="folded"))
         chat = w.chat
         feed = lambda: [chat.feed.itemAt(i).widget() for i in range(chat.feed.count() - 1)  # noqa: E731
                         if chat.feed.itemAt(i).widget() is not chat.welcome]

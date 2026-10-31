@@ -2,8 +2,8 @@
 
 A chat app where a local AI model can actually do things on your computer: read and edit files,
 run commands, programs and tests and fix what fails, search the web, plan multi-step work and
-remember things between chats. It never touches your mouse, keyboard or screen. Nothing goes to
-the cloud: the model runs on your GPU.
+remember things between chats. It only touches your mouse, keyboard or screen while you have
+**Computer use** turned on. Nothing goes to the cloud: the model runs on your GPU.
 
 It also starts the model for you, with the speed settings worked out for an
 **RTX 5080 (16 GB) + 64 GB RAM**.
@@ -36,11 +36,16 @@ It's laid out like the Claude app:
   Yesterday, Previous 7 days...). Click one to carry on in it; right-click to rename or delete it;
   type in **Search chats** to find one. **«** or Ctrl+B hides the list, **☰** brings it back.
 - **The message box** at the bottom: **+** adds an image or a screenshot or changes the work folder,
-  then what it may do without asking, how long it thinks, and the model. **↑** sends (or Enter), and
+  then what it may do without asking, how long it thinks, **Computer use** (on/off, its arrow picks
+  the screen) and the model. **↑** sends (or Enter), and
   turns into **■** Stop while it works (or Esc).
 - **Text size**: Ctrl + bigger, Ctrl - smaller, Ctrl 0 back to normal, or Ctrl + mouse wheel over the
   chat. Settings > Look has the same, and switches answers between sans serif
   (the default) and serif.
+- **Steps** show the way pi shows them: "write a.py" over the first 10 lines of the code, "$ python a.py"
+  over the end of its output, an edit as a red/green diff, with "... N more lines" to click for the rest.
+  The bar on the left turns green when a step worked, red when it failed. Settings > Look > Steps can
+  fold them into one line instead.
 - **Plan & context** (top right) opens the plan for bigger tasks, how full the context is and the
   work folder. It opens by itself when a plan comes in.
 - Each answer has **Copy** under it.
@@ -64,10 +69,17 @@ aren't `.gguf` files you can browse to, so for Ollama models use Ollama itself.)
 
 ## What it can do
 
+By default it works like [pi](https://pi.dev): four tools (read a file, write a file, exact edit, run a
+command) and a short prompt, which is faster and keeps a local model on track. Commands run in bash (Git
+Bash on Windows when it's installed, else PowerShell), and thinking starts off. Everything else below is
+off until you tick it in **Settings > What it may use** (more file tools, background commands and Python,
+to-do list and questions, long-term memory, web, helpers, coding mode, Unity, git and GitHub); Computer
+use has its own button in the chat bar.
+
 | Group | Tools |
 |---|---|
 | Files | read (with line numbers, also shows images), write, exact edit, list, find by name, search inside files, move, copy, delete (to the Recycle Bin) |
-| Commands | run PowerShell commands and programs, run long ones (servers, games, watchers) in the background and read their output, run Python scripts |
+| Commands | run shell commands (bash: Git Bash on Windows when it is installed, like pi; else PowerShell) and programs, run long ones (servers, games, watchers) in the background and read their output, run Python scripts |
 | Web | search (DuckDuckGo, no account), read pages |
 | Git and GitHub | clone, status, diff, log, branch, commit, pull, push; list your repos; list, read and open pull requests (and ask for reviewers); list and open issues; comment |
 | Coding | work in a private git copy of a repo, run the tests until they pass, map a project's classes and functions, several exact edits at once, a syntax check after every edit |
@@ -77,9 +89,9 @@ aren't `.gguf` files you can browse to, so for Ollama models use Ollama itself.)
 Things it does the way Claude does:
 
 - **Works in a loop**: it calls tools, reads the results, and keeps going until the job is done
-  (up to 150 steps before it checks in with you).
+  (no step limit: one message runs until the job is done or you press Stop).
 - **Checks its own work by running it**: it runs the program, script or tests, reads what they
-  print, fixes what fails and runs them again until it works. See [No screen control](#no-screen-control).
+  print, fixes what fails and runs them again until it works. See [Computer use](#computer-use).
 - **Plans** bigger jobs with a visible to-do list.
 - **Keeps long tasks going**: when the conversation gets near the model's memory limit, older
   parts are summarized automatically, and old images are dropped.
@@ -229,13 +241,61 @@ it should do instead. Deleted files go to the Recycle Bin.
 
 **Emergency stop:** press **Stop** (or Esc).
 
-## No screen control
+## Computer use
 
-It works the way Claude Code does: it tests and debugs by running things and reading what they
-print (test results, errors, logs), never by clicking. It has no tools for your mouse, keyboard or
-screen. The programs it runs still run on your PC, so one with a window shows that window, but it
-can't click in it. For Unity it uses the editor's own tools (play mode, the console, pictures of
-the game view) instead.
+Off by default. Then it works the way Claude Code does: it tests and debugs by running things and
+reading what they print (test results, errors, logs), never by clicking. The programs it runs
+still run on your PC, so one with a window shows that window, but it can't click in it. For Unity
+it uses the editor's own tools (play mode, the console, pictures of the game view) instead.
+
+Press **Computer use** next to the message box to let it see and use your screen, like Claude's
+computer use: it takes a screenshot, moves the mouse, clicks, scrolls, drags, types and presses
+shortcuts, lists and switches windows, and reads buttons by name in Windows apps. Press it again to
+turn it off; that takes effect from its next click. While it's on:
+
+- **It doesn't ask** before a click or keypress. Opening a program file (.exe, .bat...) still
+  follows the approval mode, like any command. Read only mode still blocks everything.
+- **Emergency stop**: slam the mouse into a corner of the screen, or press Stop.
+- **Which screen**: the arrow on the button (or Settings > Computer use) picks the screen it looks
+  at first; it can look at the others too. This window minimizes while it uses the screen it's on,
+  and comes back when it's done.
+- **Clicking by words**: `click_text` reads the screen with Windows' own text recognition and
+  clicks the words it's told ("SELL ALL", "File"), also in games, where Windows accessibility sees
+  nothing. `screenshot` with marks numbers the buttons and short text on the picture, so it can
+  click "mark 7" instead of aiming.
+- **Its own browser**: for websites it drives Edge (or Chrome) directly, in a profile of its own in
+  `data/browser-profile` (your own browser and its logins are left alone). Pages come back as
+  text with numbered links, buttons and fields, so it needs no screenshots there.
+- Settings > Computer use also has the click coordinates (automatic: a 0-1000 grid for Qwen
+  models), the screenshot size (automatic: about 960x512 on a 16:9 screen, which read 40% quicker
+  than 1344x768 in the test and did as well; zooms are always sharp), a screenshot after every
+  action, a coordinate grid for weaker models, marks on every screenshot, and switches for text
+  clicking and the browser.
+
+The first time you turn it on it offers to install what it needs (mss, pyautogui, pyperclip,
+pywinauto; about 20 MB) and the text reading and browser add-ons (winrt, playwright; about 60 MB).
+Running `setup.bat` again does the same.
+
+### The computer use test
+
+Settings > Computer use > **Run the computer use test** (or `computer-use-test.bat`) has the
+model do 10 small tasks with your real mouse and keyboard, in a window that fills its screen:
+click a button by its words, click a tiny dot, type into a box, press a button in a painted
+game-style menu, set a slider, drag a box, hold a key, chop a thin tree next to your character
+in a side-view game (a miss says how many pixels off it was), hit a target that jumps every 2.5
+seconds, and fill in a web form. Each task checks itself and has 150 seconds. It can also run
+everything again with the new helpers off, with thinking on Low, with bigger screenshots, with
+click positions on a 0-1000 grid, with watch mode off, or with small watch mode screenshots, to compare.
+Watch mode's own log (each look's reading, answer and action times) is `data/watch/latest.json`.
+
+**Watch mode's own model.** Settings > Computer use > *Watch mode looks with* can give watch mode a
+small vision model of its own: Qwen3.5 4B (Q6_K, 4.2 GB download), run by llama.cpp on the GPU the
+chat's model doesn't use (beside a 5080, a 3080 Ti; about 5 GB of its memory). *Get it ready*
+downloads and starts it; otherwise it starts the first time watch mode runs, and it stops when the
+app closes. It points on a 0-1000 grid, as Qwen's vision models do. When it can't run, watch mode
+uses the chat's model and says why. The summary shows what worked and how long the model and the tools
+took; every step (thinking, calls, timings, tokens) is saved in `data/bench/` to find what's slow.
+Don't touch the mouse while it runs; push it into a screen corner to stop.
 
 Used an older version with its own virtual computer? Delete the `data/vdesktop` folder (the
 Ubuntu download, about 390 MB). If you got as far as setting it up, first run
@@ -252,12 +312,14 @@ follow whichever model is running.
 | Mode | Download | How it runs | Pick it for |
 |---|---|---|---|
 | **Swift 1.5 Qwen3.8 27B** (IQ3_XXS, MTP) | 11 GB | Fully on the GPU, MTP speed-up, 48K context | Everyday work, fastest |
+| **Swift 1.5 Qwen3.8 27B** (IQ3_S, MTP) | 12.8 GB | Same, about half the drift from the full model, ~15% slower; needs a GPU with no monitors on it | Everyday work on a free 16 GB card |
 | **Swift 1.5 Qwen3.8 Flash Next IQ2_XS** | 69 GB (+6 GB for Strata) | 125B MoE, 6B active, on Strata: busiest experts on the GPU, the rest in RAM, its 28 GB n-gram table read from the SSD as needed, 64K context | Hardest tasks |
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_XXS** | 77 GB | The same model at 3 bits: 43 GB of experts in RAM, about 20% slower than IQ2_XS | Hardest tasks, better answers |
 | **Swift 1.5 Qwen3.8 Flash Next IQ3_S** | 85 GB | The same model at 3.5 bits: 50 GB of experts in RAM, about a third slower than IQ2_XS | Best answers, with little else open |
 | **Qwen3.8 Flash Next Coder IQ1_M** | 59 GB | The original Flash Next with half its experts removed, the rest stored like IQ3_S: 23 GB of experts in RAM | Coding, with Unity or a game open |
 | **Qwen3.6 35B-A3B UD-Q4_K_XL** (Strata fork) | 23 GB | Qwen's smaller MoE (3B active) on a Strata fork tuned for it, most experts on the GPU, 262K context, no vision | Fast tool and test loops; about twice Flash Next's speed, weaker on hard tasks |
 | **Ornith 1.5 122B** (UD-IQ3_XXS, UD-Q3_K_XL, UD-Q2_K_XL, Q3_K_L + MTP) | 45-66 GB | A coding and agent fine-tune of a 122B MoE, on llama.cpp with its experts in RAM | Trying the newest coding model; slower than Flash Next on Strata |
+| **GLM-5.3-Flash UD-IQ2_XXS** (SSD streaming) | 103 GB | Z.ai's 320B MoE (18B active), bigger than RAM + VRAM: llama.cpp maps the file and reads missing experts from the SSD, a few tokens a second at best | Trying a much bigger model on a short question, with patience |
 | **Qwen3.8 27B 1-bit + NVFP4 prefill** (experimental) | 20 GB | A 1-bit 27B on the GPU writes; a 4-bit copy of its layers, streamed from the SSD, reads your prompt. No vision, no MTP | Trying the 1-bit research trick |
 
 Flash Next IQ2_XS needs about 40 GB of RAM + VRAM plus space on a fast SSD. It runs on
@@ -378,6 +440,7 @@ start. Sampling follows the model maker's recommended values by itself (Settings
 ## Other ways to run it
 
 - **`run-terminal.bat`**: the same agent in a terminal window.
+- **`pi-local.bat`**: the [pi](https://pi.dev) coding agent with this app's llama.cpp models, without the app. It starts llama.cpp in router mode with each model the app has on the PC (the same options as the Model server page), then pi; `/model` in pi picks one and it loads then. With two GPUs each model is listed once per GPU and once on both (`swift-27b-5080`, `-3080ti`, `-both`). Strata modes (Flash Next) run only in the app. Needs pi (`npm install -g @earendil-works/pi-coding-agent`).
 - **`get-llama-cpp.bat`**: download llama.cpp without opening the app.
 - Your settings, chats and memory live in the `data` folder here; delete it to start fresh.
 

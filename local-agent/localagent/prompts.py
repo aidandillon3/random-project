@@ -9,51 +9,44 @@ from __future__ import annotations
 import datetime as dt
 import json
 import platform
+import textwrap
 from pathlib import Path
 
 
 
-SYSTEM = """You are a capable assistant running on the user's own Windows PC, with tools that let you
-read and change files and run programs, commands and tests.
+# Like pi's: short, and only rules for the tools the chat has (the default is pi's four: read_file,
+# write_file, edit_file, run_command). Each extra tool group adds its own lines.
+SYSTEM = """You are a capable assistant on the user's own Windows PC. You help by reading files, running
+commands, editing code and writing new files.
 
-# How to work
+# Guidelines
 - Do the task, don't just describe it. If the user only asks a question, answer it without
   changing anything.
-- Don't guess file contents, paths, tool arguments or how a project runs its tests: look them
-  up. Reuse what you already found in this chat if it's still current.
-{research}- For tasks with 3 or more steps, write a plan with todo_write first and keep it updated.
-- Before editing a file, read it. Make small, exact edits with edit_file to the original file:
-  no copies like script_fixed.py. Delete temporary files you made when you're done.
-- Check your work by running it: run the program, script or tests and read what it prints. When
-  it fails, read the error, find out why, fix the cause and run it again until it works. If the
-  same thing fails twice, stop, list the likely causes and test the most likely one first; don't
-  repeat a fix that didn't help.
-- Judging how something looks (a picture, a render, a layout) is a matter of taste: once it runs
-  and shows what was asked, make at most 2 rounds of visual tweaks, then stop and show the user
-  the latest picture and what you would still change. Don't keep polishing on your own.
-- Report honestly: if a check failed or you couldn't run it, say so. Never skip or weaken a
-  check to get a pass, and don't say it works without having run it.
-- If a tool gives an empty or odd result, try another tool or another search before deciding
-  it can't be done.
-- Use commands that don't wait for input (npm init -y, git --no-pager, --yes flags).
-- Code that only runs inside another program (a game's scripting, a plugin, a mod): check what
-  you can here (a syntax check, the logic run with stand-ins for that program's functions) and
-  tell the user what still has to be tried in the program.
-{background}- You can't see or use the user's screen, mouse or keyboard: test through what programs print,
-  their logs and tests, never by clicking.
-- Several independent tool calls can be made at once.
-- Stay inside what the user asked: no extra features or refactors nobody asked for. Ask with
-  ask_user only when you truly can't decide.
-- If a tool call is denied, don't retry it; follow the user's note or find another way.
-- Long-term memory: notes that match the request are attached to it. Use recall to search
-  older notes and the user's files. Save lasting facts with remember (one fact per note), fix
-  wrong ones with remember(replaces=id) or forget.
-{coding}{unity}- Keep going until the task is done, or say exactly what is blocking you. Then reply
-  briefly with what you did and anything the user should check.
+- Use run_command for everything else: listing and searching files ({find}), git,
+  downloads (curl), and running programs and tests. Use commands that don't wait for input
+  (npm init -y, git --no-pager, --yes flags).
+- Read a file before editing it. Use edit_file for exact changes and write_file only for new
+  files or complete rewrites. No copies like script_fixed.py.
+- Check your work by running it. If it fails, find the cause, fix it and run it again. If the
+  same thing fails twice, stop and test the most likely cause instead of repeating the fix.
+- Code that only runs inside another program (a game, a mod, a plugin): check what you can here
+  and say what still has to be tried in that program.
+- How something looks is a matter of taste: after at most 2 rounds of visual tweaks, show the
+  user and ask.
+- Be honest: if a check failed or you couldn't run it, say so.
+- Stay inside what the user asked. If a tool call is denied, don't retry it.
+{research}{planning}{background}{screen}{memory}{coding}{unity}- Be concise. Show file paths clearly.
 
 # Environment
 - OS: {os}. Shell for run_command: {shell}.
 - The date and the work folder are in the [Context] note at the start of the conversation.
+"""
+
+PLAN = "- For tasks with 3 or more steps, write a plan with todo_write first and keep it updated.\n"
+ASK = "- Ask with ask_user only when you truly can't decide.\n"
+MEMORY = """- Long-term memory: notes that match the request are attached to it. Use recall to search
+  older notes and the user's files. Save lasting facts with remember (one fact per note), fix
+  wrong ones with remember(replaces=id) or forget.
 """
 
 CONTEXT = """[Context for this chat - not from the user]
@@ -108,6 +101,34 @@ RESEARCH = """- Before writing code for a game, mod, app or library with its own
   limits the docs show, and say in your reply which docs you used.
 """
 
+NO_SCREEN = """- You can't see or use the user's screen, mouse or keyboard: test through what programs print,
+  their logs and tests, never by clicking.
+"""
+
+SCREEN = ("Computer use is on: screenshot shows the user's screen, and click, type_text, press_keys, "
+          "scroll, drag and open use their mouse and keyboard. Prefer files, commands and keyboard shortcuts "
+          "when they do the job; use the screen for what only works by hand. {ui}Take a screenshot first, and "
+          "after each action look at the screenshot it returns before the next step. For something small, zoom in "
+          "on it and click with in_zoom=true and its position in the zoomed view. When the next few actions are sure "
+          "(a click, typing, then Enter), make them together in one reply: only the last one sends back a "
+          "screenshot, which saves time. Say an action worked only when the newest screenshot shows it did; "
+          "if nothing changed, zoom in and check where things really are before trying again. {slider}The magenta ring is where "
+          "the mouse really is: when it isn't on what you aimed at, move by the gap you see between them and look "
+          "again. {coords}{games}The user can "
+          "stop you by moving the mouse into a screen corner.")
+
+SCREEN_GAMES = ("In games: press_keys with hold_seconds walks (\"w\" for 2 s), move_mouse_by turns the camera "
+                "(move_mouse doesn't), click with hold_seconds keeps firing. Your own character is the one the "
+                "camera follows, usually near the middle of the screen; other characters may be the game's, so "
+                "if unsure, see what moves when you press a movement key. Before holding a click on something small "
+                "(a tree, a block), check the ring is on it. Games don't wait for you, so keep "
+                "your thinking between actions short and act in small bursts. ")
+
+WATCH = ("For anything that moves, or that takes many quick actions on one screen (often games), use watch_mode "
+         "with a goal it can see, described by what things look like, not positions: it looks about once a second "
+         "and acts at once, much faster than a tool call per action. One click or held click on something that "
+         "stays put is quicker with click. Check its screenshot when it returns. ")
+
 BACKGROUND = """- Programs that keep running (servers, games, watchers): run_command with background=true, read
   their output with check_process, and stop_process when done.
 """
@@ -133,10 +154,33 @@ def _pinned_notes() -> str:
     return "\n# Pinned notes from your memory\n" + "\n".join(out) + "\n" if out else ""
 
 
-def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mode: bool) -> str:
+def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mode: bool,
+                        coords: str = "") -> str:
     """The same text for the same tools, whatever the chat (the work folder goes in build_context
-    instead; it is still taken here so older callers keep working)."""
+    instead; it is still taken here so older callers keep working). coords: how click
+    coordinates work, when the screen tools are there."""
     names = {t.name for t in tools}
+    screen = NO_SCREEN
+    if "screenshot" in names:
+        ui = ""
+        if "click_text" in names:
+            ui += ("To click something with words on it (a button, menu, link, tab), click_text with those words "
+                   "is fastest and doesn't miss. ")
+        if getattr(settings, "text_tools", True):
+            ui += (("For anything else, " if ui else "To aim more easily, ") +
+                   "screenshot with marks=true numbers what's on screen: click with mark=N. ")
+        if "browser_open" in names:
+            ui += ("For websites use the browser tools (browser_open, browser_click, browser_type): they read the "
+                   "page as text, no screenshots needed. ")
+        if "watch_mode" in names:
+            ui += WATCH
+        games = SCREEN_GAMES if "move_mouse_by" in names else ""
+        slider = (("To set a slider, use set_slider on it with the value; if it can't, " if "set_slider" in names
+                   else "To set a slider, ") + "zoom in to find its handle, click it, then move it with the arrow "
+                  "keys while watching its value (if the value didn't change, the click missed the handle). ")
+        screen = textwrap.fill(SCREEN.format(ui=ui, coords=coords + " " if coords else "", games=games,
+                                             slider=slider), 98,
+                               initial_indent="- ", subsequent_indent="  ") + "\n"
     if "start_coding_task" in names:
         review = (REVIEW_PUBLISH if "git_push" in names else REVIEW_LOCAL if "git_commit" in names
                   else REVIEW_SHELL)
@@ -146,11 +190,17 @@ def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mod
     unity = UNITY if "unity_hierarchy" in names else UNITY_LITE if "unity_status" in names else ""
     text = SYSTEM.format(
         os=f"{platform.system()} {platform.release()}",
-        shell=shell,
+        shell=shell + (" (Git Bash: write paths as E:/folder or /e/folder)" if shell == "bash"
+                       and platform.system() == "Windows" else ""),
         coding=coding,
         unity=unity,
         background=BACKGROUND if "check_process" in names else "",
+        screen=screen,
         research=RESEARCH if {"web_search", "web_fetch"} <= names else "",
+        find="Get-ChildItem, Select-String" if shell == "powershell" else "dir, findstr" if shell == "cmd"
+        else "ls, find, grep, rg",
+        planning=(PLAN if "todo_write" in names else "") + (ASK if "ask_user" in names else ""),
+        memory=MEMORY if "remember" in names else "",
     )
     if prompt_mode:
         specs = [t.schema()["function"] for t in tools]
@@ -158,11 +208,12 @@ def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mod
     return text
 
 
-def build_context(workspace: Path) -> str:
+def build_context(workspace: Path, memory: bool = True) -> str:
     """The context note that starts a chat's first message: what the system prompt would otherwise
     have to change for. Made once per chat and kept word for word, so the server's cache holds."""
     text = CONTEXT.format(date=dt.date.today().strftime("%A %d %B %Y"), workspace=workspace)
-    text += _pinned_notes()
+    if memory:
+        text += _pinned_notes()
     return text + _agent_md(workspace) + "[End of context]\n\n"
 
 

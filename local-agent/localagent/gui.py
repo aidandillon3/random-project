@@ -6,6 +6,8 @@ import copy
 import gc
 import json
 import re
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -22,7 +24,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSpinBox, QStackedWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import basalt, catalog, chats, launcher, mcp, odp, plugins, strata
+from . import basalt, catalog, chats, eyes, launcher, mcp, odp, plugins, strata
 from .agent import Agent, AgentUI
 from .config import APP_DIR, APPROVAL_MODES, DATA_DIR, SERVER_PRESETS, Settings
 from .gguf import chosen_gpus, gpu_env, gpu_info, list_gpus, model_info, monitors_on, strongest
@@ -30,7 +32,8 @@ from .guide import GUIDE, sampling_for
 from .llm import LLMClient, ServerError
 from . import memory as memory_mod
 from .permissions import ApprovalRequest, Decision, risk_text
-from .tools import RISK_LABELS
+from .tools import REGISTRY, RISK_LABELS
+from .tools import screen as screen_tools
 
 # the Claude app's dark look: warm greys, its clay orange for what you press
 BG = "#262624"          # the chat
@@ -96,6 +99,8 @@ QFrame#composer QComboBox:hover {{ background: {RAISED}; color: {TEXT}; }}
 QFrame#composer QToolButton {{ color: {MUTED}; border-radius: 8px; padding: 4px 8px; }}
 QFrame#composer QToolButton:hover {{ background: {RAISED}; color: {TEXT}; }}
 QFrame#composer QToolButton::menu-indicator {{ image: none; }}
+QFrame#composer QToolButton#computer:checked {{ background: {ACCENT}; color: white; }}
+QFrame#composer QToolButton#computer::menu-button {{ border: none; width: 14px; }}
 QPushButton#send {{ background: {ACCENT}; border: none; color: white; font-size: 13pt; font-weight: 700;
     border-radius: 10px; padding: 0; }}
 QPushButton#send:hover {{ background: #e08a6d; }}
@@ -520,6 +525,138 @@ class ToolCard(QFrame):
         self.images.addStretch(1)
 
 
+ADDED, REMOVED, PI_LINES = "#8cc28c", "#e08585", 10
+
+
+def _pre(lines: list[tuple[str, str]]) -> str:
+    """(text, colour or "") lines as rich text that keeps spaces and wraps long lines."""
+    rows = []
+    for text, colour in lines:
+        line = _esc(text[:400]) or " "
+        rows.append(f"<span style='color:{colour}'>{line}</span>" if colour else line)
+    return ("<div style=\"white-space:pre-wrap; font-family:Consolas,'Cascadia Mono',monospace\">"
+            + "<br>".join(rows) + "</div>")
+
+
+class PiCard(QFrame):
+    """One step shown the way the pi coding agent shows it: a short header ("$ python a.py", "write a.py",
+    "edit a.py") over the first lines of what it wrote, the diff of an edit or the end of a command's output,
+    with "... N more lines" to click for the rest. The bar on the left: grey running, green done, red failed."""
+
+    def __init__(self, name: str, summary: str, args: dict):
+        super().__init__()
+        self.setObjectName("piTool")
+        self.name, self.args = name, args if isinstance(args, dict) else {}
+        self.lines: list[tuple[str, str]] = []
+        self.tail = False          # a command's output: the last lines show while folded
+        self.open = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 5, 8, 5)
+        lay.setSpacing(2)
+        self.title = QLabel(self._header(summary))
+        self.title.setWordWrap(True)
+        self.title.setTextFormat(Qt.RichText)
+        self.title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.title)
+        self.view = QLabel()
+        self.view.setWordWrap(True)
+        self.view.setTextFormat(Qt.RichText)
+        self.view.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.view)
+        self.more = QToolButton()
+        self.more.setObjectName("flat")
+        self.more.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.more.clicked.connect(self.toggle)
+        lay.addWidget(self.more, 0, Qt.AlignLeft)
+        self.images = QHBoxLayout()
+        lay.addLayout(self.images)
+        self._bar(MUTED)
+        self._set(self._start_lines())
+
+    def _bar(self, colour: str):
+        self.setStyleSheet(f"QFrame#piTool {{ background: {CODE_BG}; border: none; border-left: 3px solid {colour};"
+                           " border-radius: 4px; }")
+
+    def _header(self, summary: str) -> str:
+        a, path = self.args, _esc(str(self.args.get("path", "")))
+        if self.name == "run_command" and a.get("command"):
+            cmd = str(a["command"]).strip()
+            return f"<b>$ {_esc(cmd.splitlines()[0][:300])}</b>" + (" <span style='color:%s'>...</span>" % MUTED
+                                                                     if "\n" in cmd else "")
+        if self.name == "run_python":
+            return "<b>python</b>"
+        if self.name in ("write_file", "edit_file", "multi_edit", "read_file") and path:
+            verb = {"write_file": "write", "edit_file": "edit", "multi_edit": "edit", "read_file": "read"}[self.name]
+            where = ""
+            if self.name == "read_file" and (a.get("offset") or a.get("limit")):
+                start = int(a.get("offset") or 1)
+                where = f":{start}" + (f"-{start + int(a['limit']) - 1}" if a.get("limit") and start > 0 else "")
+            return f"<b>{verb}</b> {path}<span style='color:{MUTED}'>{where}</span>"
+        return f"<b>{_esc(self.name)}</b> <span style='color:{MUTED}'>{_esc(summary[:160])}</span>"
+
+    def _start_lines(self) -> list[tuple[str, str]]:
+        """What shows before the step finishes: the code it writes, the change it makes."""
+        a = self.args
+        if self.name == "write_file":
+            return [(line, "") for line in str(a.get("content", "")).split("\n")]
+        if self.name == "run_python":
+            return [(line, "") for line in str(a.get("code", "")).split("\n")]
+        edits = [a] if self.name == "edit_file" else a.get("edits") if self.name == "multi_edit" else None
+        if isinstance(edits, list):
+            out = []
+            for e in edits:
+                if not isinstance(e, dict):
+                    continue
+                if out:
+                    out.append(("...", MUTED))
+                out += [("- " + line, REMOVED) for line in str(e.get("old_text", "")).split("\n")]
+                out += [("+ " + line, ADDED) for line in str(e.get("new_text", "")).split("\n")]
+            return out
+        return []
+
+    def _set(self, lines: list[tuple[str, str]], tail: bool = False):
+        while lines and not lines[-1][0].strip():
+            lines = lines[:-1]
+        self.lines, self.tail = lines, tail
+        self._show()
+
+    def _show(self):
+        n, hidden = len(self.lines), max(0, len(self.lines) - PI_LINES)
+        shown = self.lines[:500] if self.open else self.lines[-PI_LINES:] if self.tail else self.lines[:PI_LINES]
+        self.view.setText(_pre(shown) if shown else "")
+        self.view.setVisible(bool(shown))
+        self.more.setVisible(hidden > 0)
+        if self.open:
+            self.more.setText("▴ Show less" + (f" (first 500 of {n} lines)" if n > 500 else ""))
+        else:
+            self.more.setText(f"... {hidden} {'earlier' if self.tail else 'more'} line{'s' if hidden != 1 else ''}"
+                              " (click to show)")
+
+    def toggle(self):
+        self.open = not self.open
+        self._show()
+
+    def done(self, result):
+        self._bar(ADDED if result.ok else REMOVED)
+        text = (result.text or "").rstrip()
+        if not result.ok:
+            self._set([(line, REMOVED) for line in text.split("\n")])
+        elif self.name == "read_file":
+            n = text.count("\n") + 1 if text else 0
+            self._set([(f"{n} line{'s' if n != 1 else ''}", MUTED)])
+        elif self.name in ("write_file", "edit_file", "multi_edit") and self.lines:
+            pass                                    # the code or the diff says it; "Wrote 12 lines" adds nothing
+        elif self.name in ("run_command", "run_python"):
+            out = [(line, "") for line in text.split("\n")] if text else [("(no output)", MUTED)]
+            self._set(self._start_lines() + [("", "")] + out if self.name == "run_python" and self.lines else out,
+                      tail=True)
+        else:
+            self._set([(line, "") for line in text.split("\n")] if text else [])
+        for p in result.images[:3]:
+            self.images.addWidget(thumb(p, 260))
+        self.images.addStretch(1)
+
+
 # what a run of steps did, for the line it folds into: the tools by kind, in the order they first ran
 STEP_KINDS = {"web_search": "searched the web", "web_fetch": "read web pages", "download_file": "downloaded files",
               "read_file": "read files", "list_dir": "looked at folders", "search_text": "searched files",
@@ -531,10 +668,12 @@ STEP_KINDS = {"web_search": "searched the web", "web_fetch": "read web pages", "
 
 class StepGroup(QFrame):
     """The steps between two answers (tool calls and the thinking around them) folded into one line,
-    "▸ Searched the web, read web pages · 6 steps", as the Claude app does. Click it for each step."""
+    "▸ Searched the web, read web pages · 6 steps", as the Claude app does. Click it for each step.
+    flat (Settings.step_view "pi"): no line, every step shows in the chat as pi shows it."""
 
-    def __init__(self):
+    def __init__(self, flat: bool = False):
         super().__init__()
+        self.flat = flat
         self.setObjectName("steps")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 0, 4, 0)
@@ -546,9 +685,10 @@ class StepGroup(QFrame):
         lay.addWidget(self.head)
         self.body = QWidget()
         self.rows = QVBoxLayout(self.body)
-        self.rows.setContentsMargins(14, 0, 0, 0)
-        self.rows.setSpacing(4)
-        self.body.setVisible(False)
+        self.rows.setContentsMargins(0 if flat else 14, 0, 0, 0)
+        self.rows.setSpacing(6 if flat else 4)
+        self.body.setVisible(flat)
+        self.head.setVisible(not flat)
         lay.addWidget(self.body)
         self.kinds: list[str] = []
         self.steps = self.failed = self.running = 0
@@ -558,7 +698,7 @@ class StepGroup(QFrame):
     def add(self, w: QWidget):
         self.rows.addWidget(w)
 
-    def add_tool(self, card: "ToolCard", name: str, summary: str):
+    def add_tool(self, card: QWidget, name: str, summary: str):
         kind = STEP_KINDS.get(name, "used tools")
         if kind not in self.kinds:
             self.kinds.append(kind)
@@ -648,6 +788,7 @@ class Bridge(QObject):
     usage = Signal(int, int, object)
     approval = Signal(object)
     ask = Signal(object)
+    hide_window = Signal(object)
     finished = Signal(str)
     failed = Signal(str)
 
@@ -664,6 +805,18 @@ class GuiUI(AgentUI):
 
     def __init__(self, bridge: Bridge, stop: threading.Event, settings: Settings):
         self.b, self.stop, self.settings = bridge, stop, settings
+        self.ctx = None      # the agent's ToolContext: which screen the screen tools are on
+
+    def _hide_for(self, name, args=None):
+        """The screen it is about to use, when this window should get out of its way first."""
+        tool = REGISTRY.get(name)
+        if not (tool and tool.group == "control" and self.settings.computer_use
+                and self.settings.extra.get("minimize_during_control", True)):
+            return None
+        if name == "screenshot" and isinstance(args, dict) and isinstance(args.get("monitor"), int):
+            return args["monitor"]
+        screen = self.ctx.screen if self.ctx is not None else {}
+        return screen.get("monitor") or self.settings.monitor
 
     def assistant_start(self):
         self.b.assistant_start.emit()
@@ -679,6 +832,9 @@ class GuiUI(AgentUI):
 
     def tool_start(self, call_id, name, args, summary):
         self.b.tool_start.emit(call_id, name, args, summary)
+        monitor = self._hide_for(name, args)
+        if monitor is not None:
+            self._wait(self.b.hide_window, monitor)
 
     def tool_end(self, call_id, name, result):
         self.b.tool_end.emit(call_id, name, result)
@@ -705,6 +861,9 @@ class GuiUI(AgentUI):
 
     def approve(self, req):
         d = self._wait(self.b.approval, req)
+        monitor = self._hide_for(req.tool, req.args) if d and d.allow else None
+        if monitor is not None:
+            self._wait(self.b.hide_window, monitor)   # the dialog brought the window back; out of the way again
         return d or Decision(False, note="Stopped by the user.")
 
     def ask(self, question, options):
@@ -773,6 +932,31 @@ class ApprovalDialog(QDialog):
 def _greeting() -> str:
     h = time.localtime().tm_hour
     return "Good morning" if 5 <= h < 12 else "Good afternoon" if 12 <= h < 18 else "Good evening"
+
+
+def _window_on_monitor(win: QWidget, monitor) -> bool:
+    """The window covers some of that screen (numbered like the monitor setting). When that can't
+    be told, it is taken to: getting out of the way is the safe side."""
+    mons = screen_tools.monitors()
+    if not mons or not isinstance(monitor, int) or not 1 <= monitor <= len(mons):
+        return True
+    m = mons[monitor - 1]
+    rect = None
+    if sys.platform == "win32":
+        try:       # real pixels, like the screen tools' (Qt's own geometry is scaled by Windows' zoom)
+            import ctypes
+            import ctypes.wintypes
+
+            r = ctypes.wintypes.RECT()
+            if ctypes.windll.user32.GetWindowRect(int(win.winId()), ctypes.byref(r)):
+                rect = (r.left, r.top, r.right, r.bottom)
+        except Exception:  # noqa: BLE001 - fall back to Qt's numbers
+            rect = None
+    if rect is None:
+        g, k = win.frameGeometry(), win.devicePixelRatio()
+        rect = (g.left() * k, g.top() * k, (g.right() + 1) * k, (g.bottom() + 1) * k)
+    return (rect[0] < m["left"] + m["width"] and rect[2] > m["left"]
+            and rect[1] < m["top"] + m["height"] and rect[3] > m["top"])
 
 
 class ChatPage(QWidget):
@@ -857,8 +1041,9 @@ class ChatPage(QWidget):
         self.welcome_text = muted(
             "Ask for anything: \"tidy up my Downloads folder\", \"write a script that renames these photos by "
             "date\", \"find the bug that makes my game crash on start and fix it\". It runs and tests what it "
-            "makes and fixes what fails, without touching your mouse, keyboard or screen. It asks before "
-            "changing anything (you can loosen that below).\n\nEmergency stop: press Stop (or Esc).")
+            "makes and fixes what fails. It only uses your mouse, keyboard and screen while Computer use is on. "
+            "It asks before changing anything (you can loosen that below).\n\nEmergency stop: press Stop "
+            "(or Esc).")
         self.welcome_text.setAlignment(Qt.AlignCenter)
         wl.addWidget(self.welcome_text)
         # first run: one click to a working model
@@ -924,6 +1109,17 @@ class ChatPage(QWidget):
         self.think.currentIndexChanged.connect(self._thinking_changed)
         self.think.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         row.addWidget(self.think)
+        self.computer_btn = QToolButton(text="Computer use")
+        self.computer_btn.setObjectName("computer")
+        self.computer_btn.setCheckable(True)
+        self.computer_btn.setChecked(bool(self.s.computer_use))
+        self.computer_btn.setPopupMode(QToolButton.MenuButtonPopup)
+        self.computer_menu = QMenu(self.computer_btn)
+        self.computer_menu.aboutToShow.connect(self._fill_computer_menu)
+        self.computer_btn.setMenu(self.computer_menu)
+        self.computer_btn.toggled.connect(self._computer_toggled)
+        row.addWidget(self.computer_btn)
+        self._computer_tip()
         row.addStretch(1)
         self.dot = QLabel("●")
         self.dot.setStyleSheet(f"color: {BAD}; font-size: 8pt;")
@@ -1011,6 +1207,7 @@ class ChatPage(QWidget):
         b.usage.connect(self._on_usage)
         b.approval.connect(self._on_approval)
         b.ask.connect(self._on_ask)
+        b.hide_window.connect(self._on_hide)
         b.finished.connect(self._on_finished)
         b.failed.connect(self._on_failed)
         self.input.send.connect(self.send)
@@ -1026,9 +1223,15 @@ class ChatPage(QWidget):
         self.welcome.setVisible(False)
         self.feed.insertWidget(self.feed.count() - 1, w)
 
+    def pi_view(self) -> bool:
+        return getattr(self.s, "step_view", "pi") != "folded"
+
+    def _card(self, name: str, summary: str, args) -> QWidget:
+        return (PiCard if self.pi_view() else ToolCard)(name, summary, args if isinstance(args, dict) else {})
+
     def _steps(self) -> StepGroup:
         if self.group is None:
-            self.group = StepGroup()
+            self.group = StepGroup(flat=self.pi_view())
             self._add(self.group)
         return self.group
 
@@ -1145,7 +1348,8 @@ class ChatPage(QWidget):
                 self._add_pending(png_bytes(img))
 
     def _add_screenshot(self):
-        """A picture of the screen, taken when the user presses the button (the AI can't take one)."""
+        """A picture of the screen, taken when the user presses the button (the AI takes its own only
+        while Computer use is on)."""
         self.win.showMinimized()
         QApplication.processEvents()
         time.sleep(0.4)
@@ -1179,10 +1383,13 @@ class ChatPage(QWidget):
     def _ensure_agent(self):
         s = self.s
         sig = (s.base_url, s.model, s.api_key, s.workspace, s.tool_mode, s.enable_shell, s.enable_web,
-               s.enable_subagents, s.enable_github, s.enable_code, s.enable_unity, s.github_token, s.shell)
+               s.enable_subagents, s.enable_github, s.enable_code, s.enable_unity, s.github_token, s.shell,
+               s.enable_more_files, s.enable_more_shell, s.enable_planning, s.enable_memory)
         if self.agent is None or sig != self._agent_sig:
             prev = self.agent
-            self.agent = Agent(s, GuiUI(self.bridge, self.stop, s), stop=self.stop)
+            ui = GuiUI(self.bridge, self.stop, s)
+            self.agent = Agent(s, ui, stop=self.stop)
+            ui.ctx = self.agent.ctx
             if prev is not None:
                 self.agent.messages, self.agent.todos = prev.messages, prev.todos
                 self.agent.ctx.processes = prev.ctx.processes     # its background commands stay reachable
@@ -1287,6 +1494,14 @@ class ChatPage(QWidget):
     def _render_history(self):
         from .tools import ToolResult
 
+        args = {}                  # call id: its arguments, so a saved step shows its code as it did live
+        for m in self.agent.messages:
+            for call in m.get("tool_calls") or []:
+                f = call.get("function") or {}
+                try:
+                    args[call.get("id")] = json.loads(f.get("arguments") or "{}")
+                except (TypeError, ValueError):
+                    args[call.get("id")] = {}
         for m in self.agent.messages:
             c = m.get("content")
             text = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or [] if p.get("type") == "text")
@@ -1301,7 +1516,7 @@ class ChatPage(QWidget):
                 blk.finish()
                 self._add(blk)
             elif m["role"] == "tool" and m.get("name") != "todo_write":
-                card = ToolCard(m.get("name", "tool"), "", {})
+                card = self._card(m.get("name", "tool"), "", args.get(m.get("tool_call_id")) or {})
                 card.done(ToolResult(text))
                 steps = self._steps()
                 steps.add_tool(card, m.get("name", "tool"), "")
@@ -1354,7 +1569,7 @@ class ChatPage(QWidget):
     def _on_tool_start(self, call_id, name, args, summary):
         if name == "todo_write":       # the plan already shows on the right
             return
-        card = ToolCard(name, summary, args)
+        card = self._card(name, summary, args)
         self.cards[call_id] = (card, self._steps())
         self.group.add_tool(card, name, summary)
 
@@ -1385,6 +1600,126 @@ class ChatPage(QWidget):
         if tps:
             self.speed.setText(f"{tps:.1f} tokens/second")
             self.win.last_tps = tps
+
+    # ---------------------------------------------------------------- computer use
+    def _computer_tip(self):
+        on = self.computer_btn.isChecked()
+        self.computer_btn.setToolTip(
+            ("On: it can take screenshots and use your mouse and keyboard, without asking each time. "
+             "Move the mouse into a screen corner to stop it.\n\nClick to turn it off." if on else
+             "Off: it can't see your screen or touch your mouse and keyboard.\n\nClick to let it.")
+            + f"\nThe arrow picks the screen it looks at first (now screen {self.s.monitor}).")
+
+    def _fill_computer_menu(self):
+        m = self.computer_menu
+        m.clear()
+        mons = screen_tools.monitors()
+        if not mons:
+            m.addAction("The screens show up here once Computer use is set up").setEnabled(False)
+        for i, mon in enumerate(mons, 1):
+            a = m.addAction(f"Look at screen {i}: {screen_tools.monitor_size(mon)}", lambda n=i: self._pick_monitor(n))
+            a.setCheckable(True)
+            a.setChecked(i == self.s.monitor)
+        m.addSeparator()
+        m.addAction("Computer use settings...", lambda: self.win.show_settings("computer"))
+
+    def _pick_monitor(self, n: int):
+        self.s.monitor = n
+        if self.agent is not None:
+            self.agent.ctx.screen.pop("monitor", None)     # its next look is at the new screen
+        self.s.save()
+        self._computer_tip()
+
+    def _computer_toggled(self, on: bool):
+        if on and not self._computer_ready():
+            self.computer_btn.blockSignals(True)
+            self.computer_btn.setChecked(False)
+            self.computer_btn.blockSignals(False)
+            return
+        self.s.computer_use = on
+        self.s.save()
+        self._computer_tip()
+        if self.busy():
+            self._add(muted("ℹ️ " + ("Computer use is on from your next message." if on else
+                                     "Computer use is off: it won't click or type any more.")))
+
+    def _computer_ready(self) -> bool:
+        """The screen add-ons are installed, or the user had them installed now. The extras (text
+        reading, the browser) are offered too, once; without them it still works, with fewer tools."""
+        import importlib.util
+
+        from .tools import browser, ocr
+
+        need = ["mss", "pyautogui", "pyperclip"] + (["pywinauto"] if sys.platform == "win32" else [])
+        missing = [n for n in need if importlib.util.find_spec(n) is None]
+        extras = []
+        if sys.platform == "win32" and ocr.missing():
+            extras += ocr.PACKAGES
+        if browser.missing():
+            extras += browser.PACKAGES
+        if not missing and (not extras or self.s.extra.get("computer_extras_declined")):
+            return True
+        if missing:
+            ask = QMessageBox.question(
+                self, "Computer use",
+                "Computer use needs a few add-ons that aren't installed yet: " + ", ".join(missing)
+                + (". It can also install the add-ons for reading text on the screen and for driving a browser"
+                   if extras else "") + ". Install them now? (about 20-60 MB; then press Computer use again)")
+            if ask != QMessageBox.Yes:
+                return False
+        else:
+            ask = QMessageBox.question(
+                self, "Computer use",
+                "Two add-ons make Computer use much more reliable: reading the words on the screen (so it can click "
+                "a button by its label, also in games) and a browser it drives directly for websites. Install them "
+                "now? (about 60 MB, in the background; they're used from your next new chat)")
+            if ask != QMessageBox.Yes:
+                self.s.extra["computer_extras_declined"] = True
+                self.s.save()
+                return True
+        self.computer_btn.setEnabled(False)
+        self.computer_btn.setText("Installing...")
+        later = not missing       # only extras: Computer use turns on now, they arrive meanwhile
+
+        def work():
+            try:
+                r = subprocess.run([sys.executable, "-m", "pip", "install", *missing, *extras], capture_output=True,
+                                   text=True, timeout=900,
+                                   creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+                ok, msg = r.returncode == 0, (r.stderr or r.stdout)[-600:]
+                if not ok and missing and extras:     # an extra that won't install mustn't block the rest
+                    r = subprocess.run([sys.executable, "-m", "pip", "install", *missing], capture_output=True,
+                                       text=True, timeout=600,
+                                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+                    ok, msg = r.returncode == 0, ("The extras didn't install: " + msg + "\n\n" +
+                                                  (r.stderr or r.stdout)[-300:])
+            except Exception as e:  # noqa: BLE001 - shown to the user
+                ok, msg = False, str(e)
+            QTimer.singleShot(0, self, lambda: self._computer_installed(ok, msg, later))
+
+        threading.Thread(target=work, daemon=True).start()
+        return later
+
+    def _computer_installed(self, ok: bool, msg: str, later: bool = False):
+        import importlib
+
+        importlib.invalidate_caches()
+        self.computer_btn.setEnabled(True)
+        self.computer_btn.setText("Computer use")
+        if ok and later:
+            self._add(muted("ℹ️ Text reading and the browser are installed: they're there from your next new chat."))
+        elif ok:
+            self.computer_btn.setChecked(True)
+        else:
+            QMessageBox.warning(self, "Computer use", "Installing the add-ons failed:\n\n" + msg)
+
+    def _on_hide(self, w: Waiter):
+        """Minimize this window before it looks at or uses the screen the window is on."""
+        if self.win.isMinimized() or not _window_on_monitor(self.win, w.payload):
+            w.event.set()
+            return
+        self.win.showMinimized()
+        QTimer.singleShot(450, w.event.set)
 
     def _restore(self):
         if self.win.isMinimized():
@@ -1523,6 +1858,33 @@ class ServerPage(QWidget):
         mrow.addWidget(self.monitors)
         mrow.addWidget(self.monitors_note, 1)
         lay.addLayout(mrow)
+        self.low_ram = QCheckBox("Low-RAM mode (Strata): keep in RAM only the experts the GPU doesn't hold")
+        self.low_ram.setToolTip("Strata's own low-RAM mode. The first start with it writes the experts into one file "
+                                "next to the model (about 43 GB for IQ3_XXS, one time) and then copies into RAM only "
+                                "the ones the GPU doesn't hold. The context's memory stays on the GPU then, so at a "
+                                "long context the GPU holds fewer experts and it can be slower. Changing it runs "
+                                "Strata's setup again.")
+        self.low_ram.setChecked(bool(self.s.strata_low_ram))
+        self.low_ram.toggled.connect(self._low_ram_toggled)
+        lay.addWidget(self.low_ram)
+        self.ram_cap_row = QWidget()
+        crow = QHBoxLayout(self.ram_cap_row)
+        crow.setContentsMargins(24, 0, 0, 0)
+        crow.addWidget(QLabel("Most RAM for experts:"))
+        self.ram_cap = QSpinBox(minimum=0, maximum=256)
+        self.ram_cap.setSpecialValueText("no cap")
+        self.ram_cap.setSuffix(" GB")
+        self.ram_cap.setValue(int(self.s.strata_ram_gib or 0))
+        self.ram_cap.setToolTip("Without a cap Strata also keeps in RAM the experts of the GPU slots it lends out while "
+                                "reading a prompt. With one, it keeps the most-used experts up to this much and reads "
+                                "the rest from its experts file on the SSD. Just above what the GPUs don't hold "
+                                "(the log's 'resident RAM' line less the 'keep their experts in RAM too' amount) only "
+                                "prompt reading touches the SSD; lower, the answers do too and get slower. "
+                                "Takes effect the next time the model starts.")
+        self.ram_cap.valueChanged.connect(self._ram_cap_changed)
+        crow.addWidget(self.ram_cap)
+        crow.addStretch(1)
+        lay.addWidget(self.ram_cap_row)
 
         # ---- the mode: what most people need
         g = QGroupBox("Mode")
@@ -1864,6 +2226,16 @@ class ServerPage(QWidget):
         self.monitors.blockSignals(False)
         self.monitors_note.setText("(found by itself)" if self.s.monitors_on_ai_gpu not in ("yes", "no")
                                    and any(g.display is not None for g in self.gpus) else "")
+
+    def _low_ram_toggled(self, on: bool):
+        self.s.strata_low_ram = on
+        self.s.save()
+        self._changed()
+
+    def _ram_cap_changed(self, v: int):
+        self.s.strata_ram_gib = v
+        self.s.save()
+        self._changed()
 
     def _monitors_toggled(self, on: bool):
         self.s.monitors_on_ai_gpu = "yes" if on else "no"
@@ -2238,6 +2610,8 @@ class ServerPage(QWidget):
         self.ngl.setEnabled(manual)
         self.ncm.setEnabled(manual)
         self.draft_label.setText(f"Draft model: {Path(s.draft_path).name}" if s.draft_path else "No draft model picked")
+        self.low_ram.setVisible(False)          # shown below for a mode of Strata itself
+        self.ram_cap_row.setVisible(False)
         if basalt.is_model(s.model_path):
             for w in (self.kv, self.placement, self.speed, self.extra, self.ngl, self.ncm):
                 w.setEnabled(False)
@@ -2260,6 +2634,8 @@ class ServerPage(QWidget):
         on_strata = strata.active(s, p)
         for w in (self.kv, self.placement, self.speed, self.extra):
             w.setEnabled(not on_strata)
+        self.low_ram.setVisible(on_strata and not p.strata.get("install"))
+        self.ram_cap_row.setVisible(on_strata and not p.strata.get("install") and bool(s.strata_low_ram))
         if on_strata:
             self.ngl.setEnabled(False)
             self.ncm.setEnabled(False)
@@ -2741,7 +3117,7 @@ class SettingsPage(QWidget):
         self.setObjectName("page")
         self.win = win
         s = self.s = win.settings
-        area = QScrollArea()
+        area = self.area = QScrollArea()
         area.setWidgetResizable(True)
         body = QWidget()
         body.setObjectName("page")
@@ -2765,14 +3141,34 @@ class SettingsPage(QWidget):
         self.answer_font.addItem("Serif (Georgia)", "serif")
         self.answer_font.setCurrentIndex(max(0, self.answer_font.findData(s.answer_font)))
         f.addRow("Answers in:", self.answer_font)
+        self.step_view = QComboBox()
+        self.step_view.addItem("Each shown, like pi (code, output, click for more)", "pi")
+        self.step_view.addItem("Folded into one line", "folded")
+        self.step_view.setCurrentIndex(max(0, self.step_view.findData(getattr(s, "step_view", "pi"))))
+        self.step_view.setToolTip("How the steps between answers show (files it writes, commands it runs). "
+                                  "Applies to the next steps and to chats opened after.")
+        f.addRow("Steps:", self.step_view)
         self.text_pt.valueChanged.connect(self._look_changed)
         self.answer_font.currentIndexChanged.connect(self._look_changed)
+        self.step_view.currentIndexChanged.connect(self._look_changed)
         lay.addWidget(g)
 
         g = QGroupBox("What it may use")
         f = QFormLayout(g)
-        self.shell = QCheckBox("Run commands and Python")
+        f.addRow(muted("By default it has 4 tools, like pi: read, write and edit files, and run commands. A short "
+                       "prompt and few tools are faster and keep a local model on track. Turn on only what a job "
+                       "needs; the next message picks it up."))
+        self.shell = QCheckBox("Run commands")
         self.shell.setChecked(s.enable_shell)
+        self.more_files = QCheckBox("More file tools: list, find and search files, several edits at once, move, "
+                                    "copy, delete")
+        self.more_files.setChecked(s.enable_more_files)
+        self.more_shell = QCheckBox("Background commands (servers, watchers) and Python scripts")
+        self.more_shell.setChecked(s.enable_more_shell)
+        self.planning = QCheckBox("To-do list for long jobs, and asking you questions")
+        self.planning.setChecked(s.enable_planning)
+        self.memory_on = QCheckBox("Long-term memory: remembers facts between chats, searches your files")
+        self.memory_on.setChecked(s.enable_memory)
         self.web = QCheckBox("Search and read the web")
         self.web.setChecked(s.enable_web)
         self.sub = QCheckBox("Start helper agents for big searches")
@@ -2781,13 +3177,94 @@ class SettingsPage(QWidget):
         self.code.setChecked(s.enable_code)
         self.unity = QCheckBox("Unity: work in the open Unity editor (scenes, objects, scripts, play mode)")
         self.unity.setChecked(s.enable_unity)
-        for w in (self.shell, self.web, self.sub, self.code, self.unity):
+        for w in (self.shell, self.more_files, self.more_shell, self.planning, self.memory_on, self.web, self.sub,
+                  self.code, self.unity):
             w.toggled.connect(self._save)
             f.addRow(w)
         self.dangerous = QCheckBox("Always ask before dangerous commands (format, delete everything, registry...)")
         self.dangerous.setChecked(s.always_ask_dangerous)
         self.dangerous.toggled.connect(self._save)
         f.addRow(self.dangerous)
+        lay.addWidget(g)
+
+        g = self.computer_group = QGroupBox("Computer use")
+        f = QFormLayout(g)
+        f.addRow(muted("Turn it on or off with the Computer use button next to the message box. While it's on, "
+                       "it takes screenshots and uses your mouse and keyboard without asking each time (opening "
+                       "a program file still follows the approval mode). Move the mouse into a screen corner to "
+                       "stop it."))
+        self.monitor = QComboBox()
+        self._fill_monitors()
+        self.monitor.currentIndexChanged.connect(self._save)
+        f.addRow("Screen it looks at first:", self.monitor)
+        self.screen_side = self._spin(s.screen_max_side, 0, 3840)
+        self.screen_side.setSpecialValueText("Automatic")
+        self.screen_side.setSingleStep(64)
+        self.screen_side.setToolTip("Automatic: about 960x512 for a 16:9 screen, whatever its resolution (in the computer "
+                                    "use test as good as bigger shots, and quicker to read). Up to 1344 is sharper but "
+                                    "slower; bigger isn't possible: it would be shrunk again. Zooms are always sharp.")
+        f.addRow("Its screenshots (longest side, pixels):", self.screen_side)
+        self.coords = self._combo([("auto", "Automatic by model"), ("pixels", "Screenshot pixels"),
+                                   ("normalized", "0-1000 grid (Qwen vision models)")], s.coord_mode)
+        f.addRow("Click coordinates:", self.coords)
+        self.after = QCheckBox("Take a screenshot after every click or keypress so it can check its work")
+        self.after.setChecked(s.screenshot_after_action)
+        self.grid = QCheckBox("Draw a coordinate grid on screenshots (helps weaker models aim)")
+        self.grid.setChecked(s.grid_overlay)
+        self.minimize = QCheckBox("Minimize this window while it uses the screen this window is on")
+        self.minimize.setChecked(s.extra.get("minimize_during_control", True))
+        self.text_tools = QCheckBox("Let it click words it reads on the screen, and number things on screenshots "
+                                    "(Windows' own text reading)")
+        self.text_tools.setChecked(s.text_tools)
+        self.marks = QCheckBox("Number the buttons and words on every screenshot (else only when it asks; a "
+                               "little slower)")
+        self.marks.setChecked(s.screen_marks)
+        self.browser_tools = QCheckBox("Let it use a browser of its own for websites (Edge, with its own profile)")
+        self.browser_tools.setChecked(s.browser_tools)
+        self.watch = QCheckBox("Let it use watch mode for games and moving things: a look about once a second "
+                               "and short commands, instead of a tool call per action")
+        self.watch.setChecked(s.watch_tool)
+        for w in (self.after, self.grid, self.minimize, self.text_tools, self.marks, self.browser_tools, self.watch):
+            w.toggled.connect(self._save)
+            f.addRow(w)
+        self.watch_size = self._combo([("small", "Small (fastest)"), ("normal", "Normal"),
+                                       ("sharp", "Sharp (slowest)")], s.watch_size)
+        self.watch_size.setToolTip("Small reads in about half the time of Normal, but small things are harder to hit.")
+        f.addRow("Watch mode screenshots:", self.watch_size)
+        self.watch_frames = self._combo([(1, "1 (newest only)"), (2, "2, half a second apart"),
+                                         (3, "3, half a second apart")], s.watch_frames)
+        self.watch_frames.setToolTip("More frames show it what is moving, but each one takes as long to read as "
+                                     "a screenshot.")
+        f.addRow("Watch mode frames per look:", self.watch_frames)
+        self.watch_secs = self._spin(s.watch_max_seconds, 10, 3600)
+        self.watch_secs.setSuffix(" s")
+        f.addRow("Longest watch mode run:", self.watch_secs)
+        self.watch_model = self._combo([("chat", "The chat's model"),
+                                        ("eyes", f"Qwen3.5 4B on its own GPU (faster looks; {eyes.DOWNLOAD_GB:.1f} GB "
+                                                 "download)")], s.watch_model)
+        self.watch_model.setToolTip("A small vision model just for watch mode, on the GPU the chat's model doesn't use "
+                                    "(with a 5080 and a 3080 Ti: the 3080 Ti, about 5 GB of its memory). It starts "
+                                    "the first time watch mode runs and stops when this app closes.")
+        self.watch_model.currentIndexChanged.connect(self._watch_model_state)
+        f.addRow("Watch mode looks with:", self.watch_model)
+        row = QHBoxLayout()
+        self.eyes_btn = QPushButton("Get it ready")
+        self.eyes_btn.setToolTip("Downloads it if it isn't on this PC yet (it resumes if stopped), then starts it.")
+        self.eyes_btn.clicked.connect(self._eyes_ready)
+        self.eyes_info = muted("")
+        row.addWidget(self.eyes_btn)
+        row.addWidget(self.eyes_info, 1)
+        f.addRow(row)
+        self._eyes_job: dict | None = None
+        self._watch_model_state()
+        row = QHBoxLayout()
+        b = QPushButton("Run the computer use test...")
+        b.setToolTip("Small timed tasks it does with your mouse and keyboard on the screen picked above, to see "
+                     "what works and what's slow. Results go to the data\\bench folder.")
+        b.clicked.connect(self.win.run_computer_test)
+        row.addWidget(b)
+        row.addStretch(1)
+        f.addRow(row)
         lay.addWidget(g)
 
         g = QGroupBox("GitHub")
@@ -2937,6 +3414,58 @@ class SettingsPage(QWidget):
         self.adv.setVisible(on)
         self.adv_btn.setText(("▾" if on else "▸") + self.adv_btn.text()[1:])
 
+    def _watch_model_state(self):
+        on = self.watch_model.currentData() == "eyes"
+        self.eyes_btn.setVisible(on)
+        self.eyes_info.setVisible(on)
+        if not on or self._eyes_job is not None:
+            return
+
+        def done(got, _err):
+            if self._eyes_job is not None or got is None:
+                return
+            if eyes.EYES.proc.running:
+                self.eyes_info.setText(f"Running on the {eyes.EYES.gpu_name or 'GPU'}.")
+            elif got[2]:
+                self.eyes_info.setText("Not on this PC yet: press Get it ready to download it.")
+            else:
+                self.eyes_info.setText("Downloaded. It starts the first time watch mode runs (or press Get it ready).")
+
+        in_background(lambda: eyes.files(self.s), done)
+
+    def _eyes_ready(self):
+        st = self._eyes_job
+        if st is not None:          # the button stops a running download
+            st["stop"].set()
+            return
+        self._save()
+        st = self._eyes_job = {"msg": "Looking for it...", "stop": threading.Event(), "finished": False, "error": None}
+        s = self.s
+
+        def work():
+            try:
+                _, _, missing = eyes.files(s)
+                if missing:
+                    catalog.download(eyes.PRESET, eyes.download_folder(s), lambda m, f: st.update(msg=m), st["stop"])
+                eyes.EYES.client(s, lambda m: st.update(msg=m), st["stop"])
+                st["msg"] = f"Running on the {eyes.EYES.gpu_name or 'GPU'}: watch mode will look with it."
+            except Exception as e:  # noqa: BLE001 - shown next to the button
+                st["error"] = str(e)
+            st["finished"] = True
+
+        threading.Thread(target=work, daemon=True, name="watch-model").start()
+        self.eyes_btn.setText("Stop")
+
+        def tick():
+            self.eyes_info.setText(st["error"] or st["msg"])
+            if not st["finished"]:
+                QTimer.singleShot(300, tick)
+                return
+            self._eyes_job = None
+            self.eyes_btn.setText("Get it ready")
+
+        tick()
+
     def _combo(self, items, current):
         c = QComboBox()
         for k, label in items:
@@ -2972,6 +3501,7 @@ class SettingsPage(QWidget):
     def _look_changed(self, *_):
         self.s.chat_text_pt = self.text_pt.value()
         self.s.answer_font = self.answer_font.currentData()
+        self.s.step_view = self.step_view.currentData()
         self.s.save()
         self.win.chat.apply_text_size()
 
@@ -2985,6 +3515,18 @@ class SettingsPage(QWidget):
         self._conn_shown = (self.s.base_url, self.s.model)
         self._sync_preset()
         self._show_addons()
+        self._fill_monitors()       # the message box's screen picker changes it too
+
+    def _fill_monitors(self):
+        self.monitor.blockSignals(True)
+        self.monitor.clear()
+        mons = screen_tools.monitors()
+        for i, mon in enumerate(mons, 1):
+            self.monitor.addItem(f"Screen {i}: {screen_tools.monitor_size(mon)}", i)
+        if self.monitor.findData(self.s.monitor) < 0:     # not plugged in now, or the screens can't be read
+            self.monitor.addItem(f"Screen {self.s.monitor}", self.s.monitor)
+        self.monitor.setCurrentIndex(self.monitor.findData(self.s.monitor))
+        self.monitor.blockSignals(False)
 
     def _show_addons(self):
         m = mcp.manager()
@@ -3063,6 +3605,10 @@ class SettingsPage(QWidget):
         s.temperature, s.top_p = self.temp.value(), self.top_p.value()
         s.top_k, s.min_p, s.max_tokens = self.top_k.value(), self.min_p.value(), self.max_tokens.value()
         s.enable_shell = self.shell.isChecked()
+        s.enable_more_files, s.enable_more_shell = self.more_files.isChecked(), self.more_shell.isChecked()
+        s.enable_planning, s.enable_memory = self.planning.isChecked(), self.memory_on.isChecked()
+        if s.enable_memory and s.index_files:
+            memory_mod.start_indexer(s)       # off at start when memory was off
         s.enable_web, s.enable_subagents = self.web.isChecked(), self.sub.isChecked()
         s.enable_code = self.code.isChecked()
         s.enable_unity = self.unity.isChecked()
@@ -3070,6 +3616,16 @@ class SettingsPage(QWidget):
         s.enable_github, s.always_ask_publish = self.github.isChecked(), self.publish.isChecked()
         s.github_token = self.gh_token.text().strip()
         s.screenshot_max_side = self.max_side.value()
+        s.monitor = int(self.monitor.currentData() or 1)
+        s.screen_max_side = self.screen_side.value()
+        s.coord_mode = self.coords.currentData()
+        s.screenshot_after_action, s.grid_overlay = self.after.isChecked(), self.grid.isChecked()
+        s.extra["minimize_during_control"] = self.minimize.isChecked()
+        s.text_tools, s.screen_marks = self.text_tools.isChecked(), self.marks.isChecked()
+        s.browser_tools = self.browser_tools.isChecked()
+        s.watch_tool, s.watch_size = self.watch.isChecked(), self.watch_size.currentData()
+        s.watch_frames, s.watch_max_seconds = int(self.watch_frames.currentData()), self.watch_secs.value()
+        s.watch_model = self.watch_model.currentData()
         s.context_limit, s.keep_images = self.ctx_limit.value(), self.keep_images.value()
         s.max_images = max(self.max_images.value(), s.keep_images)
         s.max_steps, s.max_tool_output = self.max_steps.value(), self.max_out.value()
@@ -3321,7 +3877,9 @@ class MemoryPage(QWidget):
 
     def _tick(self):
         idx = memory_mod.indexer()
-        if not self.s.index_files:
+        if not self.s.enable_memory:
+            self.index_status.setText("Memory is off: turn it on in Settings > What it may use.")
+        elif not self.s.index_files:
             self.index_status.setText("File index is off.")
         elif idx is not None:
             self.index_status.setText(idx.status)
@@ -3506,8 +4064,96 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(300, self.refresh_connection)
         plugins.load()
         mcp.manager().start_background(cwd=self.settings.workspace_path())
-        if self.settings.index_files:
+        if self.settings.index_files and self.settings.enable_memory:
             memory_mod.start_indexer(self.settings)
+
+    def run_computer_test(self):
+        """Settings > Computer use > Run the computer use test: the tasks in cubench.py, with this
+        window minimized, then the results."""
+        from . import cubench
+
+        if self.chat.busy():
+            QMessageBox.information(self, "Computer use test", "Wait for the current task to finish (or press "
+                                    "Stop) first.")
+            return
+        if not self.chat._computer_ready():
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Computer use test")
+        box.setText("The model does 10 small tasks with your mouse and keyboard, in a window that fills screen "
+                    f"{self.settings.monitor}: buttons, a tiny dot, typing, a game-style menu, a slider, a drag, a "
+                    "held key, chopping a tree in a side-view game, a jumping target and a web form. Each task has 150 seconds.\n\nDon't touch the mouse or keyboard "
+                    "meanwhile. To stop: push the mouse into a screen corner.\n\nThe model server has to be "
+                    "running.")
+        compare = QCheckBox("Also run it with the new helpers off (text clicking, marks, browser), to compare")
+        think = QCheckBox("Also run it with thinking on Low, to compare")
+        small = QCheckBox("Also run it with bigger screenshots (1344 wide: sharper, slower to read), to compare")
+        grid = QCheckBox("Also run it with click positions on a 0-1000 grid, to compare")
+        nowatch = QCheckBox("Also run it with watch mode off, to compare")
+        watchsmall = QCheckBox("Also run it with small watch mode screenshots (faster looks, less sharp), to compare")
+        own = QCheckBox("Also run it with watch mode's own model (Qwen3.5 4B on the other GPU), to compare")
+        holder = QWidget()
+        v = QVBoxLayout(holder)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(compare)
+        v.addWidget(think)
+        v.addWidget(small)
+        v.addWidget(grid)
+        v.addWidget(nowatch)
+        v.addWidget(watchsmall)
+        v.addWidget(own)
+        box.layout().addWidget(holder, box.layout().rowCount(), 0, 1, box.layout().columnCount())
+        start = box.addButton("Start", QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() is not start:
+            return
+        variants = ["as set"] + (["helpers off"] if compare.isChecked() else []) + \
+            (["thinking low"] if think.isChecked() else []) + (["big screenshots"] if small.isChecked() else []) + \
+            (["0-1000 grid"] if grid.isChecked() else []) + (["watch mode off"] if nowatch.isChecked() else []) + \
+            (["small watch screenshots"] if watchsmall.isChecked() else []) + \
+            (["watch mode's own model"] if own.isChecked() else [])
+        win = cubench.make_window(int(self.settings.monitor or 1))
+        self._bench_window = win
+        self.showMinimized()
+        win.showFullScreen()
+
+        def work():
+            try:
+                out = cubench.run(self.settings, win, variants)
+            except Exception as e:  # noqa: BLE001 - shown below
+                out = {"text": f"The test stopped with an error: {e}"}
+            QTimer.singleShot(0, self, lambda: self._computer_test_done(out))
+
+        threading.Thread(target=work, daemon=True, name="computer-test").start()
+
+    def _computer_test_done(self, out: dict):
+        win = getattr(self, "_bench_window", None)
+        if win is not None:
+            win.close()
+            win.deleteLater()
+            self._bench_window = None
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        box = QMessageBox(self)
+        box.setWindowTitle("Computer use test")
+        box.setText(out.get("text", ""))
+        if out.get("path"):
+            box.setInformativeText(f"Every step is in {out['path']}")
+            folder = box.addButton("Open the folder", QMessageBox.ActionRole)
+        else:
+            folder = None
+        box.addButton(QMessageBox.Ok)
+        box.exec()
+        if folder is not None and box.clickedButton() is folder:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(out["path"]).parent)))
+
+    def show_settings(self, section: str = ""):
+        self.nav.setCurrentRow(2)
+        if section == "computer":
+            QTimer.singleShot(0, lambda: self.settings_page.area.ensureWidgetVisible(
+                self.settings_page.computer_group, 0, 40))
 
     def toggle_sidebar(self):
         on = not self.sidebar.isVisible()
@@ -3590,6 +4236,7 @@ class MainWindow(QMainWindow):
         self.chat.stop.set()
         _stop_background(self.chat.agent)
         mcp.manager().stop()
+        eyes.EYES.stop()        # watch mode's own model, when this app started it
         super().closeEvent(e)
 
 

@@ -148,6 +148,50 @@ class StrataTest(unittest.TestCase):
         s.ctx_size = 131072
         self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))
 
+    def test_low_ram_mode_goes_to_setup_and_sets_it_up_again(self):
+        s = Settings(ctx_size=262144, use_vision=True)
+        self.assertNotIn("--low-ram", strata.setup_args(self.flash, self.model, s, self.root))   # off: setup decides
+        self.root.mkdir(parents=True)
+        strata.config_path(self.flash, self.root).write_text("{}")
+        strata.python(self.root).parent.mkdir(parents=True)
+        strata.python(self.root).write_text("")
+        strata.mark_setup_done(self.flash, self.model, s, self.root)
+        s.strata_low_ram = True
+        self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))      # it writes experts.bin
+        a = strata.setup_args(self.flash, self.model, s, self.root)
+        self.assertEqual(a[a.index("--low-ram") + 1], "resident")
+        strata.mark_setup_done(self.flash, self.model, s, self.root)
+        self.assertFalse(strata.needs_setup(self.flash, self.model, s, self.root))
+        s.strata_low_ram = False
+        self.assertTrue(strata.needs_setup(self.flash, self.model, s, self.root))      # and back
+        q36 = catalog.BY_KEY["qwen36-35b-strata"]                                      # a fork's setup has no such option
+        self.assertFalse(strata.low_ram(q36, Settings(strata_low_ram=True)))
+
+    def test_a_ram_cap_for_the_low_ram_mode(self):
+        self.root.mkdir(parents=True)
+        cfg_path = strata.config_path(self.flash, self.root)
+        args = lambda: json.loads(cfg_path.read_text(encoding="utf-8"))["args"]  # noqa: E731
+        env = lambda: json.loads(cfg_path.read_text(encoding="utf-8")).get("env", {})  # noqa: E731
+        cfg_path.write_text(json.dumps({"args": ["--serve", "--resident-experts"]}), encoding="utf-8")   # setup's
+        s = Settings(strata_low_ram=True, strata_ram_gib=32)
+        strata.serve_args(self.flash, s, self.root)
+        self.assertEqual(args()[args().index("--resident-budget-gib") + 1], "32")
+        self.assertNotIn("--resident-experts", args())                 # the budget is its own variant
+        self.assertEqual(env().get("STRATA_FILE_RELEASE"), "1")        # file pages read past the cap given back
+        s.strata_ram_gib = 28
+        strata.serve_args(self.flash, s, self.root)
+        self.assertEqual(args().count("--resident-budget-gib"), 1)
+        self.assertEqual(args()[args().index("--resident-budget-gib") + 1], "28")
+        s.strata_ram_gib = 0                                            # no cap: setup's variant back
+        strata.serve_args(self.flash, s, self.root)
+        self.assertNotIn("--resident-budget-gib", args())
+        self.assertIn("--resident-experts", args())
+        self.assertNotIn("STRATA_FILE_RELEASE", env())
+        self.assertEqual(env().get("STRATA_PIN_BY_NEED"), "1")
+        cfg_path.write_text(json.dumps({"args": ["--serve"]}), encoding="utf-8")       # normal mode: no cap to add
+        strata.serve_args(self.flash, Settings(strata_low_ram=False, strata_ram_gib=32), self.root)
+        self.assertNotIn("--resident-budget-gib", args())
+
     def test_the_picked_gpu_goes_to_setup(self):
         s = Settings(ctx_size=65536, use_vision=True)
         self.assertNotIn("--gpu", strata.setup_args(self.flash, self.model, s, self.root))   # one GPU: setup picks

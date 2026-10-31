@@ -18,6 +18,8 @@ SAMPLING = [
              dict(temperature=0.7, top_p=0.8, top_k=20, min_p=0.0)),
     ("gpt-oss", dict(temperature=1.0, top_p=1.0, top_k=0, min_p=0.0), None),
     ("gemma", dict(temperature=1.0, top_p=0.95, top_k=64, min_p=0.0), None),
+    # GLM-5.3 / GLM-5.3-Flash (Unsloth's guides, 2026): it always thinks
+    ("glm-5.3", dict(temperature=1.0, top_p=0.95, top_k=0, min_p=0.01), None),
     ("glm", dict(temperature=0.7, top_p=0.95, top_k=40, min_p=0.0), None),
     ("mistral", dict(temperature=0.15, top_p=1.0, top_k=0, min_p=0.0), None),
     ("devstral", dict(temperature=0.15, top_p=1.0, top_k=0, min_p=0.0), None),

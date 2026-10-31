@@ -118,7 +118,7 @@ class RiskTest(unittest.TestCase):
                 if t.describe:
                     self.assertIsInstance(t.describe(args), str, t.name)
                 if t.risk_for:
-                    self.assertIn(t.risk_for(self.ctx, args), ("safe", "edit", "run", "publish"), t.name)
+                    self.assertIn(t.risk_for(self.ctx, args), ("safe", "edit", "run", "control", "publish"), t.name)
         # the lambdas themselves cope with null text
         self.assertIn("0 characters", REGISTRY["write_file"].describe({"path": "a", "content": None}))
 
