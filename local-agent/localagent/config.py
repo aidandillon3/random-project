@@ -109,6 +109,7 @@ class Settings:
     chat_text_pt: int = 11             # size of the chat's text (Ctrl + / Ctrl - / Ctrl 0 in the chat)
     sidebar_open: bool = True          # the chat list on the left (Ctrl+B)
     answer_font: str = "sans"          # sans | serif
+    step_view: str = "pi"              # pi (each step shown: its code or output, click to expand) | folded (one line)
 
     # model server launcher
     engine: str = "auto"               # auto (the mode's recommended one) | llama.cpp | strata (catalog.py)

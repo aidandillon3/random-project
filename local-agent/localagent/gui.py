@@ -525,6 +525,138 @@ class ToolCard(QFrame):
         self.images.addStretch(1)
 
 
+ADDED, REMOVED, PI_LINES = "#8cc28c", "#e08585", 10
+
+
+def _pre(lines: list[tuple[str, str]]) -> str:
+    """(text, colour or "") lines as rich text that keeps spaces and wraps long lines."""
+    rows = []
+    for text, colour in lines:
+        line = _esc(text[:400]) or " "
+        rows.append(f"<span style='color:{colour}'>{line}</span>" if colour else line)
+    return ("<div style=\"white-space:pre-wrap; font-family:Consolas,'Cascadia Mono',monospace\">"
+            + "<br>".join(rows) + "</div>")
+
+
+class PiCard(QFrame):
+    """One step shown the way the pi coding agent shows it: a short header ("$ python a.py", "write a.py",
+    "edit a.py") over the first lines of what it wrote, the diff of an edit or the end of a command's output,
+    with "... N more lines" to click for the rest. The bar on the left: grey running, green done, red failed."""
+
+    def __init__(self, name: str, summary: str, args: dict):
+        super().__init__()
+        self.setObjectName("piTool")
+        self.name, self.args = name, args if isinstance(args, dict) else {}
+        self.lines: list[tuple[str, str]] = []
+        self.tail = False          # a command's output: the last lines show while folded
+        self.open = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 5, 8, 5)
+        lay.setSpacing(2)
+        self.title = QLabel(self._header(summary))
+        self.title.setWordWrap(True)
+        self.title.setTextFormat(Qt.RichText)
+        self.title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.title)
+        self.view = QLabel()
+        self.view.setWordWrap(True)
+        self.view.setTextFormat(Qt.RichText)
+        self.view.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.view)
+        self.more = QToolButton()
+        self.more.setObjectName("flat")
+        self.more.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.more.clicked.connect(self.toggle)
+        lay.addWidget(self.more, 0, Qt.AlignLeft)
+        self.images = QHBoxLayout()
+        lay.addLayout(self.images)
+        self._bar(MUTED)
+        self._set(self._start_lines())
+
+    def _bar(self, colour: str):
+        self.setStyleSheet(f"QFrame#piTool {{ background: {CODE_BG}; border: none; border-left: 3px solid {colour};"
+                           " border-radius: 4px; }")
+
+    def _header(self, summary: str) -> str:
+        a, path = self.args, _esc(str(self.args.get("path", "")))
+        if self.name == "run_command" and a.get("command"):
+            cmd = str(a["command"]).strip()
+            return f"<b>$ {_esc(cmd.splitlines()[0][:300])}</b>" + (" <span style='color:%s'>...</span>" % MUTED
+                                                                     if "\n" in cmd else "")
+        if self.name == "run_python":
+            return "<b>python</b>"
+        if self.name in ("write_file", "edit_file", "multi_edit", "read_file") and path:
+            verb = {"write_file": "write", "edit_file": "edit", "multi_edit": "edit", "read_file": "read"}[self.name]
+            where = ""
+            if self.name == "read_file" and (a.get("offset") or a.get("limit")):
+                start = int(a.get("offset") or 1)
+                where = f":{start}" + (f"-{start + int(a['limit']) - 1}" if a.get("limit") and start > 0 else "")
+            return f"<b>{verb}</b> {path}<span style='color:{MUTED}'>{where}</span>"
+        return f"<b>{_esc(self.name)}</b> <span style='color:{MUTED}'>{_esc(summary[:160])}</span>"
+
+    def _start_lines(self) -> list[tuple[str, str]]:
+        """What shows before the step finishes: the code it writes, the change it makes."""
+        a = self.args
+        if self.name == "write_file":
+            return [(line, "") for line in str(a.get("content", "")).split("\n")]
+        if self.name == "run_python":
+            return [(line, "") for line in str(a.get("code", "")).split("\n")]
+        edits = [a] if self.name == "edit_file" else a.get("edits") if self.name == "multi_edit" else None
+        if isinstance(edits, list):
+            out = []
+            for e in edits:
+                if not isinstance(e, dict):
+                    continue
+                if out:
+                    out.append(("...", MUTED))
+                out += [("- " + line, REMOVED) for line in str(e.get("old_text", "")).split("\n")]
+                out += [("+ " + line, ADDED) for line in str(e.get("new_text", "")).split("\n")]
+            return out
+        return []
+
+    def _set(self, lines: list[tuple[str, str]], tail: bool = False):
+        while lines and not lines[-1][0].strip():
+            lines = lines[:-1]
+        self.lines, self.tail = lines, tail
+        self._show()
+
+    def _show(self):
+        n, hidden = len(self.lines), max(0, len(self.lines) - PI_LINES)
+        shown = self.lines[:500] if self.open else self.lines[-PI_LINES:] if self.tail else self.lines[:PI_LINES]
+        self.view.setText(_pre(shown) if shown else "")
+        self.view.setVisible(bool(shown))
+        self.more.setVisible(hidden > 0)
+        if self.open:
+            self.more.setText("▴ Show less" + (f" (first 500 of {n} lines)" if n > 500 else ""))
+        else:
+            self.more.setText(f"... {hidden} {'earlier' if self.tail else 'more'} line{'s' if hidden != 1 else ''}"
+                              " (click to show)")
+
+    def toggle(self):
+        self.open = not self.open
+        self._show()
+
+    def done(self, result):
+        self._bar(ADDED if result.ok else REMOVED)
+        text = (result.text or "").rstrip()
+        if not result.ok:
+            self._set([(line, REMOVED) for line in text.split("\n")])
+        elif self.name == "read_file":
+            n = text.count("\n") + 1 if text else 0
+            self._set([(f"{n} line{'s' if n != 1 else ''}", MUTED)])
+        elif self.name in ("write_file", "edit_file", "multi_edit") and self.lines:
+            pass                                    # the code or the diff says it; "Wrote 12 lines" adds nothing
+        elif self.name in ("run_command", "run_python"):
+            out = [(line, "") for line in text.split("\n")] if text else [("(no output)", MUTED)]
+            self._set(self._start_lines() + [("", "")] + out if self.name == "run_python" and self.lines else out,
+                      tail=True)
+        else:
+            self._set([(line, "") for line in text.split("\n")] if text else [])
+        for p in result.images[:3]:
+            self.images.addWidget(thumb(p, 260))
+        self.images.addStretch(1)
+
+
 # what a run of steps did, for the line it folds into: the tools by kind, in the order they first ran
 STEP_KINDS = {"web_search": "searched the web", "web_fetch": "read web pages", "download_file": "downloaded files",
               "read_file": "read files", "list_dir": "looked at folders", "search_text": "searched files",
@@ -536,10 +668,12 @@ STEP_KINDS = {"web_search": "searched the web", "web_fetch": "read web pages", "
 
 class StepGroup(QFrame):
     """The steps between two answers (tool calls and the thinking around them) folded into one line,
-    "▸ Searched the web, read web pages · 6 steps", as the Claude app does. Click it for each step."""
+    "▸ Searched the web, read web pages · 6 steps", as the Claude app does. Click it for each step.
+    flat (Settings.step_view "pi"): no line, every step shows in the chat as pi shows it."""
 
-    def __init__(self):
+    def __init__(self, flat: bool = False):
         super().__init__()
+        self.flat = flat
         self.setObjectName("steps")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 0, 4, 0)
@@ -551,9 +685,10 @@ class StepGroup(QFrame):
         lay.addWidget(self.head)
         self.body = QWidget()
         self.rows = QVBoxLayout(self.body)
-        self.rows.setContentsMargins(14, 0, 0, 0)
-        self.rows.setSpacing(4)
-        self.body.setVisible(False)
+        self.rows.setContentsMargins(0 if flat else 14, 0, 0, 0)
+        self.rows.setSpacing(6 if flat else 4)
+        self.body.setVisible(flat)
+        self.head.setVisible(not flat)
         lay.addWidget(self.body)
         self.kinds: list[str] = []
         self.steps = self.failed = self.running = 0
@@ -563,7 +698,7 @@ class StepGroup(QFrame):
     def add(self, w: QWidget):
         self.rows.addWidget(w)
 
-    def add_tool(self, card: "ToolCard", name: str, summary: str):
+    def add_tool(self, card: QWidget, name: str, summary: str):
         kind = STEP_KINDS.get(name, "used tools")
         if kind not in self.kinds:
             self.kinds.append(kind)
@@ -1088,9 +1223,15 @@ class ChatPage(QWidget):
         self.welcome.setVisible(False)
         self.feed.insertWidget(self.feed.count() - 1, w)
 
+    def pi_view(self) -> bool:
+        return getattr(self.s, "step_view", "pi") != "folded"
+
+    def _card(self, name: str, summary: str, args) -> QWidget:
+        return (PiCard if self.pi_view() else ToolCard)(name, summary, args if isinstance(args, dict) else {})
+
     def _steps(self) -> StepGroup:
         if self.group is None:
-            self.group = StepGroup()
+            self.group = StepGroup(flat=self.pi_view())
             self._add(self.group)
         return self.group
 
@@ -1353,6 +1494,14 @@ class ChatPage(QWidget):
     def _render_history(self):
         from .tools import ToolResult
 
+        args = {}                  # call id: its arguments, so a saved step shows its code as it did live
+        for m in self.agent.messages:
+            for call in m.get("tool_calls") or []:
+                f = call.get("function") or {}
+                try:
+                    args[call.get("id")] = json.loads(f.get("arguments") or "{}")
+                except (TypeError, ValueError):
+                    args[call.get("id")] = {}
         for m in self.agent.messages:
             c = m.get("content")
             text = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or [] if p.get("type") == "text")
@@ -1367,7 +1516,7 @@ class ChatPage(QWidget):
                 blk.finish()
                 self._add(blk)
             elif m["role"] == "tool" and m.get("name") != "todo_write":
-                card = ToolCard(m.get("name", "tool"), "", {})
+                card = self._card(m.get("name", "tool"), "", args.get(m.get("tool_call_id")) or {})
                 card.done(ToolResult(text))
                 steps = self._steps()
                 steps.add_tool(card, m.get("name", "tool"), "")
@@ -1420,7 +1569,7 @@ class ChatPage(QWidget):
     def _on_tool_start(self, call_id, name, args, summary):
         if name == "todo_write":       # the plan already shows on the right
             return
-        card = ToolCard(name, summary, args)
+        card = self._card(name, summary, args)
         self.cards[call_id] = (card, self._steps())
         self.group.add_tool(card, name, summary)
 
@@ -2992,8 +3141,16 @@ class SettingsPage(QWidget):
         self.answer_font.addItem("Serif (Georgia)", "serif")
         self.answer_font.setCurrentIndex(max(0, self.answer_font.findData(s.answer_font)))
         f.addRow("Answers in:", self.answer_font)
+        self.step_view = QComboBox()
+        self.step_view.addItem("Each shown, like pi (code, output, click for more)", "pi")
+        self.step_view.addItem("Folded into one line", "folded")
+        self.step_view.setCurrentIndex(max(0, self.step_view.findData(getattr(s, "step_view", "pi"))))
+        self.step_view.setToolTip("How the steps between answers show (files it writes, commands it runs). "
+                                  "Applies to the next steps and to chats opened after.")
+        f.addRow("Steps:", self.step_view)
         self.text_pt.valueChanged.connect(self._look_changed)
         self.answer_font.currentIndexChanged.connect(self._look_changed)
+        self.step_view.currentIndexChanged.connect(self._look_changed)
         lay.addWidget(g)
 
         g = QGroupBox("What it may use")
@@ -3344,6 +3501,7 @@ class SettingsPage(QWidget):
     def _look_changed(self, *_):
         self.s.chat_text_pt = self.text_pt.value()
         self.s.answer_font = self.answer_font.currentData()
+        self.s.step_view = self.step_view.currentData()
         self.s.save()
         self.win.chat.apply_text_size()
 

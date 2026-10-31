@@ -42,6 +42,10 @@ It's laid out like the Claude app:
 - **Text size**: Ctrl + bigger, Ctrl - smaller, Ctrl 0 back to normal, or Ctrl + mouse wheel over the
   chat. Settings > Look has the same, and switches answers between sans serif
   (the default) and serif.
+- **Steps** show the way pi shows them: "write a.py" over the first 10 lines of the code, "$ python a.py"
+  over the end of its output, an edit as a red/green diff, with "... N more lines" to click for the rest.
+  The bar on the left turns green when a step worked, red when it failed. Settings > Look > Steps can
+  fold them into one line instead.
 - **Plan & context** (top right) opens the plan for bigger tasks, how full the context is and the
   work folder. It opens by itself when a plan comes in.
 - Each answer has **Copy** under it.

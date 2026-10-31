@@ -975,13 +975,64 @@ class GuiTest(unittest.TestCase):
         page.stop()
         w.close()
 
+    def test_steps_show_like_pi(self):
+        from localagent.config import Settings
+        from localagent.tools import ToolResult
+
+        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1"))
+        chat = w.chat
+        self.assertTrue(chat.pi_view())                                          # the default
+        code = "\n".join(f"print({i})" for i in range(25))
+        chat._on_tool_start("1", "write_file", {"path": "a.py", "content": code}, "Write a.py")
+        group = chat.group
+        self.assertTrue(group.body.isVisibleTo(group))                           # no folded line
+        self.assertFalse(group.head.isVisibleTo(group))
+        card = group.rows.itemAt(0).widget()
+        self.assertIsInstance(card, self.gui.PiCard)
+        self.assertIn("<b>write</b> a.py", card.title.text())
+        self.assertIn("print(9)", card.view.text())
+        self.assertNotIn("print(10)", card.view.text())                          # first 10 lines
+        self.assertEqual(card.more.text(), "... 15 more lines (click to show)")
+        card.toggle()
+        self.assertIn("print(24)", card.view.text())
+        chat._on_tool_end("1", "write_file", ToolResult("Wrote a.py"))
+        chat._on_tool_start("2", "run_command", {"command": "python a.py"}, "Run python a.py")
+        run = group.rows.itemAt(1).widget()
+        self.assertIn("$ python a.py", run.title.text())
+        chat._on_tool_end("2", "run_command", ToolResult("\n".join(str(i) for i in range(25))))
+        self.assertIn("24", run.view.text())                                     # the end of the output
+        self.assertNotIn(">14<", run.view.text())
+        self.assertIn("15 earlier lines", run.more.text())
+        chat._on_tool_start("3", "edit_file", {"path": "a.py", "old_text": "print(1)", "new_text": "print(2)"}, "")
+        edit = group.rows.itemAt(2).widget()
+        self.assertIn("- print(1)", edit.view.text())
+        self.assertIn("+ print(2)", edit.view.text())
+        chat._on_tool_end("3", "edit_file", ToolResult("No match", ok=False))
+        self.assertIn("No match", edit.view.text())
+        # a saved chat shows its steps' code too
+        chat.new_chat()
+        chat._ensure_agent()
+        chat.agent.messages = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "a", "type": "function", "function": {"name": "write_file",
+                                                             "arguments": '{"path": "b.py", "content": "x = 1"}'}}]},
+            {"role": "tool", "name": "write_file", "tool_call_id": "a", "content": "Wrote b.py"},
+            {"role": "assistant", "content": "Done."}]
+        chat._render_history()
+        items = [chat.feed.itemAt(i).widget() for i in range(chat.feed.count() - 1)
+                 if chat.feed.itemAt(i).widget() is not chat.welcome]
+        saved = items[1].rows.itemAt(0).widget()
+        self.assertIn("x = 1", saved.view.text())
+        w.close()
+
     def test_steps_fold_into_one_line(self):
         from types import SimpleNamespace
 
         from localagent.config import Settings
         from localagent.tools import ToolResult
 
-        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1"))
+        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1", step_view="folded"))
         chat = w.chat
         feed = lambda: [chat.feed.itemAt(i).widget() for i in range(chat.feed.count() - 1)  # noqa: E731
                         if chat.feed.itemAt(i).widget() is not chat.welcome]
