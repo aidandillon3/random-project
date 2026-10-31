@@ -42,6 +42,16 @@ class PiRouterTest(unittest.TestCase):
         ini = pi_router.write_ini(list(items.items()), tmp / "p.ini").read_text()
         self.assertIn("[glm53-flash-iq2xxs]\nmodel = ", ini)
 
+    def test_each_model_once_per_gpu_and_on_both(self):
+        from localagent.gguf import Gpu
+        gpus = [Gpu(1, "GPU-3080", "NVIDIA GeForce RTX 3080 Ti", 12.0, 2.5, 8.6, True),
+                Gpu(0, "GPU-5080", "NVIDIA GeForce RTX 5080", 16.0, 15.0, 12.0, False)]
+        items = pi_router.per_gpu([("swift-27b", ["ctx-size = 49152"])], gpus)
+        self.assertEqual(items, [("swift-27b-5080", ["ctx-size = 49152", "device = CUDA0"]),
+                                 ("swift-27b-3080ti", ["ctx-size = 49152", "device = CUDA1"]),
+                                 ("swift-27b-both", ["ctx-size = 49152", "device = CUDA0,CUDA1"])])
+        self.assertEqual(pi_router.per_gpu([("m", [])], gpus[:1]), [("m", [])])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import catalog, eyes, launcher
 from .config import DATA_DIR, Settings
-from .gguf import gpu_env, list_gpus
+from .gguf import list_gpus, strongest
 
 PORT = 8077
 # llama.cpp's preset files name options by their long names
@@ -82,6 +82,22 @@ def entries(settings: Settings, exe: Path, help_text: str) -> list[tuple[str, li
     return out
 
 
+def _label(gpu) -> str:
+    """RTX 5080 -> 5080, RTX 3080 Ti -> 3080ti."""
+    m = re.search(r"(\d{3,4})\s*(Ti|Super)?\b", gpu.name, re.I)
+    return (m.group(1) + (m.group(2) or "")).lower() if m else f"gpu{gpu.index}"
+
+
+def per_gpu(items: list[tuple[str, list[str]]], gpus) -> list[tuple[str, list[str]]]:
+    """Each model once per GPU and once on all of them (pi has no GPU picker, so the name picks it):
+    swift-27b-5080, swift-27b-3080ti, swift-27b-both. One GPU: the names as they are."""
+    if len(gpus) < 2:
+        return items
+    choices = [(_label(g), [g]) for g in strongest(gpus)] + [("both" if len(gpus) == 2 else "all", strongest(gpus))]
+    return [(f"{name}-{label}", [*lines, "device = " + ",".join(f"CUDA{g.index}" for g in use)])
+            for name, lines in items for label, use in choices]
+
+
 def write_ini(items: list[tuple[str, list[str]]], path: Path) -> Path:
     lines = ["; written by pi-local.bat from the Local Agent app's models; rewritten each start", ""]
     for name, opts in items:
@@ -105,7 +121,7 @@ def main(argv: list[str]) -> int:
     if pi is None:
         print("pi isn't installed. Install it with: npm install -g @earendil-works/pi-coding-agent")
         return 1
-    items = entries(settings, exe, help_text)
+    items = per_gpu(entries(settings, exe, help_text), list_gpus())
     if not items:
         print("None of the app's llama.cpp models is on this PC yet (Strata modes run only in the app).")
         return 1
@@ -118,7 +134,8 @@ def main(argv: list[str]) -> int:
         for pid in launcher.port_owners(port):      # a router left from an earlier run
             launcher.kill_tree(pid)
         time.sleep(1)
-    env = {**os.environ, **gpu_env(settings.gpus, list_gpus())}
+    env = {**os.environ, "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}     # CUDA0/1 = nvidia-smi's numbers
+    env.pop("CUDA_VISIBLE_DEVICES", None)
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     log = open(DATA_DIR / "pi-router.log", "w", encoding="utf-8", errors="replace")
     router = subprocess.Popen([str(exe), "--models-preset", str(ini), "--models-max", "1",
@@ -126,7 +143,7 @@ def main(argv: list[str]) -> int:
                               cwd=str(exe.parent), env=env, stdout=log, stderr=subprocess.STDOUT,
                               creationflags=flags)
     print("Models for pi: " + ", ".join(n for n, _ in items))
-    print("Pick one with /model in pi; it loads when picked (the first message waits for it). "
+    print("Pick one with /model in pi (the end of the name is the GPU); it loads when picked (the first message waits for it). "
           f"Server log: {DATA_DIR / 'pi-router.log'}")
     try:
         end = time.time() + 30
