@@ -15,6 +15,7 @@ from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+import pytest
 
 os.environ.setdefault("LOCALAGENT_DATA", tempfile.mkdtemp())
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -783,9 +784,8 @@ class ToolSetTest(Base):
         self.assertIn("background=true", prompt)
         self.assertIn("can't see or use the user's screen, mouse or keyboard", prompt)
         # what other agents (Qwen Code, OpenHands) tell their models, for the usual small-model slips
-        for rule in ("only asks a question", "Don't guess file contents", "no copies like", "at most 2 rounds of visual tweaks",
-                     "If the\n  same thing fails twice", "Report honestly", "empty or odd result",
-                     "don't wait for input", "Keep going until the task is done"):
+        for rule in ("only asks a question", "No copies like", "at most 2 rounds of visual tweaks",
+                     "same thing fails twice", "Be honest", "don't wait for input", "Stay inside what the user asked"):
             self.assertIn(rule, prompt)
 
     def test_it_looks_up_unfamiliar_apis_before_coding(self):
@@ -793,11 +793,11 @@ class ToolSetTest(Base):
         prompt = prompts.build_system_prompt(s, self.ws, enabled_tools(s, 0, self.ws), "bash", False)
         self.assertIn("web_search its\n  documentation", prompt)
         self.assertIn("Stormworks", prompt)
-        self.assertIn("stand-ins for that program's functions", prompt)
+        self.assertIn("Code that only runs inside another program", prompt)
         s.enable_web = False                 # no web tools: no rule that names them
         prompt = prompts.build_system_prompt(s, self.ws, enabled_tools(s, 0, self.ws), "bash", False)
         self.assertNotIn("web_search", prompt)
-        self.assertIn("stand-ins for that program's functions", prompt)
+        self.assertIn("Code that only runs inside another program", prompt)
 
     def test_unity_and_github_only_when_likely_used(self):
         s = Settings()
@@ -838,12 +838,13 @@ class ToolSetTest(Base):
 
 # ---------------------------------------------------------------------- settings and the terminal
 class SettingsTest(unittest.TestCase):
+    @pytest.mark.lean
     def test_a_broken_settings_file_gives_defaults(self):
         d = Path(tempfile.mkdtemp())
         for raw in ["null", "[]", '"x"', '{"max_tokens": "8192", "keep_images": null, "enable_web": 0}']:
             (d / "s.json").write_text(raw)
             s = Settings.load(d / "s.json")
-            self.assertEqual((s.max_tokens, s.keep_images, s.enable_web), (32768, 2, True))
+            self.assertEqual((s.max_tokens, s.keep_images, s.enable_web), (32768, 2, False))
         (d / "s.json").write_text(json.dumps({"keep_images": 3, "settings_version": 2}))
         self.assertEqual(Settings.load(d / "s.json").keep_images, 2)     # the old default moves on
         (d / "s.json").write_text(json.dumps({"keep_images": 3, "settings_version": 3}))
@@ -887,3 +888,32 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeanDefaultTest(unittest.TestCase):
+    """Like pi: four tools and a short prompt unless more is turned on (2026-10-31)."""
+
+    @pytest.mark.lean
+    def test_four_tools_and_a_short_prompt_by_default(self):
+        s = Settings()
+        tools = enabled_tools(s, 0, Path(tempfile.mkdtemp()))
+        self.assertEqual(sorted(t.name for t in tools), ["edit_file", "read_file", "run_command", "write_file"])
+        run = next(t for t in tools if t.name == "run_command")
+        self.assertNotIn("background", run.params)              # no check_process to read it with
+        prompt = prompts.build_system_prompt(s, Path("."), tools, "powershell", False)
+        for gone in ("todo_write", "ask_user", "remember", "web_search", "start_coding_task", "Unity"):
+            self.assertNotIn(gone, prompt)
+        self.assertLess(len(prompt), 2600)
+        on = enabled_tools(Settings(enable_more_files=True, enable_memory=True), 0, Path("."))
+        self.assertTrue({"search_text", "list_dir", "remember", "recall"} <= {t.name for t in on})
+
+    @pytest.mark.lean
+    def test_an_old_settings_file_moves_to_the_lean_default(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "s.json").write_text(json.dumps({"enable_web": True, "enable_code": True, "thinking": "high",
+                                              "settings_version": 6}))
+        s = Settings.load(d / "s.json")
+        self.assertEqual((s.enable_web, s.enable_code, s.thinking), (False, False, "off"))
+        (d / "s.json").write_text(json.dumps({"enable_web": True, "thinking": "high", "settings_version": 7}))
+        s = Settings.load(d / "s.json")
+        self.assertEqual((s.enable_web, s.thinking), (True, "high"))     # turned on since: kept

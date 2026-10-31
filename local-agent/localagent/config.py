@@ -58,13 +58,18 @@ class Settings:
     always_ask_publish: bool = True    # git push / pull requests ask even in full auto
     workspace: str = ""
 
-    # tool groups
+    # tool groups. By default only pi's four (read_file, write_file, edit_file, run_command), like pi: a short
+    # prompt and few tools are faster and keep a local model on track; the rest are turned on when needed
     enable_shell: bool = True
-    enable_web: bool = True
-    enable_subagents: bool = True
-    enable_github: bool = True
-    enable_code: bool = True           # coding mode: own git copy, test loop, code map
-    enable_unity: bool = True          # work in the open Unity editor (needs the bridge script in the project)
+    enable_more_files: bool = False    # list_dir, find_files, search_text, multi_edit, move/copy/delete
+    enable_more_shell: bool = False    # background commands (check_process, stop_process) and run_python
+    enable_planning: bool = False      # todo_write, ask_user, wait
+    enable_memory: bool = False        # remember/recall/forget, notes attached to requests, auto-save, file index
+    enable_web: bool = False
+    enable_subagents: bool = False
+    enable_github: bool = False
+    enable_code: bool = False          # coding mode: own git copy, test loop, code map
+    enable_unity: bool = False         # work in the open Unity editor (needs the bridge script in the project)
     unity_project: str = ""            # which Unity project, when several are open
     github_token: str = ""             # only kept in data/settings.json on this PC; empty = use the gh CLI login
 
@@ -129,7 +134,7 @@ class Settings:
     strata_ram_gib: int = 0            # with it: the most GiB of experts kept in RAM (--resident-budget-gib), 0 = no cap
 
     extra: dict = field(default_factory=dict)
-    settings_version: int = 6          # bumped when an old saved default needs moving on load
+    settings_version: int = 7          # bumped when an old saved default needs moving on load
 
     # ---------------------------------------------------------------
     def workspace_path(self) -> Path:
@@ -163,6 +168,10 @@ class Settings:
             s.max_steps = 0           # the old default; a long job paused and waited for "continue"
         if version < 6:
             s.screen_max_side = 0     # tried at 1920 and 2560 the night it came: both too big for the vision part
+        if version < 7:               # the pi-like default (2026-10-31): extra tools off, no thinking
+            for name in ("enable_web", "enable_subagents", "enable_github", "enable_code", "enable_unity"):
+                setattr(s, name, False)
+            s.thinking = "off"
         s.settings_version = cls.settings_version   # saved as moved on, so a choice made later sticks
         return s
 

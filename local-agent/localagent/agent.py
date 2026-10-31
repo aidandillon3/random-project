@@ -329,7 +329,8 @@ class Agent:
         else:
             self.ui.notice(f"Paused after {limit} steps (Settings > 'Steps before it checks in'; 0 = no limit). "
                            "Say 'continue' to keep going.")
-        if final and tool_rounds >= 3 and self.depth == 0 and self.settings.auto_memory and not self.stop.is_set():
+        if final and tool_rounds >= 3 and self.depth == 0 and self.settings.auto_memory and self.settings.enable_memory \
+                and not self.stop.is_set():
             self._save_memories(text, final)
         return final
 
@@ -392,14 +393,14 @@ class Agent:
     def _context_note(self) -> str:
         """What used to be in the system prompt but differs per chat (date, work folder...). It goes
         in the first message instead, so the system prompt stays the same and stays cached."""
-        return prompts.build_context(self.workspace)
+        return prompts.build_context(self.workspace, memory=getattr(self.settings, "enable_memory", False))
 
     # ------------------------------------------------------------------ long-term memory
     def _recalled(self, text: str) -> tuple[str, list[int]]:
         """Saved notes that match this request, attached to it so the model sees them without
         having to search. Only a few, only good matches, and none the chat already shows (the
         ones attached to earlier messages that are still in it), to keep the context lean."""
-        if self.depth > 0 or not self.settings.auto_recall or not text.strip():
+        if self.depth > 0 or not (self.settings.auto_recall and self.settings.enable_memory) or not text.strip():
             return "", []
         shown = {i for m in self.messages for i in m.get("_notes", ())}
         try:

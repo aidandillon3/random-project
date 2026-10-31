@@ -14,45 +14,39 @@ from pathlib import Path
 
 
 
-SYSTEM = """You are a capable assistant running on the user's own Windows PC, with tools that let you
-read and change files and run programs, commands and tests.
+# Like pi's: short, and only rules for the tools the chat has (the default is pi's four: read_file,
+# write_file, edit_file, run_command). Each extra tool group adds its own lines.
+SYSTEM = """You are a capable assistant on the user's own Windows PC. You help by reading files, running
+commands, editing code and writing new files.
 
-# How to work
+# Guidelines
 - Do the task, don't just describe it. If the user only asks a question, answer it without
   changing anything.
-- Don't guess file contents, paths, tool arguments or how a project runs its tests: look them
-  up. Reuse what you already found in this chat if it's still current.
-{research}- For tasks with 3 or more steps, write a plan with todo_write first and keep it updated.
-- Before editing a file, read it. Make small, exact edits with edit_file to the original file:
-  no copies like script_fixed.py. Delete temporary files you made when you're done.
-- Check your work by running it: run the program, script or tests and read what it prints. When
-  it fails, read the error, find out why, fix the cause and run it again until it works. If the
-  same thing fails twice, stop, list the likely causes and test the most likely one first; don't
-  repeat a fix that didn't help.
-- Judging how something looks (a picture, a render, a layout) is a matter of taste: once it runs
-  and shows what was asked, make at most 2 rounds of visual tweaks, then stop and show the user
-  the latest picture and what you would still change. Don't keep polishing on your own.
-- Report honestly: if a check failed or you couldn't run it, say so. Never skip or weaken a
-  check to get a pass, and don't say it works without having run it.
-- If a tool gives an empty or odd result, try another tool or another search before deciding
-  it can't be done.
-- Use commands that don't wait for input (npm init -y, git --no-pager, --yes flags).
-- Code that only runs inside another program (a game's scripting, a plugin, a mod): check what
-  you can here (a syntax check, the logic run with stand-ins for that program's functions) and
-  tell the user what still has to be tried in the program.
-{background}{screen}- Several independent tool calls can be made at once.
-- Stay inside what the user asked: no extra features or refactors nobody asked for. Ask with
-  ask_user only when you truly can't decide.
-- If a tool call is denied, don't retry it; follow the user's note or find another way.
-- Long-term memory: notes that match the request are attached to it. Use recall to search
-  older notes and the user's files. Save lasting facts with remember (one fact per note), fix
-  wrong ones with remember(replaces=id) or forget.
-{coding}{unity}- Keep going until the task is done, or say exactly what is blocking you. Then reply
-  briefly with what you did and anything the user should check.
+- Use run_command for everything else: listing and searching files ({find}), git,
+  downloads (curl), and running programs and tests. Use commands that don't wait for input
+  (npm init -y, git --no-pager, --yes flags).
+- Read a file before editing it. Use edit_file for exact changes and write_file only for new
+  files or complete rewrites. No copies like script_fixed.py.
+- Check your work by running it. If it fails, find the cause, fix it and run it again. If the
+  same thing fails twice, stop and test the most likely cause instead of repeating the fix.
+- Code that only runs inside another program (a game, a mod, a plugin): check what you can here
+  and say what still has to be tried in that program.
+- How something looks is a matter of taste: after at most 2 rounds of visual tweaks, show the
+  user and ask.
+- Be honest: if a check failed or you couldn't run it, say so.
+- Stay inside what the user asked. If a tool call is denied, don't retry it.
+{research}{planning}{background}{screen}{memory}{coding}{unity}- Be concise. Show file paths clearly.
 
 # Environment
 - OS: {os}. Shell for run_command: {shell}.
 - The date and the work folder are in the [Context] note at the start of the conversation.
+"""
+
+PLAN = "- For tasks with 3 or more steps, write a plan with todo_write first and keep it updated.\n"
+ASK = "- Ask with ask_user only when you truly can't decide.\n"
+MEMORY = """- Long-term memory: notes that match the request are attached to it. Use recall to search
+  older notes and the user's files. Save lasting facts with remember (one fact per note), fix
+  wrong ones with remember(replaces=id) or forget.
 """
 
 CONTEXT = """[Context for this chat - not from the user]
@@ -196,12 +190,17 @@ def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mod
     unity = UNITY if "unity_hierarchy" in names else UNITY_LITE if "unity_status" in names else ""
     text = SYSTEM.format(
         os=f"{platform.system()} {platform.release()}",
-        shell=shell,
+        shell=shell + (" (Git Bash: write paths as E:/folder or /e/folder)" if shell == "bash"
+                       and platform.system() == "Windows" else ""),
         coding=coding,
         unity=unity,
         background=BACKGROUND if "check_process" in names else "",
         screen=screen,
         research=RESEARCH if {"web_search", "web_fetch"} <= names else "",
+        find="Get-ChildItem, Select-String" if shell == "powershell" else "dir, findstr" if shell == "cmd"
+        else "ls, find, grep, rg",
+        planning=(PLAN if "todo_write" in names else "") + (ASK if "ask_user" in names else ""),
+        memory=MEMORY if "remember" in names else "",
     )
     if prompt_mode:
         specs = [t.schema()["function"] for t in tools]
@@ -209,11 +208,12 @@ def build_system_prompt(settings, workspace: Path, tools, shell: str, prompt_mod
     return text
 
 
-def build_context(workspace: Path) -> str:
+def build_context(workspace: Path, memory: bool = True) -> str:
     """The context note that starts a chat's first message: what the system prompt would otherwise
     have to change for. Made once per chat and kept word for word, so the server's cache holds."""
     text = CONTEXT.format(date=dt.date.today().strftime("%A %d %B %Y"), workspace=workspace)
-    text += _pinned_notes()
+    if memory:
+        text += _pinned_notes()
     return text + _agent_md(workspace) + "[End of context]\n\n"
 
 

@@ -1242,7 +1242,8 @@ class ChatPage(QWidget):
     def _ensure_agent(self):
         s = self.s
         sig = (s.base_url, s.model, s.api_key, s.workspace, s.tool_mode, s.enable_shell, s.enable_web,
-               s.enable_subagents, s.enable_github, s.enable_code, s.enable_unity, s.github_token, s.shell)
+               s.enable_subagents, s.enable_github, s.enable_code, s.enable_unity, s.github_token, s.shell,
+               s.enable_more_files, s.enable_more_shell, s.enable_planning, s.enable_memory)
         if self.agent is None or sig != self._agent_sig:
             prev = self.agent
             ui = GuiUI(self.bridge, self.stop, s)
@@ -2997,8 +2998,20 @@ class SettingsPage(QWidget):
 
         g = QGroupBox("What it may use")
         f = QFormLayout(g)
-        self.shell = QCheckBox("Run commands and Python")
+        f.addRow(muted("By default it has 4 tools, like pi: read, write and edit files, and run commands. A short "
+                       "prompt and few tools are faster and keep a local model on track. Turn on only what a job "
+                       "needs; the next message picks it up."))
+        self.shell = QCheckBox("Run commands")
         self.shell.setChecked(s.enable_shell)
+        self.more_files = QCheckBox("More file tools: list, find and search files, several edits at once, move, "
+                                    "copy, delete")
+        self.more_files.setChecked(s.enable_more_files)
+        self.more_shell = QCheckBox("Background commands (servers, watchers) and Python scripts")
+        self.more_shell.setChecked(s.enable_more_shell)
+        self.planning = QCheckBox("To-do list for long jobs, and asking you questions")
+        self.planning.setChecked(s.enable_planning)
+        self.memory_on = QCheckBox("Long-term memory: remembers facts between chats, searches your files")
+        self.memory_on.setChecked(s.enable_memory)
         self.web = QCheckBox("Search and read the web")
         self.web.setChecked(s.enable_web)
         self.sub = QCheckBox("Start helper agents for big searches")
@@ -3007,7 +3020,8 @@ class SettingsPage(QWidget):
         self.code.setChecked(s.enable_code)
         self.unity = QCheckBox("Unity: work in the open Unity editor (scenes, objects, scripts, play mode)")
         self.unity.setChecked(s.enable_unity)
-        for w in (self.shell, self.web, self.sub, self.code, self.unity):
+        for w in (self.shell, self.more_files, self.more_shell, self.planning, self.memory_on, self.web, self.sub,
+                  self.code, self.unity):
             w.toggled.connect(self._save)
             f.addRow(w)
         self.dangerous = QCheckBox("Always ask before dangerous commands (format, delete everything, registry...)")
@@ -3433,6 +3447,10 @@ class SettingsPage(QWidget):
         s.temperature, s.top_p = self.temp.value(), self.top_p.value()
         s.top_k, s.min_p, s.max_tokens = self.top_k.value(), self.min_p.value(), self.max_tokens.value()
         s.enable_shell = self.shell.isChecked()
+        s.enable_more_files, s.enable_more_shell = self.more_files.isChecked(), self.more_shell.isChecked()
+        s.enable_planning, s.enable_memory = self.planning.isChecked(), self.memory_on.isChecked()
+        if s.enable_memory and s.index_files:
+            memory_mod.start_indexer(s)       # off at start when memory was off
         s.enable_web, s.enable_subagents = self.web.isChecked(), self.sub.isChecked()
         s.enable_code = self.code.isChecked()
         s.enable_unity = self.unity.isChecked()
@@ -3701,7 +3719,9 @@ class MemoryPage(QWidget):
 
     def _tick(self):
         idx = memory_mod.indexer()
-        if not self.s.index_files:
+        if not self.s.enable_memory:
+            self.index_status.setText("Memory is off: turn it on in Settings > What it may use.")
+        elif not self.s.index_files:
             self.index_status.setText("File index is off.")
         elif idx is not None:
             self.index_status.setText(idx.status)
@@ -3886,7 +3906,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(300, self.refresh_connection)
         plugins.load()
         mcp.manager().start_background(cwd=self.settings.workspace_path())
-        if self.settings.index_files:
+        if self.settings.index_files and self.settings.enable_memory:
             memory_mod.start_indexer(self.settings)
 
     def run_computer_test(self):

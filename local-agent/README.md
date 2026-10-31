@@ -65,10 +65,17 @@ aren't `.gguf` files you can browse to, so for Ollama models use Ollama itself.)
 
 ## What it can do
 
+By default it works like [pi](https://pi.dev): four tools (read a file, write a file, exact edit, run a
+command) and a short prompt, which is faster and keeps a local model on track. Commands run in bash (Git
+Bash on Windows when it's installed, else PowerShell), and thinking starts off. Everything else below is
+off until you tick it in **Settings > What it may use** (more file tools, background commands and Python,
+to-do list and questions, long-term memory, web, helpers, coding mode, Unity, git and GitHub); Computer
+use has its own button in the chat bar.
+
 | Group | Tools |
 |---|---|
 | Files | read (with line numbers, also shows images), write, exact edit, list, find by name, search inside files, move, copy, delete (to the Recycle Bin) |
-| Commands | run PowerShell commands and programs, run long ones (servers, games, watchers) in the background and read their output, run Python scripts |
+| Commands | run shell commands (bash: Git Bash on Windows when it is installed, like pi; else PowerShell) and programs, run long ones (servers, games, watchers) in the background and read their output, run Python scripts |
 | Web | search (DuckDuckGo, no account), read pages |
 | Git and GitHub | clone, status, diff, log, branch, commit, pull, push; list your repos; list, read and open pull requests (and ask for reviewers); list and open issues; comment |
 | Coding | work in a private git copy of a repo, run the tests until they pass, map a project's classes and functions, several exact edits at once, a syntax check after every edit |

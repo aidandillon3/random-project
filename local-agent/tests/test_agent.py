@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-os.environ["LOCALAGENT_DATA"] = tempfile.mkdtemp()
+os.environ.setdefault("LOCALAGENT_DATA", tempfile.mkdtemp())
 
 from localagent.agent import Agent, AgentUI  # noqa: E402
 from localagent.config import Settings  # noqa: E402

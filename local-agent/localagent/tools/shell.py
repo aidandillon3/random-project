@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import os
+from pathlib import Path
 import re
 import shutil
 import signal
@@ -48,11 +49,26 @@ def quiet_env(**extra) -> dict:
     return env
 
 
+def git_bash() -> str | None:
+    """Git for Windows' bash (what pi uses on Windows), not WSL's bash.exe in System32."""
+    if not WINDOWS:
+        return shutil.which("bash")
+    roots = [os.environ.get(k) for k in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA")]
+    places = [Path(r) / "Git" / "bin" / "bash.exe" for r in roots if r]
+    places += [Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Git" / "bin" / "bash.exe"] \
+        if os.environ.get("LOCALAPPDATA") else []
+    git = shutil.which("git")
+    if git:       # ...\Git\cmd\git.exe or ...\Git\bin\git.exe
+        places.append(Path(git).resolve().parent.parent / "bin" / "bash.exe")
+    return next((str(p) for p in places if p.is_file()), None)
+
+
 def shell_kind(ctx: ToolContext) -> str:
+    """auto: bash, like pi (Git Bash on Windows: the shell models know best), else PowerShell."""
     kind = getattr(ctx.settings, "shell", "auto")
     if kind != "auto":
         return kind
-    return "powershell" if WINDOWS else "bash"
+    return "bash" if git_bash() else "powershell" if WINDOWS else "bash"
 
 
 def _argv(kind: str, command: str) -> list[str]:
@@ -64,7 +80,7 @@ def _argv(kind: str, command: str) -> list[str]:
         # cmd.exe has its own quoting: with /s it drops the outer quotes and runs the rest as typed.
         # A list would be re-quoted with \" escapes, which cmd doesn't understand.
         return f'cmd /d /s /c "{command}"' if WINDOWS else ["cmd", "/d", "/s", "/c", command]
-    return [shutil.which("bash") or "/bin/sh", "-c", command]
+    return [git_bash() or shutil.which("bash") or "/bin/sh", "-c", command]
 
 
 def _flags():
@@ -103,8 +119,8 @@ def run_process(argv, cwd, env, timeout: float, stop=None) -> tuple[int | None, 
 
 
 @tool("run_command", """
-Run a shell command and get its output (PowerShell on Windows). Runs in the work folder unless
-cwd is given. Set background=true for things that keep running (servers, watchers); then read
+Run a shell command and get its output (the shell is named in the system prompt; bash unless
+Settings picks another). Runs in the work folder unless cwd is given. Set background=true for things that keep running (servers, watchers); then read
 them with check_process. Commands still running after timeout seconds (default 120) are stopped.""",
       {"command": {"type": "string"},
        "cwd": {"type": "string"},
