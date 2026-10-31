@@ -975,6 +975,28 @@ class GuiTest(unittest.TestCase):
         page.stop()
         w.close()
 
+    def test_chat_follows_new_text_only_at_the_bottom(self):
+        from localagent.config import Settings
+
+        w = self.gui.MainWindow(Settings(base_url="http://127.0.0.1:9/v1"))
+        w.resize(900, 600)
+        w.show()
+        chat = w.chat
+        bar = chat.scroll.verticalScrollBar()
+        for i in range(30):
+            chat._add(self.gui.muted(f"line {i}"))
+        self.wait_until(lambda: bar.maximum() > 0 and bar.value() == bar.maximum(), 3)
+        self.assertEqual(bar.value(), bar.maximum())                   # followed to the bottom
+        bar.setValue(0)                                                # scrolled up to read
+        for i in range(10):
+            chat._add(self.gui.muted(f"more {i}"))
+        self.wait_until(lambda: False, 0.3)
+        self.assertEqual(bar.value(), 0)                               # left where you were
+        bar.setValue(bar.maximum())                                    # back at the bottom: follows again
+        chat._add(self.gui.muted("last"))
+        self.assertTrue(self.wait_until(lambda: bar.value() == bar.maximum() and bar.maximum() > 0, 3))
+        w.close()
+
     def test_steps_show_like_pi(self):
         from localagent.config import Settings
         from localagent.tools import ToolResult

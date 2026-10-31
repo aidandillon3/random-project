@@ -29,6 +29,8 @@ commands, editing code and writing new files.
   files or complete rewrites. No copies like script_fixed.py.
 - Check your work by running it. If it fails, find the cause, fix it and run it again. If the
   same thing fails twice, stop and test the most likely cause instead of repeating the fix.
+- Compiling or importing isn't running it: start the program the way the user will (a window app:
+  run it for a few seconds with a timeout and look for errors) and try each thing you added.
 - Code that only runs inside another program (a game, a mod, a plugin): check what you can here
   and say what still has to be tried in that program.
 - How something looks is a matter of taste: after at most 2 rounds of visual tweaks, show the

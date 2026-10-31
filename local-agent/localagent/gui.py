@@ -1026,7 +1026,10 @@ class ChatPage(QWidget):
         centre.addWidget(column, 100)
         centre.addStretch(1)
         self.scroll.setWidget(holder)
+        self._stick, self._scrolling = True, False      # follow new text while at the bottom
+        self._follow = QTimer(self, singleShot=True, interval=30, timeout=self._to_bottom)
         self.scroll.verticalScrollBar().rangeChanged.connect(self._autoscroll)
+        self.scroll.verticalScrollBar().valueChanged.connect(self._scrolled)
         self.scroll.viewport().installEventFilter(self)       # Ctrl + mouse wheel: text size
         main.addWidget(self.scroll, 1)
 
@@ -1269,10 +1272,24 @@ class ChatPage(QWidget):
             return True
         return super().eventFilter(obj, e)
 
-    def _autoscroll(self, _min, maximum):
-        bar = self.scroll.verticalScrollBar()
-        if maximum - bar.value() < 400:
-            bar.setValue(maximum)
+    def _autoscroll(self, _min, _maximum):
+        """The chat grew: follow it while you're at the bottom. Qt lays a growing reply out in a few passes
+        (the size changes back and forth), so the jump waits until they're done; and it follows only while
+        you're at the bottom, so scrolling up to read stops it until you scroll back down."""
+        if self._stick and not self._follow.isActive():
+            self._follow.start()
+
+    def _to_bottom(self):
+        if self._stick:
+            bar = self.scroll.verticalScrollBar()
+            self._scrolling = True
+            bar.setValue(bar.maximum())
+            self._scrolling = False
+
+    def _scrolled(self, value):
+        if not self._scrolling:          # you scrolled (or the chat got shorter): follow only at the bottom
+            bar = self.scroll.verticalScrollBar()
+            self._stick = value >= bar.maximum() - 40
 
     def _tick(self):
         if self.current:
@@ -1410,6 +1427,7 @@ class ChatPage(QWidget):
         images = self.pending_images
         self._end_steps()
         self._add(UserBubble(text, images))
+        self._stick = True                 # a new message: follow the reply
         self.input.clear()
         self._clear_pending()
         if self.chat_file is None:
