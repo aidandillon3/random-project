@@ -33,14 +33,27 @@ PIECE_THICK = 0.5      # ... and 0.5 m thick
 THICK_SCALE = 0.5      # mesh is 0.5 m thick at scale 1 (local z 0..0.5), so the slab is 0.25 m
 ROAD_SINK = 0.15       # slab bottom sits this far below the road profile, top 0.10 above
 TILE_STEP = 0.03       # metres each piece's front end sits above the next piece (roof tiles)
-START_AHEAD = 10       # pieces between the spawn point (T13) and the start/finish line
-STEP = 4.0             # metres of centre line per road piece (short pieces lean across each
+START_AHEAD = 10       # centre line points (STEP apart) between the spawn (T13) and the start line
+STEP = 4.0             # metres between centre line points; also the shortest road piece (short
                        # other less in bends on hills, so the steps stay small)
 GROUND_UNDER = 0.06    # ground sits this far below the road profile (inside the slab)
 CARVE = 0.12           # ... and at least this far below the top of every piece over it
 FLAT_EDGE = ROAD_WIDTH / 2 + 2.0   # ground is flat at road height out to here ...
 BLEND_EDGE = 45.0                  # ... and back to the real hillside by here
 PROFILE_SMOOTH = 60.0  # metres either side used to smooth the road's height profile
+# Piece length follows the speed a car can carry there: wheels spaz out at high speed where
+# they touch two pieces at once, so fast sections get few, long pieces. Speeds are a rough
+# estimate from the bends (grip) plus braking/accelerating between them.
+# (Scrap Mechanic cars are big and fast: Aidan's does ~500 km/h on the straight.)
+GRIP = 1.5 * 9.81      # m/s^2 of cornering grip
+BRAKE, ACCEL = 12.0, 6.0  # m/s^2
+TOP_SPEED = 500 / 3.6
+SLOW_KMH, FAST_KMH = 150, 250  # at or below SLOW: pieces up to SLOW_LEN; at or above FAST: FAST_LEN
+SLOW_LEN, FAST_LEN = 8.0, 50.0
+LINE_TOL = 0.25        # a piece may stray this far sideways from the real centre line ...
+HEIGHT_TOL = 0.10      # ... and this far up/down from the smoothed height profile
+TWIST_TOL = 0.06      # a bend on a slope makes neighbouring pieces lean across each other
+                      # by about grade * turn * width; long pieces there mean big steps
 TILE_CELLS = 4         # Large tile = 4 x 4 cells of 64 m
 TILE_SIZE = TILE_CELLS * smtile.CELL_SIZE
 VERTEX = 2.0           # ground vertex spacing (33 x 33 per cell)
@@ -213,7 +226,7 @@ def main():
         pts = pts[::-1]
         i13 = len(pts) - 1 - i13
     pts = pts[i13:] + pts[:i13]
-    print(f"centre line {track.length(pts + [pts[0]]) / 1000:.2f} km, {len(pts)} road pieces")
+    print(f"centre line {track.length(pts + [pts[0]]) / 1000:.2f} km, {len(pts)} points")
 
     # Tile grid: the lap's bounding box plus a margin, centred in whole tiles.
     xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
@@ -266,7 +279,16 @@ def main():
         j["transform"] = {"position": [px, py, z], "rotation": editor_angles(rot), "scale": list(scale)}
         tiles.setdefault((tx, ty), {}).setdefault((cx, cy), []).append((a, j))
 
-    pieces = list(road_pieces(pts, zs))
+    speed = speed_profile(pts)
+    sel = choose_pieces(pts, zs, speed)
+    pieces = list(road_pieces([pts[k] for k in sel], [zs[k] for k in sel]))
+    lens = sorted(p[5] for p in pieces)
+    print(f"{len(pieces)} road pieces, {lens[0]:.0f} to {lens[-1]:.0f} m long (median {lens[len(lens) // 2]:.0f} m); "
+          f"estimated speed {speed.min() * 3.6:.0f} to {speed.max() * 3.6:.0f} km/h")
+    owner = np.zeros(len(pts), dtype=int)  # which piece each centre line point is on
+    for p, k in enumerate(sel):
+        end = sel[p + 1] if p + 1 < len(sel) else len(pts)
+        owner[k:end] = p
     if not args.flat:
         ground = carve_under(shape_ground(ground, vx, vy, pts, zs), vx, vy, pieces)
     steps = sorted(road_pieces.steps)
@@ -275,8 +297,8 @@ def main():
     for x, y, z, yaw, pitch, length in pieces:
         place(x, y, z - ROAD_SINK, road_rotation(yaw, pitch),
               (length / PIECE_SIZE, ROAD_WIDTH / PIECE_SIZE, THICK_SCALE))
-    start_line(place, pieces[START_AHEAD])
-    kerbs(place, pieces)
+    start_line(place, pieces[owner[START_AHEAD]], pts[START_AHEAD])
+    kerbs(place, pts, pieces, owner)
     tint = None
     if not args.flat:
         tint = ground_tint(trees(place, pts, ground, vx, vy), vx, vy)
@@ -347,25 +369,97 @@ def hex_colour(rgb):
     return 0xFF000000 | b << 16 | g << 8 | r
 
 
-def kerbs(place, pieces):
-    """Red and white kerb strips just outside both road edges in the bends, laid in the
-    road piece's own plane and 2 cm lower, so a wheel coming off the road drops onto them."""
+def headings(pts):
+    n = len(pts)
+    return [math.atan2(pts[(i + 1) % n][1] - pts[i][1], pts[(i + 1) % n][0] - pts[i][0]) for i in range(n)]
+
+
+def wrap(a):
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+def speed_profile(pts):
+    """Rough speed (m/s) a fast car carries at each centre line point: grip-limited in the
+    bends, with braking before them and accelerating out of them, capped at TOP_SPEED."""
+    n = len(pts)
+    h = headings(pts)
+    # Curvature over 16 m of road, so OSM wobbles don't count as bends.
+    k = np.array([abs(wrap(h[(i + 2) % n] - h[i - 2])) / (4 * STEP) for i in range(n)])
+    v = np.minimum(np.sqrt(GRIP / np.maximum(k, 1e-6)), TOP_SPEED)
+    for _ in range(3):  # the lap is a loop, so go round a few times
+        for i in range(n - 1, -1, -1):
+            v[i] = min(v[i], math.sqrt(v[(i + 1) % n] ** 2 + 2 * BRAKE * STEP))
+        for i in range(n):
+            v[i] = min(v[i], math.sqrt(v[i - 1] ** 2 + 2 * ACCEL * STEP))
+    return v
+
+
+def target_length(v):
+    kmh = v * 3.6
+    t = min(max((kmh - SLOW_KMH) / (FAST_KMH - SLOW_KMH), 0.0), 1.0)
+    return SLOW_LEN + (FAST_LEN - SLOW_LEN) * t
+
+
+def choose_pieces(pts, zs, speed):
+    """Indices of the centre line points where road pieces meet. Each piece is made as long
+    as the speed there allows, as long as it stays within LINE_TOL of the real line and
+    HEIGHT_TOL of the height profile."""
+    n = len(pts)
+    P = np.array(pts)
+    Z = np.asarray(zs)
+    h = headings(pts)
+    sel, i = [], 0
+    while i < n:
+        sel.append(i)
+        best = i + 1
+        slowest = speed[i]
+        for j in range(i + 2, min(n, i + int(FAST_LEN / STEP)) + 1):
+            slowest = min(slowest, speed[j % n])
+            a, b = P[i], P[j % n]
+            chord = np.linalg.norm(b - a)
+            if chord > target_length(slowest) + 0.01:
+                break
+            mid = P[i + 1:j]
+            d = b - a
+            side = np.abs(d[0] * (mid[:, 1] - a[1]) - d[1] * (mid[:, 0] - a[0])) / chord
+            t = np.arange(1, j - i) / (j - i)
+            dz = np.abs(Z[i + 1:j] - (Z[i] + (Z[j % n] - Z[i]) * t))
+            if side.max() > LINE_TOL or dz.max() > HEIGHT_TOL:
+                break
+            grade = abs(Z[j % n] - Z[i]) / chord
+            if abs(wrap(h[j - 1] - h[i])) * grade * ROAD_WIDTH > TWIST_TOL:
+                break
+            best = j
+        i = best
+    return sel
+
+
+def kerbs(place, pts, pieces, owner):
+    """Red and white kerb strips just outside both road edges in the bends, one per centre
+    line step (so the stripes stay short whatever the piece length), each lying in the
+    plane of the road piece beside it and 2 cm lower, so a wheel coming off the road drops
+    onto them."""
     from scipy.spatial.transform import Rotation
-    n = len(pieces)
-    top = PIECE_THICK * THICK_SCALE
+    n = len(pts)
+    h = headings(pts)
     count = 0
-    for i, (x, y, z, yaw, pitch, length) in enumerate(pieces):
-        # Radius from the heading change over the pieces either side (about 16 m of road).
-        turn = (pieces[(i + 2) % n][3] - pieces[i - 2][3] + math.pi) % (2 * math.pi) - math.pi
+    for i in range(n):
+        turn = wrap(h[(i + 2) % n] - h[i - 2])
         if abs(turn) < 1e-6 or 4 * STEP / abs(turn) > KERB_RADIUS:
             continue
-        rot = road_rotation(yaw, pitch)
+        x, y, z, yaw, pitch, length = pieces[owner[i]]
+        a, b = pts[i], pts[(i + 1) % n]
+        cx, cy = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+        # Height of the road piece's surface level with this point (no roll, so only the
+        # distance along the piece matters).
+        u = (cx - x) * math.cos(yaw) + (cy - y) * math.sin(yaw)
+        rot = road_rotation(h[i], pitch)
         m = Rotation.from_quat(rot).as_matrix()
         # Long enough to close the gap on the outside of the bend.
         kl = STEP / math.cos(pitch) + 0.6 + (ROAD_WIDTH / 2 + KERB_WIDTH) * abs(turn) / 4
         for side in (-1, 1):
             off = side * (ROAD_WIDTH / 2 + KERB_WIDTH / 2)
-            p = np.array([x, y, z - ROAD_SINK - 0.02]) + m @ np.array([0.0, off, 0.0])
+            p = np.array([cx, cy, z - ROAD_SINK - 0.02 + u * math.tan(pitch)]) + m @ np.array([0.0, off, 0.0])
             colour = KERB_RED if i % 2 else KERB_WHITE
             place(p[0], p[1], p[2], rot, (kl / PIECE_SIZE, KERB_WIDTH / PIECE_SIZE, THICK_SCALE),
                   {"Road2": colour})
@@ -444,14 +538,15 @@ def trees(place, pts, ground, vx, vy):
     return cand
 
 
-def start_line(place, piece):
-    """Chequered start/finish line across the road: 2 rows of 2 m squares, lying on top of
-    the road piece (5 mm proud of its surface)."""
+def start_line(place, piece, at):
+    """Chequered start/finish line across the road at point `at`: 2 rows of 2 m squares,
+    lying on top of the road piece (5 mm proud of its surface)."""
     from scipy.spatial.transform import Rotation
     x, y, z, yaw, pitch, length = piece
     rot = road_rotation(yaw, pitch)
     m = Rotation.from_quat(rot).as_matrix()
-    origin = np.array([x, y, z - ROAD_SINK])
+    u = (at[0] - x) * math.cos(yaw) + (at[1] - y) * math.sin(yaw)
+    origin = np.array([x, y, z - ROAD_SINK]) + m @ np.array([u / math.cos(pitch), 0.0, 0.0])
     top = PIECE_THICK * THICK_SCALE
     sq, t = 2.0, 0.02
     for row in range(2):
