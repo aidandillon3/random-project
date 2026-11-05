@@ -332,7 +332,7 @@ class GuiTest(unittest.TestCase):
         page._use_preset = lambda: None
         page.preset_box.setCurrentIndex(page.preset_box.findData("swift-flash-next-iq3s"))    # e.g. from the chat
         self.assertEqual(page.family_box.currentText(), "Qwen3.8 Flash Next")
-        self.assertEqual(page.quant_box.count(), 4)
+        self.assertEqual(page.quant_box.count(), 5)            # 3 Swift sizes, the Coder, Unsloth v3.1
         self.assertEqual(page.quant_box.currentData(), "swift-flash-next-iq3s")
         self.assertIn("85 GB", page.quant_box.currentText())
         self.assertFalse(page.preset_box.isVisibleTo(page))
@@ -587,7 +587,7 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(list(menus), ["Qwen3.8 27B", "Qwen3.8 Flash Next", "Qwen3.6 35B-A3B", "Ornith 1.5 122B",
                                        "GLM-5.3-Flash"])       # one entry per model
         self.assertEqual([a.text() for a in menus["Qwen3.8 Flash Next"].actions()][-1],
-                         "Coder IQ1_M (for coding, less RAM)")                  # and its quants inside
+                         "Unsloth v3.1 UD-IQ3_XXS (newest, llama.cpp, slower)")                  # and its quants inside
         menus["Qwen3.8 27B"].actions()[0].trigger()
         self.assertEqual(picked, ["swift-27b"])
         self.assertEqual(w.nav.currentRow(), 1)

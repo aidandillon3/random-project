@@ -177,6 +177,31 @@ PRESETS = [
         strata={"family": "coder", "model": "IQ1_M", "tag": "coder-",
                 "engine_args": {"--conversation-cache-mib": "8192"}},
     ),
+    # Unsloth's Dynamic v3.1 (2026-11-04): Unsloth's tests put it 10-15% above GSQ-RCO (the Swift files) on DeepSWE,
+    # Terminal Bench and Aider. Only UD-IQ3_XXS was replaced so far (commit 3f3ba9cb, four shards). Strata v0.1.45
+    # runs only Unsloth's UD-IQ4_XS and up, checked against older files, so this runs on llama.cpp with experts in RAM
+    Preset(
+        key="flash-next-ud31-iq3xxs",
+        title="Qwen3.8 Flash Next Unsloth v3.1 UD-IQ3_XXS (newest quant, llama.cpp, slower)",
+        family=FLASH_FAMILY, variant="Unsloth v3.1 UD-IQ3_XXS (newest, llama.cpp, slower)",
+        blurb="Unsloth's Dynamic v3.1 quant of the original Qwen3.8 Flash Next (not Swift), from 4 November 2026. "
+              "Unsloth's own tests put v3.1 10-15% above the GSQ-RCO quants (the Swift files) on DeepSWE, Terminal "
+              "Bench and Aider. Strata can't run this file yet, so it runs on llama.cpp with its experts in RAM: "
+              "expect it several times slower than Swift Flash Next on Strata. At 83.6 GB it needs nearly all of "
+              "a 64 GB PC's RAM plus the GPU: close other programs, and pick Both GPUs if you have two. It thinks "
+              "longer than Swift. Has its own vision file.",
+        repo="unsloth/Qwen3.8-Flash-Next-GGUF", subdir="UD-IQ3_XXS",
+        revision="3f3ba9cb826b49c665510ce1702fd513a393ce39",
+        files=[f"Qwen3.8-Flash-Next-UD-IQ3_XXS-0000{i}-of-00004.gguf" for i in range(1, 5)],
+        mmproj=("unsloth/Qwen3.8-Flash-Next-GGUF", "mmproj-BF16.gguf"),
+        folder="Qwen3.8-Flash-Next-Unsloth",
+        sizes={"Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf": 10946618,
+               "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf": 49946027488,
+               "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00004.gguf": 4869325888,
+               "Qwen3.8-Flash-Next-UD-IQ3_XXS-00004-of-00004.gguf": 28800138432,
+               "mmproj-BF16.gguf": 907542944},
+        launch={"ctx_size": 65536, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": True},
+    ),
     # Qwen3.6-35B-A3B on xyehya's Strata fork (branch q36-r2, ykarout's speed work; strata.Q36): 22.9 GB, so with 16 GB
     # of VRAM most experts sit on the GPU. The fork's setup checks the file against Unsloth's commit below, and the
     # engine drafts with the file's own MTP block. The expert profile (which experts start on the GPU) is ykarout's,
