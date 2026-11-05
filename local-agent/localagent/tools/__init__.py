@@ -1,16 +1,25 @@
 """All tools. Importing this package registers them."""
 
+import copy
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
 
-from . import code, files, github, misc, shell, unity, web  # noqa: F401  (registers tools)
-from .base import EDIT, PUBLISH, REGISTRY, RISK_LABELS, RUN, SAFE, Tool, ToolContext, ToolError, ToolResult
+from . import browser, code, files, github, live, misc, ocr, screen, shell, unity, web  # noqa: F401  (registers tools)
+from .base import CONTROL, EDIT, PUBLISH, REGISTRY, RISK_LABELS, RUN, SAFE, Tool, ToolContext, ToolError, ToolResult
 
 # Every tool's definition goes with every request and costs prompt tokens, so two big groups are
 # cut down unless they're likely to be used. Left in: what's needed to start using them.
 UNITY_ALWAYS = {"unity_status", "unity_install_bridge"}
+# The default set, like pi's (read, bash, edit, write); the rest of the core and shell groups come with toggles
+MORE_FILES = {"multi_edit", "list_dir", "find_files", "search_text", "move_path", "copy_path", "delete_path"}
+MORE_SHELL = {"check_process", "stop_process", "run_python"}
+PLANNING = {"todo_write", "ask_user", "wait"}
+MEMORY = {"remember", "recall", "forget", "index_folder"}
+TOGGLES = {"enable_more_files": MORE_FILES, "enable_more_shell": MORE_SHELL, "enable_planning": PLANNING,
+           "enable_memory": MEMORY}
 LOCAL_GIT = {"git_status", "git_diff", "git_log", "git_branch", "git_commit"}   # coding mode needs no sign-in
 
 
@@ -56,6 +65,8 @@ def enabled_tools(settings, depth: int = 0, workspace=None, full=()) -> list[Too
         groups.add("code")
     if getattr(settings, "enable_unity", True):
         groups.add("unity")
+    if getattr(settings, "computer_use", False) and depth == 0:   # the Computer use toggle; off unless turned on
+        groups.add("control")
     if settings.enable_subagents and depth == 0:
         groups.add("subagents")
     groups.add("mcp")     # tools of the MCP servers in data/mcp.json (opt-in by being listed there)
@@ -65,10 +76,31 @@ def enabled_tools(settings, depth: int = 0, workspace=None, full=()) -> list[Too
         tools = [t for t in tools if t.group != "unity" or t.name in UNITY_ALWAYS]
     if "github" in groups and "github" not in full and not github_signed_in(settings):
         tools = [t for t in tools if t.group != "github" or t.name in LOCAL_GIT]
+    if "control" in groups:
+        # left out when they can't work (an add-on missing), so their definitions cost no tokens
+        if ocr.missing() or not getattr(settings, "text_tools", True):
+            tools = [t for t in tools if t.name != "click_text"]
+        if browser.missing() or not getattr(settings, "browser_tools", True):
+            tools = [t for t in tools if not t.name.startswith("browser_")]
+        if not getattr(settings, "watch_tool", True):
+            tools = [t for t in tools if t.name != "watch_mode"]
+    for setting, names in TOGGLES.items():
+        if not getattr(settings, setting, False):
+            tools = [t for t in tools if t.name not in names]
+    if "check_process" not in {t.name for t in tools}:
+        tools = [_no_background(t) if t.name == "run_command" else t for t in tools]
     if depth > 0:  # helpers work quietly: no questions to the user
         tools = [t for t in tools if t.name != "ask_user"]
     return tools
 
 
-__all__ = ["REGISTRY", "Tool", "ToolContext", "ToolError", "ToolResult", "enabled_tools", "github_signed_in",
-           "SAFE", "EDIT", "RUN", "PUBLISH", "RISK_LABELS"]
+def _no_background(tool: Tool) -> Tool:
+    """run_command without its background option, when there's no check_process to read such a command with."""
+    t = copy.copy(tool)
+    t.params = {k: v for k, v in tool.params.items() if k != "background"}
+    t.description = re.sub(r" Set background=true.*?check_process\.", "", tool.description, flags=re.S)
+    return t
+
+
+__all__ = ["REGISTRY", "TOGGLES", "Tool", "ToolContext", "ToolError", "ToolResult", "enabled_tools", "github_signed_in",
+           "SAFE", "EDIT", "RUN", "CONTROL", "PUBLISH", "RISK_LABELS"]

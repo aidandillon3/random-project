@@ -264,11 +264,11 @@ A map of a code folder: every source file with its classes and functions (and li
 so you can see how a project is laid out without reading every file. Use it at the start of a
 coding task, then read_file the parts you need.""",
       {"path": {"type": "string", "description": "Folder or file. Default: the work folder"},
-       "max_chars": {"type": "integer", "description": "Default 12000"}},
+       "max_chars": {"type": "integer", "description": "Default 8000 (about 2,000 tokens); map a sub-folder for more detail"}},
       group="code")
 def code_map(ctx: ToolContext, a: dict):
     root = ctx.resolve(a.get("path") or ".")
-    limit = int(a.get("max_chars") or 12000)
+    limit = int(a.get("max_chars") or 8000)
     files = [root] if root.is_file() else sorted(_code_files(root))
     if not files:
         return f"No source files found in {root}."

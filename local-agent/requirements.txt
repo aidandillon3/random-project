@@ -2,3 +2,16 @@ PySide6>=6.6           # the app window
 requests>=2.31         # talks to the model server
 Pillow>=10.0           # image resizing
 Send2Trash>=1.8        # deletes go to the Recycle Bin
+# Computer use (only used while its toggle is on)
+mss>=9.0               # screenshots
+pyautogui>=0.9.54      # mouse and keyboard (brings pygetwindow for the window list)
+pyperclip>=1.8         # typing non-English text, the clipboard
+pywinauto>=0.6.8; sys_platform == "win32"   # buttons and menus by name (ui_elements)
+winrt-runtime>=3.0; sys_platform == "win32"             # reading text on the screen (click_text, marks)
+winrt-Windows.Media.Ocr>=3.0; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging>=3.0; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=3.0; sys_platform == "win32"
+winrt-Windows.Foundation>=3.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=3.0; sys_platform == "win32"
+winrt-Windows.Globalization>=3.0; sys_platform == "win32"
+playwright>=1.45       # a browser it drives directly (uses your Edge or Chrome; nothing else to download)

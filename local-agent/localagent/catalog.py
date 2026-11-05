@@ -114,6 +114,22 @@ PRESETS = [
                "mmproj-Qwen3.8-27B-Q8_0.gguf": 629247008},
         launch={"ctx_size": 49152, "kv_type": "q8_0", "speedup": "mtp", "placement": "auto", "use_vision": True},
     ),
+    Preset(
+        key="swift-27b-iq3s",
+        title="Swift 1.5 Qwen3.8 27B IQ3_S (smarter, needs a free 16 GB GPU)",
+        family=FAMILY_27B, variant="IQ3_S (smarter, needs a free 16 GB GPU)",
+        blurb="The same dense 27B at IQ3_S with MTP layers: about half the drift from the full model of IQ3_XXS "
+              "(KLD 0.051 vs 0.098 by its makers' tests) and about 15% slower. Its 12.1 GB plus the vision file "
+              "fill most of a 16 GB card, so it suits a GPU that drives no monitors; with less free VRAM llama.cpp "
+              "moves some layers to RAM, which is much slower. Shares the folder and vision file with IQ3_XXS.",
+        repo="ukisai/Swift-1.5-Qwen3.8-27B-GSQ-RCO-GGUF",
+        files=["Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"],
+        mmproj=("ggml-org/Qwen3.8-27B-GGUF", "mmproj-Qwen3.8-27B-Q8_0.gguf"),
+        folder="Swift-1.5-Qwen3.8-27B",
+        sizes={"Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf": 12120016896,
+               "mmproj-Qwen3.8-27B-Q8_0.gguf": 629247008},
+        launch={"ctx_size": 49152, "kv_type": "q8_0", "speedup": "mtp", "placement": "auto", "use_vision": True},
+    ),
     _flash_next(
         "swift-flash-next", "IQ2_XS", "smart, uses RAM",
         "125B MoE with 6B active per token, IQ2_XS. The experts sit in RAM and the 28 GB "
@@ -160,6 +176,31 @@ PRESETS = [
         # only 23 GB of experts in RAM, so it can park more chats than the default 4 GiB
         strata={"family": "coder", "model": "IQ1_M", "tag": "coder-",
                 "engine_args": {"--conversation-cache-mib": "8192"}},
+    ),
+    # Unsloth's Dynamic v3.1 (2026-11-04): Unsloth's tests put it 10-15% above GSQ-RCO (the Swift files) on DeepSWE,
+    # Terminal Bench and Aider. Only UD-IQ3_XXS was replaced so far (commit 3f3ba9cb, four shards). Strata v0.1.45
+    # runs only Unsloth's UD-IQ4_XS and up, checked against older files, so this runs on llama.cpp with experts in RAM
+    Preset(
+        key="flash-next-ud31-iq3xxs",
+        title="Qwen3.8 Flash Next Unsloth v3.1 UD-IQ3_XXS (newest quant, llama.cpp, slower)",
+        family=FLASH_FAMILY, variant="Unsloth v3.1 UD-IQ3_XXS (newest, llama.cpp, slower)",
+        blurb="Unsloth's Dynamic v3.1 quant of the original Qwen3.8 Flash Next (not Swift), from 4 November 2026. "
+              "Unsloth's own tests put v3.1 10-15% above the GSQ-RCO quants (the Swift files) on DeepSWE, Terminal "
+              "Bench and Aider. Strata can't run this file yet, so it runs on llama.cpp with its experts in RAM: "
+              "expect it several times slower than Swift Flash Next on Strata. At 83.6 GB it needs nearly all of "
+              "a 64 GB PC's RAM plus the GPU: close other programs, and pick Both GPUs if you have two. It thinks "
+              "longer than Swift. Has its own vision file.",
+        repo="unsloth/Qwen3.8-Flash-Next-GGUF", subdir="UD-IQ3_XXS",
+        revision="3f3ba9cb826b49c665510ce1702fd513a393ce39",
+        files=[f"Qwen3.8-Flash-Next-UD-IQ3_XXS-0000{i}-of-00004.gguf" for i in range(1, 5)],
+        mmproj=("unsloth/Qwen3.8-Flash-Next-GGUF", "mmproj-BF16.gguf"),
+        folder="Qwen3.8-Flash-Next-Unsloth",
+        sizes={"Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf": 10946618,
+               "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf": 49946027488,
+               "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00004.gguf": 4869325888,
+               "Qwen3.8-Flash-Next-UD-IQ3_XXS-00004-of-00004.gguf": 28800138432,
+               "mmproj-BF16.gguf": 907542944},
+        launch={"ctx_size": 65536, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": True},
     ),
     # Qwen3.6-35B-A3B on xyehya's Strata fork (branch q36-r2, ykarout's speed work; strata.Q36): 22.9 GB, so with 16 GB
     # of VRAM most experts sit on the GPU. The fork's setup checks the file against Unsloth's commit below, and the
@@ -246,6 +287,27 @@ PRESETS = [
         "it is the most a 64 GB PC with 16 GB of VRAM can take: close other programs while it runs.",
         {"Ornith-1.5-122B.Q3_K_L.gguf": 64661782528}, subdir="Q3_K_L", repo="prithivMLmods/Ornith-1.5-122B-MTP-GGUF",
         speedup="mtp"),
+    # GLM-5.3-Flash (Z.ai, 2026; Unsloth's GGUFs): 320B MoE, 18B active. At 102 GB it is bigger than this PC's
+    # RAM + VRAM, so llama.cpp maps the file and Windows reads the experts it lacks from the SSD as they're needed
+    Preset(
+        key="glm53-flash-iq2xxs", title="GLM-5.3-Flash UD-IQ2_XXS (SSD streaming, very slow)",
+        blurb="Z.ai's GLM-5.3-Flash: a 320B MoE (18B active) that Unsloth's page puts near the best closed models "
+              "on coding and agent tests. At 102 GB it doesn't fit in RAM + VRAM, so llama.cpp leaves the file "
+              "on the drive and reads missing experts from the SSD each token: expect a few tokens a second at "
+              "best, and slow prompt reading. It always thinks, so use the Low thinking level. Not measured on "
+              "this PC. Sees images.",
+        repo="unsloth/GLM-5.3-Flash-GGUF", subdir="UD-IQ2_XXS", folder="GLM-5.3-Flash",
+        files=[f"GLM-5.3-Flash-UD-IQ2_XXS-0000{i}-of-00004.gguf" for i in range(1, 5)],
+        mmproj=("unsloth/GLM-5.3-Flash-GGUF", "mmproj-F16.gguf"),
+        sizes={"GLM-5.3-Flash-UD-IQ2_XXS-00001-of-00004.gguf": 9429888,
+               "GLM-5.3-Flash-UD-IQ2_XXS-00002-of-00004.gguf": 49896298080,
+               "GLM-5.3-Flash-UD-IQ2_XXS-00003-of-00004.gguf": 49248507840,
+               "GLM-5.3-Flash-UD-IQ2_XXS-00004-of-00004.gguf": 2690716000,
+               "mmproj-F16.gguf": 1128047296},
+        family="GLM-5.3-Flash", variant="UD-IQ2_XXS (SSD streaming)",
+        # no draft speed-up: checking guesses reads more experts per step, and here every expert read may hit the SSD
+        launch={"ctx_size": 32768, "kv_type": "q8_0", "speedup": "off", "placement": "auto", "use_vision": True},
+    ),
 ]
 BY_KEY = {p.key: p for p in PRESETS}
 

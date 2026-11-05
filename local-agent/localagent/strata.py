@@ -286,7 +286,17 @@ def wanted(preset, model: Path, settings, gpus: list[int] | None = None) -> dict
          "context": int(settings.ctx_size), "vision": bool(settings.use_vision), "strata": install_of(preset).commit}
     if gpus:
         w["gpus"] = list(gpus)
+    if low_ram(preset, settings):
+        w["low_ram"] = True
     return w
+
+
+def low_ram(preset, settings) -> bool:
+    """Strata's low-RAM mode is picked (Settings), for a mode of Strata itself (a fork's setup has no such option).
+    Setup then writes the experts into one file next to the model (about 43 GB for IQ3_XXS, once) and the engine copies
+    into RAM only the ones the GPU's cache doesn't hold (--resident-experts). The context's KV cache stays all in VRAM
+    then (normally, from 64K on, it is kept in RAM), so at a long context the GPU holds fewer experts."""
+    return bool(getattr(settings, "strata_low_ram", False)) and not preset.strata.get("install")
 
 
 def _stamps(root: Path) -> dict:
@@ -346,7 +356,8 @@ def setup_args(preset, model: Path, settings, root: Path | None = None, gpus: li
     return launch + ["--yes", "--no-start", "--no-browser", "--family", w["family"], "--model", w["model"],
                      "--gguf-dir", w["gguf_dir"], "--data-dir", str(data_dir(model)),
                      "--context", str(w["context"]), "--vision", "gpu" if w["vision"] else "no",
-                     "--port", str(settings.port)] + _gpu_args(gpus)
+                     "--port", str(settings.port)] + _gpu_args(gpus) + \
+        (["--low-ram", "resident"] if w.get("low_ram") else [])
 
 
 def _gpu_args(gpus: list[int] | None) -> list[str]:
@@ -402,7 +413,41 @@ MONITOR_FLAGS = ("--vram-reserve-mib", "--expert-vram")
 ENGINE_ENV = {"STRATA_PIN_BY_NEED": "1"}
 
 
-def tune_config(preset, root: Path | None = None, model_dir: Path | None = None, monitors: bool = True) -> bool:
+# The low-RAM mode's RAM cap (Settings.strata_ram_gib). Setup's resident variant (--resident-experts) keeps every
+# expert the GPU caches don't hold in RAM, and also the ones in the cache slots the prompt path borrows (on Aidan's
+# two cards at 256K: 38.2 GiB, 6.3 of them borrowed slots' experts). --resident-budget-gib N (the engine's RAM budget,
+# which setup gives only Unsloth's files) keeps the N GiB of those the profile ranks hottest and reads the rest from
+# experts.bin on the SSD: at about the non-borrowed share (~32 GiB there) only prompts read from the SSD; lower, the
+# answers do too.
+LOW_RAM_FLAGS = ("--resident-experts", "--mmap-experts")
+# With the cap, the experts read from experts.bin stay mapped in the engine's working set, so Windows shows them as
+# used RAM (Aidan's 16 GiB cap test: still ~50 GB in use). STRATA_FILE_RELEASE=1 (opt-in, Windows) hands those pages
+# back to the OS after each GPU upload: they stay in the file cache, which other programs can take (measured
+# upstream: 0.5 -> 12 GiB available on a 32 GB laptop, prompts ~4% slower). Set with the cap, taken out without it.
+RAM_CAP_ENV = {"STRATA_FILE_RELEASE": "1"}
+
+
+def _ram_cap(args: list, gib: int) -> bool:
+    """Put the RAM cap into a low-RAM config's args, or take it out again (back to setup's --resident-experts).
+    Changes args in place; True when it did."""
+    if not any(f in args for f in LOW_RAM_FLAGS + ("--resident-budget-gib",)):
+        return False                                  # not the low-RAM mode: nothing to cap
+    before = list(args)
+    while "--resident-budget-gib" in args:
+        i = args.index("--resident-budget-gib")
+        del args[i:i + 2]
+    if gib > 0:
+        for f in LOW_RAM_FLAGS:
+            while f in args:
+                args.remove(f)
+        args += ["--resident-budget-gib", str(int(gib))]
+    elif not any(f in args for f in LOW_RAM_FLAGS):
+        args.append("--resident-experts")
+    return args != before
+
+
+def tune_config(preset, root: Path | None = None, model_dir: Path | None = None, monitors: bool = True,
+                ram_gib: int = 0) -> bool:
     """Add ENGINE_ARGS (with the mode's own values) to strata-<model>.json where it doesn't have them (it keeps
     values set by hand, except MONITOR_FLAGS'). True when the file changed. A fork's mode (strata["install"]) takes
     only its own options: the main path's are not options of its engine, which then refuses to start. An option
@@ -432,7 +477,8 @@ def tune_config(preset, root: Path | None = None, model_dir: Path | None = None,
         gib = max(ev[0] - ev[1] * max(ctx - 65536, 0) / 32768, 1.0) + (0 if monitors else NO_MONITORS_EXPERT_VRAM)
         want["--expert-vram"] = f"{gib:.1f}"
     args = list(args)
-    changed = False
+    changed = _ram_cap(args, 0 if own else ram_gib)
+    capped = "--resident-budget-gib" in args
     for flag in MONITOR_FLAGS:          # already there with the other choice's value
         if flag in want and flag in args and args.index(flag) + 1 < len(args) \
                 and args[args.index(flag) + 1] != want[flag]:
@@ -448,13 +494,20 @@ def tune_config(preset, root: Path | None = None, model_dir: Path | None = None,
         if model_dir is not None and flag == "--expert-profile":
             value = str(Path(model_dir) / value)
         add += [flag, value]
-    env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    env = dict(cfg.get("env")) if isinstance(cfg.get("env"), dict) else {}
     add_env = {k: v for k, v in {**({} if own else ENGINE_ENV), **preset.strata.get("env", {})}.items()
                if k not in env}
+    for k, v in RAM_CAP_ENV.items():                  # follows the cap, like MONITOR_FLAGS follow their switch
+        if capped and env.get(k) != v:
+            add_env[k] = v
+            env.pop(k, None)
+        elif not capped and env.get(k) == v:
+            env.pop(k)
+            changed = True
     if not add and not add_env and not changed:
         return False
     cfg["args"] = args + add
-    if add_env:
+    if add_env or "env" in cfg:
         cfg["env"] = {**env, **add_env}
     tmp = path.with_name(path.name + ".tmp")          # whole or not at all, as Strata's setup writes it
     try:
@@ -471,6 +524,7 @@ def serve_args(preset, settings, root: Path | None = None, monitors: bool = True
     config has ENGINE_ARGS (setup rewrites them away)."""
     root = root or install_of(preset).root
     model = getattr(settings, "model_path", "")
-    tune_config(preset, root, Path(model).parent if model else None, monitors)
+    tune_config(preset, root, Path(model).parent if model else None, monitors,
+                int(getattr(settings, "strata_ram_gib", 0) or 0) if low_ram(preset, settings) else 0)
     return [str(python(root)), str(root / "serve" / "server.py"), "--engine", "strata",
             "--config", str(config_path(preset, root)), "--port", str(settings.port), "--fit-max-tokens"]

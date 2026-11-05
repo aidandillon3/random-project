@@ -20,6 +20,7 @@ from .permissions import ApprovalRequest, Decision, Policy, danger_text, is_dang
 from .tools import SAFE, ToolContext, ToolError, ToolResult, enabled_tools, shell
 from .tools.base import truncate
 from .tools.github import redact_all
+from .tools.screen import coord_help
 from .tools.shell import shell_kind
 
 IMAGE_TOKENS = 1200          # rough cost of one image, for estimates only
@@ -84,6 +85,12 @@ class AgentUI:
 
     def ask(self, question: str, options: list[str]) -> str:
         return ""
+
+
+# Screen tools that end with a picture of the screen (list_windows, ui_elements and the clipboard
+# only read): of several in one step, only the last one waits for the screen and takes it.
+SHOWS_SCREEN = {"click", "move_mouse", "move_mouse_by", "drag", "scroll", "type_text", "press_keys", "focus_window",
+                "open", "click_element", "click_text", "set_slider", "screenshot", "zoom"}
 
 
 def png_part(png: bytes) -> dict:
@@ -161,9 +168,10 @@ class Agent:
     def system_prompt(self) -> str:
         if self._system is None:
             self.client.resolve_model()
+            self.ctx.screen["model_name"] = self.client.model    # decides the click coordinate style
             self._system = prompts.build_system_prompt(
                 self.settings, self.workspace, list(self.tools.values()), shell_kind(self.ctx),
-                self.prompt_mode) + self.system_extra
+                self.prompt_mode, coord_help(self.ctx) if "screenshot" in self.tools else "") + self.system_extra
         return self._system
 
     def context_limit(self) -> int:
@@ -213,6 +221,17 @@ class Agent:
         self._system = None     # its guidance follows the tools
         return True
 
+    def _sync_computer_use(self):
+        """The Computer use toggle can change between messages: its tools come and go with it."""
+        on = bool(getattr(self.settings, "computer_use", False)) and self.depth == 0
+        have = [n for n, t in self.tools.items() if t.group == "control"]
+        if on and not have:
+            self.enable_group("control")
+        elif have and not on:
+            for n in have:
+                del self.tools[n]
+            self._system = None
+
     # ------------------------------------------------------------------ main loop
     def set_workspace(self, path: Path):
         """Switch the work folder mid-chat (coding mode works in its own copy of a repo)."""
@@ -230,6 +249,7 @@ class Agent:
                 self.ui.notice("Stopped.")
                 return ""
             self._ready, self._ctx_asked = True, 0.0
+        self._sync_computer_use()
         self.messages.append(self._user_message(text, images))
         self._task_images = 0
         final = ""
@@ -309,24 +329,29 @@ class Agent:
         else:
             self.ui.notice(f"Paused after {limit} steps (Settings > 'Steps before it checks in'; 0 = no limit). "
                            "Say 'continue' to keep going.")
-        if final and tool_rounds >= 3 and self.depth == 0 and self.settings.auto_memory and not self.stop.is_set():
+        if final and tool_rounds >= 3 and self.depth == 0 and self.settings.auto_memory and self.settings.enable_memory \
+                and not self.stop.is_set():
             self._save_memories(text, final)
         return final
 
     def _run_calls(self, calls: list[ToolCall], cut_off: bool = False):
         """Run one step's tool calls. Every call gets a result in the history whatever happens
         (Stop, an error): a call without one would break every later request."""
+        last_screen = max((i for i, c in enumerate(calls) if c.name in SHOWS_SCREEN), default=-1)
         results: list[tuple[ToolCall, ToolResult]] = []
         try:
-            for call in calls:
+            for i, call in enumerate(calls):
                 if self.stop.is_set():
                     results.append((call, ToolResult(STOPPED, ok=False)))
                     continue
                 if cut_off and not _valid_json(call.arguments):
                     results.append((call, ToolResult(CUT_OFF, ok=False)))
                     continue
+                # several screen actions in one step: only the last waits and takes a screenshot
+                self.ctx.capture_after = i >= last_screen
                 results.append((call, self.execute(call)))
         finally:
+            self.ctx.capture_after = True
             why = STOPPED if self.stop.is_set() else "Not run: the step was interrupted."
             results += [(c, ToolResult(why, ok=False)) for c in calls[len(results):]]
             self._record_results(results)
@@ -368,14 +393,14 @@ class Agent:
     def _context_note(self) -> str:
         """What used to be in the system prompt but differs per chat (date, work folder...). It goes
         in the first message instead, so the system prompt stays the same and stays cached."""
-        return prompts.build_context(self.workspace)
+        return prompts.build_context(self.workspace, memory=getattr(self.settings, "enable_memory", False))
 
     # ------------------------------------------------------------------ long-term memory
     def _recalled(self, text: str) -> tuple[str, list[int]]:
         """Saved notes that match this request, attached to it so the model sees them without
         having to search. Only a few, only good matches, and none the chat already shows (the
         ones attached to earlier messages that are still in it), to keep the context lean."""
-        if self.depth > 0 or not self.settings.auto_recall or not text.strip():
+        if self.depth > 0 or not (self.settings.auto_recall and self.settings.enable_memory) or not text.strip():
             return "", []
         shown = {i for m in self.messages for i in m.get("_notes", ())}
         try:
@@ -433,7 +458,8 @@ class Agent:
         if saved:
             self.ui.notice("Remembered: " + "; ".join(saved))
 
-    def _params(self, max_tokens: int | None = None) -> dict:
+    def _params(self, max_tokens: int | None = None, thinking: str | None = None) -> dict:
+        """The request's sampling and thinking settings; thinking overrides the chat's level (watch mode: off)."""
         s = self.settings
         p = {"temperature": s.temperature, "top_p": s.top_p, "max_tokens": self._fit(max_tokens or s.max_tokens)}
         if s.top_k:
@@ -441,10 +467,10 @@ class Agent:
         if s.min_p:
             p["min_p"] = s.min_p
         if s.auto_sampling:
-            rec = sampling_for(self.client.resolve_model(), thinking=s.thinking != "off")
+            rec = sampling_for(self.client.resolve_model(), thinking=(thinking or s.thinking) != "off")
             if rec:
                 p.update(rec)
-        want = "high" if s.thinking == "on" else s.thinking
+        want = thinking or ("high" if s.thinking == "on" else s.thinking)
         if want == "off":
             p["chat_template_kwargs"] = {"enable_thinking": False}
             if "low" in self.effort_levels():   # models that can't switch it off (gpt-oss) think least
@@ -586,7 +612,9 @@ class Agent:
         about is the user's call (one model took ~20 screenshot-and-adjust rounds on a render that already ran)."""
         out = []
         for c, r in results:
-            if r.images:
+            tool = self.tools.get(c.name)
+            # screenshots taken while using the screen aren't polishing a look
+            if r.images and not (tool and tool.group == "control"):
                 self._task_images += len(r.images)
                 if self._task_images >= MANY_IMAGES:
                     r = ToolResult(r.text + MANY_IMAGES_NOTE.format(n=self._task_images), ok=r.ok, images=r.images)
@@ -635,6 +663,12 @@ class Agent:
         except Exception as e:  # noqa: BLE001 - e.g. a number where the tool wants text
             return ToolResult(f"Error: bad arguments for {call.name}: {type(e).__name__}: {e}", ok=False)
         self.ui.tool_start(call.id, call.name, args, summary)
+        if tool.group == "control" and not getattr(self.settings, "computer_use", False):
+            # turned off mid-task: from the next screen action on, nothing more is clicked or typed
+            result = ToolResult("Not done: the user turned Computer use off. Don't use the screen, mouse or "
+                                "keyboard tools; carry on without them or say what is left to do.", ok=False)
+            self.ui.tool_end(call.id, call.name, result)
+            return result
         add_on = tool.group == "mcp" or not getattr(tool.func, "__module__", "").startswith("localagent.")
         dangerous = risk != SAFE and is_dangerous(danger_text(args, every=add_on))
         need = self.policy.needs_approval(risk, dangerous)
@@ -667,7 +701,12 @@ class Agent:
         except ToolError as e:
             result = ToolResult(f"Error: {e}", ok=False)
         except Exception as e:  # noqa: BLE001 - every failure goes back to the model
-            result = ToolResult(f"Error: {type(e).__name__}: {e}", ok=False)
+            if type(e).__name__ == "FailSafeException":
+                self.stop.set()
+                result = ToolResult("Stopped: the user moved the mouse into a screen corner (emergency stop).",
+                                    ok=False)
+            else:
+                result = ToolResult(f"Error: {type(e).__name__}: {e}", ok=False)
         finally:
             self.ui.status("")
         result.text = truncate(redact_all(result.text, self.settings), self._output_limit())

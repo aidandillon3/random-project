@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from .tools import EDIT, PUBLISH, RUN, SAFE
+from .tools import CONTROL, EDIT, PUBLISH, RUN, SAFE
 from .tools.shell import GIT_CMD
 
 # Commands that always need your OK unless you switch that off in Settings, even in full auto.
@@ -89,6 +89,8 @@ class Policy:
             return False
         if self.mode == "read_only":
             return None
+        if risk == CONTROL:     # clicks and keys never ask: turning Computer use on is the OK
+            return False
         if dangerous and self.always_ask_dangerous:
             return True
         if risk in self.session_allowed:
@@ -104,5 +106,6 @@ def risk_text(risk: str) -> str:
     return {
         EDIT: "change files in the work folder",
         RUN: "run a command or change files outside the work folder",
+        CONTROL: "use your mouse and keyboard",
         PUBLISH: "push code or post to GitHub under your account",
     }.get(risk, risk)

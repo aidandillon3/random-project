@@ -173,20 +173,33 @@ def _image_png(path: Path, max_side: int) -> bytes:
     return buf.getvalue()
 
 
+READ_CHARS = 8000      # a read without a limit stops at whole lines within this many characters
+
+
+def _within(lines: list[str], chars: int) -> list[str]:
+    out, n = [], 0
+    for line in lines:
+        n += len(line) + 1
+        if out and n > chars:
+            break
+        out.append(line)
+    return out
+
+
 @tool("read_file", """
 Read a text file and get it back with line numbers. For big files, read a window with
 offset (first line, 1-based; negative counts from the end, e.g. -50 for the last 50 lines)
 and limit (number of lines). Image files (png, jpg...) are shown to you as a picture.""",
       {"path": {"type": "string", "description": "File path, absolute or relative to the work folder"},
        "offset": {"type": "integer", "description": "First line to read (1-based). Default 1. Negative: from the end"},
-       "limit": {"type": "integer", "description": "How many lines. Default 400"}},
+       "limit": {"type": "integer", "description": "How many lines. Default: up to 400 lines or about 8,000 characters"}},
       required=["path"], risk_for=_read_risk, describe=lambda a: f"Read {a.get('path')}")
 def read_file(ctx: ToolContext, a: dict):
     path = ctx.resolve(a["path"])
     if not path.exists():
         raise ToolError(f"No such file: {path}")
     if path.is_dir():
-        raise ToolError(f"{path} is a folder. Use list_dir.")
+        raise ToolError(f"{path} is a folder: list it with run_command (Get-ChildItem) or list_dir.")
     if _is_app_settings(path):
         raise ToolError("That is this app's own settings file, which holds sign-in tokens, so it can't be read. "
                         "Ask the user about the setting you need.")
@@ -198,6 +211,8 @@ def read_file(ctx: ToolContext, a: dict):
     chunk, start, total = _window(path, offset, limit)
     if not chunk:
         return f"{path} has {total} lines; there is nothing from line {start} on."
+    if not a.get("limit"):
+        chunk = _within(chunk, READ_CHARS)    # about 2,000 tokens unless more lines are asked for
     end = start + len(chunk) - 1
     width = len(str(end + 1))
     body = "\n".join(f"{i:>{width}}| {line}" for i, line in enumerate(chunk, start))

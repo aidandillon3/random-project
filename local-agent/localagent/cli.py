@@ -124,7 +124,7 @@ def main(argv: list[str]) -> int:
     if "--url" in argv:
         settings.base_url = argv[argv.index("--url") + 1]
     agent = Agent(settings, TerminalUI())
-    if settings.index_files:
+    if settings.index_files and settings.enable_memory:
         from .memory import start_indexer
 
         start_indexer(settings)
